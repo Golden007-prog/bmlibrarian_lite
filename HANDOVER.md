@@ -26,7 +26,7 @@ the embedded browser):
   not-open-access rows; record the counts in the spikes README and the
   contract.
 
-**Settings dialog lifecycle (#514)**, Python, PR open on `fix/settings-dialog-lifecycle-514`.
+**Settings dialog lifecycle (#514)**, Python, PR #518 (`fix/settings-dialog-lifecycle-514`).
 - Every way out of `SettingsDialog` goes through `done()` (OK and Cancel send
   no `closeEvent`). It disconnects the provider threads and hands any still
   running to **`gui/thread_keeper.py`**, which holds a thread until `finished`,
