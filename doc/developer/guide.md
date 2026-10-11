@@ -631,16 +631,20 @@ that must not wait for its thread (a dialog the reader closed while a provider
 is still answering) disconnects the thread's signals from itself and hands it
 to `thread_keeper.keep_until_finished(thread)`. The keeper holds it until
 `finished`, then deletes it, and at quit waits up to `KEPT_THREAD_EXIT_WAIT_MS`
-for what it still holds; a thread it waits on must itself be bounded (the
-settings dialog's probes use `PROVIDER_PROBE_TIMEOUT_SECONDS`, no retries).
+for what it still holds; a thread it waits on must itself be bounded (each of
+the settings dialog's probes is one request, waits
+`PROVIDER_PROBE_TIMEOUT_SECONDS` to connect and again to read, and is not
+retried). An owner's result handlers also check that it has let go: a result
+the thread sent before the disconnect is still delivered, and a thread started
+from it would belong to nobody.
 Override `done()`, not just `closeEvent()`, to act on a dialog's every way
 out: OK and Cancel never send a `closeEvent`. A dialog built per opening is
 `deleteLater()`'d after `exec()`, or it lives as long as its parent.
 
-**Testing a thread and the event loop.** No test before #514 pumped the shared
+**Testing a thread and the event loop.** Most tests never pump the shared
 `QApplication`, so earlier tests' leftovers sit unprocessed: Qt objects in
 collectable cycles, and `deleteLater()`'d widgets that crash when deleted
-(#516). A test that runs a `QThread` and calls `processEvents()` uses the
+(see #516). A test that runs a `QThread` and calls `processEvents()` uses the
 `gc_on_the_gui_thread_only` fixture (a collection on a worker thread destroys
 GUI objects off their thread and leaves their timers to fire into freed
 memory), and flushes deferred deletes only for its own objects

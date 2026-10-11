@@ -30,18 +30,30 @@ the embedded browser):
 - Every way out of `SettingsDialog` goes through `done()` (OK and Cancel send
   no `closeEvent`). It disconnects the provider threads and hands any still
   running to **`gui/thread_keeper.py`**, which holds a thread until `finished`,
-  then deletes it, and at quit waits up to `KEPT_THREAD_EXIT_WAIT_MS` (12 s).
-  `_show_settings` calls `deleteLater()` on each dialog. The probes are bounded:
-  `PROVIDER_PROBE_TIMEOUT_SECONDS` (10 s), no Anthropic retries; the providers
-  take `request_timeout_seconds` (and `max_retries` on Anthropic).
+  then deletes it, and at quit waits up to `KEPT_THREAD_EXIT_WAIT_MS`.
+  `_show_settings` calls `deleteLater()` on each dialog.
+- **A result already sent is still delivered** after the disconnect: once
+  released, the dialog's handlers do nothing and it starts no thread
+  (`_workers_released`); a Test Connection verdict used to start an unkept
+  fetch and abort (review round, reproduced exit 134).
+- **The probes are one request each**: `Provider.list_model_ids` (Ollama asks
+  `list()` only, no `show()` per model; Anthropic asks one page of
+  `ANTHROPIC_MODELS_PAGE_LIMIT`), `PROVIDER_PROBE_TIMEOUT_SECONDS` to connect
+  and again to read (httpx times each phase, not the request), no retries. A
+  failed fetch now says so on the provider's status line; timeouts and busy
+  providers are worded by `describe_request_failure` (`llm/providers/base.py`).
 - **Measured:** a dropped running `QThread` aborts (exit 134), as does one
   running at exit; master aborts quitting on a hung Ollama, the branch exits 0.
-- **The first tests to pump the shared `QApplication`** hit two pre-existing
+- **The first tests to pump the shared `QApplication`** hit pre-existing
   hazards (guide.md, "Testing a thread and the event loop"): GC on a worker
-  thread leaves dangling timers (**#517**; `gc_on_the_gui_thread_only`), and a
-  global deferred-delete flush crashes (on #516) — flush only your own objects.
-- Accepted: Ollama's `list_models` asks `show()` per model, so a server that
-  stalls after the list can outlast the quit wait.
+  thread leaves dangling timers (**#517**; `gc_on_the_gui_thread_only`), a
+  global deferred-delete flush crashes (recorded on #516), and something an
+  earlier test leaks takes Escape from the shortcut map, so the Escape test
+  calls `keyPressEvent` directly.
+- Accepted: the host name lookup and an answer that trickles in without pause
+  are not bounded by the probe timeout; a thread outliving the quit wait is
+  logged as an error before the abort. Lodged: **#519** (a provider that does
+  not take the probe's arguments drops them silently).
 
 ## Recently landed (context)
 

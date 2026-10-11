@@ -30,6 +30,7 @@ from .base import (
     ModelMetadata,
     ModelPricing,
     ProviderCapabilities,
+    describe_request_failure,
 )
 from ..data_types import LLMMessage, LLMResponse, strip_thinking_tags
 
@@ -65,8 +66,9 @@ class OllamaProvider(BaseProvider):
         Args:
             api_key: Ignored (Ollama doesn't require API key).
             base_url: Ollama server URL. Defaults to OLLAMA_HOST env var or localhost.
-            request_timeout_seconds: Per-request timeout; None keeps the
-                client's default, which never times out.
+            request_timeout_seconds: Seconds to wait to connect and again for
+                each read; None keeps the client's default, which (in
+                ollama-python 0.6) never times out.
             **kwargs: Additional configuration options.
         """
         # Get base URL from environment if not provided
@@ -320,18 +322,29 @@ class OllamaProvider(BaseProvider):
             Exception: Whatever the ollama client raises when the server cannot
                 be reached or rejects the request.
         """
+        # Full metadata for each model comes from a show() per model.
+        return [self._get_model_info(name) for name in self.list_model_ids()]
+
+    def list_model_ids(self) -> list[str]:
+        """The names of the models pulled on the server, in one request.
+
+        ``list_models`` asks ``show()`` for each model's details as well; this
+        asks only for the list.
+
+        Returns:
+            Model names. Empty when the server answered and has none pulled.
+
+        Raises:
+            ImportError: If the ollama package is not installed.
+            Exception: Whatever the ollama client raises when the server cannot
+                be reached or rejects the request.
+        """
         client = self._get_client()
         response = client.list()
-        models = []
-        # Response is a ListResponse object with .models attribute
+        # Response is a ListResponse object; each entry names its model in .model
         model_list = getattr(response, "models", []) or []
-        for model_info in model_list:
-            # Each model_info is a Model object with .model attribute
-            name = getattr(model_info, "model", "") or ""
-            if name:
-                # Get full metadata via show()
-                models.append(self._get_model_info(name))
-        return models
+        names = [getattr(model_info, "model", "") or "" for model_info in model_list]
+        return [name for name in names if name]
 
     def test_connection(self) -> tuple[bool, str]:
         """Test Ollama server connectivity.
@@ -350,7 +363,8 @@ class OllamaProvider(BaseProvider):
         except ImportError:
             return False, "Ollama package not installed"
         except Exception as e:
-            return False, f"Connection failed: {e}"
+            logger.warning("Ollama connection test failed", exc_info=True)
+            return False, f"Connection failed: {describe_request_failure(e)}"
 
     def count_tokens(self, text: str, model: Optional[str] = None) -> int:
         """Estimate tokens in text.

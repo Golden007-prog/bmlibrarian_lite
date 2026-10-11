@@ -28,7 +28,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from bmlibrarian_lite.constants import anthropic_model_pricing, get_model_pricing
+from bmlibrarian_lite.constants import (
+    ANTHROPIC_MODELS_PAGE_LIMIT,
+    anthropic_model_pricing,
+    get_model_pricing,
+)
 from bmlibrarian_lite.llm.client import LLMClient
 from bmlibrarian_lite.llm.providers.anthropic import AnthropicProvider
 from bmlibrarian_lite.llm.providers.ollama import OllamaProvider
@@ -41,7 +45,7 @@ UNREACHABLE_OLLAMA_HOST = "http://127.0.0.1:9"
 class _FailingModels:
     """Stands in for anthropic.Anthropic().models when the API is unreachable."""
 
-    def list(self) -> list:
+    def list(self, limit: int | None = None) -> list:
         raise ConnectionError("API unreachable")
 
 
@@ -50,8 +54,10 @@ class _ListedModels:
 
     def __init__(self, ids: list[str]) -> None:
         self._ids = ids
+        self.limits: list[int | None] = []
 
-    def list(self) -> list:
+    def list(self, limit: int | None = None) -> list:
+        self.limits.append(limit)
         return [SimpleNamespace(id=i, display_name=i) for i in self._ids]
 
 
@@ -66,6 +72,27 @@ class _EmptyOllamaClient:
 
     def list(self) -> SimpleNamespace:
         return SimpleNamespace(models=[])
+
+
+class _CountingOllamaClient:
+    """An Ollama server that counts its list and ``show`` requests.
+
+    ``show`` answers rather than raising: the provider swallows a failed
+    ``show``, so a raise would go unnoticed.
+    """
+
+    def __init__(self, names: list[str]) -> None:
+        self._names = names
+        self.list_calls = 0
+        self.show_calls = 0
+
+    def list(self) -> SimpleNamespace:
+        self.list_calls += 1
+        return SimpleNamespace(models=[SimpleNamespace(model=n) for n in self._names])
+
+    def show(self, name: str) -> dict:
+        self.show_calls += 1
+        return {}
 
 
 class TestOllamaModelList:
@@ -83,6 +110,28 @@ class TestOllamaModelList:
         provider._client = _EmptyOllamaClient()
         assert provider.list_models() == []
 
+    def test_model_ids_are_one_request(self) -> None:
+        """The IDs come from the list alone, not a ``show`` per model."""
+        provider = OllamaProvider(base_url=UNREACHABLE_OLLAMA_HOST)
+        client = _CountingOllamaClient(["llama3.2", "", "qwen3"])
+        provider._client = client
+        assert provider.list_model_ids() == ["llama3.2", "qwen3"]
+        assert (client.list_calls, client.show_calls) == (1, 0)
+
+    def test_control_full_metadata_asks_show_per_model(self) -> None:
+        """Control: ``list_models`` does ask ``show`` once per model."""
+        provider = OllamaProvider(base_url=UNREACHABLE_OLLAMA_HOST)
+        client = _CountingOllamaClient(["llama3.2", "qwen3"])
+        provider._client = client
+        assert [m.model_id for m in provider.list_models()] == ["llama3.2", "qwen3"]
+        assert (client.list_calls, client.show_calls) == (1, 2)
+
+    def test_model_ids_of_an_unreachable_server_raise(self) -> None:
+        """A server that is not running is an error, not an empty list."""
+        provider = OllamaProvider(base_url=UNREACHABLE_OLLAMA_HOST)
+        with pytest.raises(ConnectionError):
+            provider.list_model_ids()
+
 
 class TestAnthropicModelList:
     """Anthropic model listing."""
@@ -99,6 +148,15 @@ class TestAnthropicModelList:
         models = provider.list_models()
         assert [m.model_id for m in models] == ["claude-sonnet-5", "claude-fable-5-1"]
         assert (models[1].pricing.input_cost, models[1].pricing.output_cost) == (10.00, 50.00)
+
+    def test_the_list_and_the_connection_test_ask_for_one_page(self) -> None:
+        """The whole list comes in one request, not a page of 20 at a time."""
+        listed = _ListedModels(["claude-sonnet-5"])
+        provider = _anthropic_with_models(listed)
+        provider.list_models()
+        assert provider.test_connection() == (True, "Connected. 1 models available.")
+        assert provider.list_model_ids() == ["claude-sonnet-5"]
+        assert listed.limits == [ANTHROPIC_MODELS_PAGE_LIMIT, ANTHROPIC_MODELS_PAGE_LIMIT]
 
 
 class TestLLMClientModelList:

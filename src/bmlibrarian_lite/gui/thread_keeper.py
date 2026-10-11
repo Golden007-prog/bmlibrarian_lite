@@ -1,7 +1,7 @@
 """Keep a thread alive after its owner lets go of it, until it finishes.
 
-Dropping the last reference to a running ``QThread`` destroys it, and Qt
-aborts the process ("QThread: Destroyed while thread is still running").
+Dropping the last reference to a running, parentless ``QThread`` destroys it,
+and Qt aborts the process ("QThread: Destroyed while thread is still running").
 The application aborts the same way when a thread is still running as it
 exits. An owner that must not wait for its thread (a dialog the reader has
 closed, waiting on a provider that may take seconds to answer) hands the
@@ -9,7 +9,8 @@ thread to this keeper instead. The keeper holds it until ``finished`` arrives,
 then waits for the thread to end and deletes it. At quit it waits a bounded
 time for whatever it still holds.
 
-Every function here runs on the GUI thread; the lock guards the set anyway.
+Every function here runs on the GUI thread. The lock guards the set in case
+a caller off it appears; ``_quit_hooked`` is touched on the GUI thread only.
 """
 
 from __future__ import annotations
@@ -32,8 +33,8 @@ _quit_hooked = False
 def keep_until_finished(thread: QThread) -> None:
     """Hold ``thread`` until it finishes, so its owner can drop it.
 
-    A thread that is not running (never started, or already done) is not
-    kept: nothing waits on it.
+    A thread that is not running (never started, finishing, or done) is let
+    go at once, after waiting for it to end.
 
     Args:
         thread: The thread its owner is letting go of.
@@ -63,8 +64,9 @@ def kept_thread_count() -> int:
 def wait_for_kept_threads(timeout_ms: int = KEPT_THREAD_EXIT_WAIT_MS) -> int:
     """Wait for every kept thread to finish, all within one deadline.
 
-    A thread still running when the deadline passes stays kept, and is
-    logged: the application aborts if it exits with that thread running.
+    Nothing is let go here: a thread that finished is released when its
+    ``finished`` arrives. One still running at the deadline is logged as an
+    error, because the application aborts if it exits with that thread running.
 
     Args:
         timeout_ms: How long to wait for all of them together, in milliseconds.
@@ -80,8 +82,9 @@ def wait_for_kept_threads(timeout_ms: int = KEPT_THREAD_EXIT_WAIT_MS) -> int:
         thread.wait(remaining_ms)
     running = [thread for thread in threads if thread.isRunning()]
     if running:
-        logger.warning(
-            "%d background thread(s) still running after %d ms: %s",
+        logger.error(
+            "%d background thread(s) still running after %d ms; the application"
+            " will abort as it exits: %s",
             len(running),
             timeout_ms,
             ", ".join(type(thread).__name__ for thread in running),
@@ -102,14 +105,18 @@ def _release(thread: QThread) -> None:
         if thread not in _kept:
             return
         _kept.discard(thread)
-    # ``finished`` is emitted just before the thread ends; wait for the end,
-    # which is immediate, so deleting it cannot catch it still running.
+    # ``finished`` is emitted, and isFinished() is already true, before the
+    # thread has ended. Wait for the end, a moment away, so the delete cannot
+    # catch it still running.
     thread.wait()
     thread.deleteLater()
 
 
 def _hook_the_quit_wait() -> None:
-    """Wait for the kept threads when the application quits (once)."""
+    """Wait for the kept threads when the application quits (once).
+
+    With no application yet, nothing is hooked; the next keep tries again.
+    """
     global _quit_hooked
     if _quit_hooked:
         return

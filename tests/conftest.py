@@ -291,8 +291,8 @@ def _no_live_model_fetch(
 def gc_on_the_gui_thread_only() -> Generator[None, None, None]:
     """Keep Python's cyclic garbage collection off the test's worker threads.
 
-    The collector runs in whichever thread allocates when a threshold is
-    crossed. Earlier tests leave Qt objects in collectable cycles; a worker
+    Python's collector runs on whichever thread happens to trigger it, a worker
+    thread included. Earlier tests leave Qt objects in collectable cycles; a worker
     thread that collects them destroys GUI-thread objects off their thread,
     their timers are never unregistered, and a later ``processEvents`` fires
     one into freed memory (a segfault, only in the full suite). A test that

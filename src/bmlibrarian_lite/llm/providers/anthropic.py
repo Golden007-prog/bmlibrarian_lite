@@ -32,8 +32,9 @@ from .base import (
     ModelMetadata,
     ModelPricing,
     ProviderCapabilities,
+    describe_request_failure,
 )
-from ...constants import anthropic_model_pricing
+from ...constants import ANTHROPIC_MODELS_PAGE_LIMIT, anthropic_model_pricing
 from ..data_types import LLMMessage, LLMResponse, strip_thinking_tags
 
 logger = logging.getLogger(__name__)
@@ -73,10 +74,10 @@ class AnthropicProvider(BaseProvider):
         Args:
             api_key: Anthropic API key. If not provided, uses ANTHROPIC_API_KEY env var.
             base_url: Optional custom base URL for API requests.
-            request_timeout_seconds: Per-request timeout; None keeps the
-                client's default.
-            max_retries: How often the client retries a failed request; None
-                keeps the client's default.
+            request_timeout_seconds: Seconds to wait to connect and again for
+                each read; None keeps the client's default.
+            max_retries: How many times the client retries a failed request;
+                None keeps the client's default.
             **kwargs: Additional configuration options.
         """
         # Get API key from environment if not provided
@@ -287,7 +288,7 @@ class AnthropicProvider(BaseProvider):
 
         client = self._get_client()
         models = []
-        for model in client.models.list():
+        for model in client.models.list(limit=ANTHROPIC_MODELS_PAGE_LIMIT):
             model_id = model.id
             context_window = getattr(model, "context_window", 200000)
             models.append(
@@ -318,14 +319,15 @@ class AnthropicProvider(BaseProvider):
             import anthropic
 
             client = self._get_client()
-            models = list(client.models.list())
+            models = list(client.models.list(limit=ANTHROPIC_MODELS_PAGE_LIMIT))
             return True, f"Connected. {len(models)} models available."
         except anthropic.AuthenticationError:
             return False, "Invalid API key"
         except ImportError:
             return False, "Anthropic package not installed"
         except Exception as e:
-            return False, str(e)
+            logger.warning("Anthropic connection test failed", exc_info=True)
+            return False, describe_request_failure(e)
 
     def count_tokens(self, text: str, model: Optional[str] = None) -> int:
         """Count tokens in text.

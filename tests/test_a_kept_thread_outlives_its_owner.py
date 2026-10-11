@@ -44,6 +44,33 @@ def gate() -> Generator[threading.Event, None, None]:
     event.set()
 
 
+@pytest.fixture(autouse=True)
+def _the_keeper_starts_empty() -> None:
+    """A thread an earlier test left kept is named here, not by a count below."""
+    from bmlibrarian_lite.gui import thread_keeper
+
+    assert thread_keeper.kept_thread_count() == 0, "an earlier test left a thread kept"
+
+
+class _StuckThread:
+    """Stands in for a kept thread that never ends; records each wait."""
+
+    def __init__(self, waits: list[int]) -> None:
+        """Record waits into ``waits``."""
+        self._waits = waits
+
+    def wait(self, ms: int) -> bool:
+        """Record the wait, as PySide6 does refusing a negative one."""
+        if ms < 0:
+            raise OverflowError(ms)
+        self._waits.append(ms)
+        return False
+
+    def isRunning(self) -> bool:
+        """Never ends."""
+        return True
+
+
 def _gated_thread(gate: threading.Event) -> QThread:
     """A thread that runs until the gate opens."""
     from PySide6.QtCore import QThread
@@ -122,7 +149,8 @@ def test_the_quit_wait_reports_a_thread_still_running(
     with caplog.at_level("WARNING", logger=thread_keeper.__name__):
         still_running = thread_keeper.wait_for_kept_threads(timeout_ms=50)
     assert still_running == 1
-    assert "still running" in caplog.text
+    assert [r.levelname for r in caplog.records] == ["ERROR"]
+    assert "will abort" in caplog.text
     assert thread_keeper.kept_thread_count() == 1, "a running thread is never let go"
 
     gate.set()
@@ -164,6 +192,8 @@ def test_the_application_waits_for_kept_threads_as_it_quits(
 
     opener = threading.Timer(0.05, gate.set)
     opener.start()
+    # Emitted on the suite's shared application: every slot connected to it
+    # runs here, and only the keeper's is.
     qapp.aboutToQuit.emit()
     finished_when_quit_returned = thread.isFinished()
     opener.join()
@@ -171,14 +201,15 @@ def test_the_application_waits_for_kept_threads_as_it_quits(
     _settle(qapp)
 
 
-def test_a_late_finished_for_a_deleted_thread_reaches_nothing(
+def test_a_second_release_of_a_deleted_thread_does_nothing(
     qapp: QApplication, gate: threading.Event
 ) -> None:
-    """A ``finished`` delivered after the thread was let go and deleted is ignored.
+    """A release after the thread was let go and deleted does nothing.
 
-    Qt drops a deleted object's pending events as receiver, not as sender, so
-    the queued ``finished`` can still arrive; the release must not touch the
-    deleted thread then.
+    A thread caught while finishing is released twice: at once, because it no
+    longer runs, and when its queued ``finished`` arrives. On PySide6 6.10
+    deleting the thread drops that ``finished``, but the release must not
+    depend on it.
     """
     import shiboken6
     from PySide6.QtCore import QCoreApplication, QEvent
@@ -190,9 +221,69 @@ def test_a_late_finished_for_a_deleted_thread_reaches_nothing(
     gate.set()
     assert thread.wait(int(_SETTLE_SECONDS * 1000))
     thread_keeper.keep_until_finished(thread)
-    # Only this thread's delete: earlier tests leave deletes that crash (#516).
+    # Only this thread's delete: a global flush can reach other tests' leaked widgets (#516).
     QCoreApplication.sendPostedEvents(thread, QEvent.Type.DeferredDelete)
     assert not shiboken6.isValid(thread), "the keeper deleted the thread it let go"
 
-    thread_keeper._release(thread)  # the late ``finished``; must not raise
+    thread_keeper._release(thread)  # the second release; must not raise
     assert thread_keeper.kept_thread_count() == 0
+
+
+def test_the_quit_wait_shares_one_deadline_and_never_waits_negative(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each thread waits what is left of one deadline, and none past it.
+
+    Three stuck threads, a 1 s wait: the second is waited on 0.6 s in, the
+    third 1.5 s in, after the deadline. PySide6 refuses a negative wait with
+    ``OverflowError``, which would end the quit wait early.
+    """
+    from bmlibrarian_lite.gui import thread_keeper
+
+    clock = iter([0.0, 0.0, 0.6, 1.5])
+    monkeypatch.setattr(thread_keeper.time, "monotonic", lambda: next(clock))
+    waits: list[int] = []
+    monkeypatch.setattr(thread_keeper, "_kept", {_StuckThread(waits) for _ in range(3)})
+
+    assert thread_keeper.wait_for_kept_threads(timeout_ms=1000) == 3
+    assert sorted(waits, reverse=True) == [1000, 400, 0]
+
+
+def test_the_quit_wait_is_hooked_once(qapp: QApplication) -> None:
+    """Every keep after the first adds no second wait at quit."""
+    from PySide6.QtCore import SIGNAL, QThread
+
+    from bmlibrarian_lite.gui import thread_keeper
+
+    thread_keeper.keep_until_finished(QThread())
+    hooked = qapp.receivers(SIGNAL("aboutToQuit()"))
+    thread_keeper.keep_until_finished(QThread())
+    assert qapp.receivers(SIGNAL("aboutToQuit()")) == hooked
+
+
+def test_a_kept_thread_is_released_on_the_gui_thread(
+    qapp: QApplication, gate: threading.Event, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The release waits for and deletes the thread from the GUI thread, never its own."""
+    from PySide6.QtCore import QThread
+
+    from bmlibrarian_lite.gui import thread_keeper
+
+    released_on: list[QThread] = []
+    release = thread_keeper._release
+
+    def recording_release(thread: QThread) -> None:
+        """Note which thread releases, then release."""
+        released_on.append(QThread.currentThread())
+        release(thread)
+
+    monkeypatch.setattr(thread_keeper, "_release", recording_release)
+    thread = _gated_thread(gate)
+    thread.start()
+    thread_keeper.keep_until_finished(thread)
+    del thread
+    gate.set()
+    _settle(qapp)
+
+    assert released_on, "the kept thread was released"
+    assert all(t is qapp.thread() for t in released_on)

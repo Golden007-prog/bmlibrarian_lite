@@ -355,15 +355,30 @@ PUBMED_TIMEOUT_MS = 30000
 # How long a status bar message the reader must be able to read stays up
 STATUS_MESSAGE_TIMEOUT_MS = 5000
 
-# How long the settings dialog's model-list and Test Connection probes wait
-# for a provider, per request. A probe is not retried: the dialog falls back to
-# its built-in models, and the reader can press Test Connection again.
-PROVIDER_PROBE_TIMEOUT_SECONDS = 10.0
+# How long the settings dialog's model-list and Test Connection probes wait on
+# a provider: to connect, and again for each read, not for the whole request.
+# A probe is one request (Provider.list_model_ids, test_connection), so it
+# waits on the provider at most twice this. It is not retried: the dialog says
+# it shows its built-in models, and the reader can press Test Connection again.
+PROVIDER_PROBE_TIMEOUT_SECONDS = 5.0
+
+# The waits one probe request can spend PROVIDER_PROBE_TIMEOUT_SECONDS on:
+# connecting, then reading the answer.
+PROVIDER_PROBE_WAITS_PER_REQUEST = 2
 
 # How long the application waits at quit for threads whose owner let go of them
 # while they ran (gui/thread_keeper.py). A thread still running at exit aborts
-# the process, so this outlasts one probe request.
+# the process, so this outlasts a probe's connect and read. Not bounded by
+# either: the host name lookup, and an answer that trickles in without pause.
 KEPT_THREAD_EXIT_WAIT_MS = 12000
+
+# HTTP statuses that mean a provider is busy rather than broken: too many
+# requests, unavailable (Ollama's full queue), overloaded (Anthropic).
+PROVIDER_BUSY_STATUS_CODES = frozenset({429, 503, 529})
+
+# The largest page of models Anthropic's API gives, so the whole list comes
+# in one request (its default page is 20).
+ANTHROPIC_MODELS_PAGE_LIMIT = 1000
 
 # =============================================================================
 # Scoring Settings
