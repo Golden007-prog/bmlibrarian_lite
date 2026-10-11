@@ -27,7 +27,7 @@ Provides configuration interface for:
 
 import logging
 import os
-from typing import Optional
+from typing import Optional, TypedDict
 
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -51,8 +51,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtGui import QCloseEvent
 
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
+from bmlibrarian_lite.resources.styles.stylesheet_generator import get_stylesheet_generator
+from bmlibrarian_lite.resources.styles.theme_colors import ThemeColors
 
 from ..config import (
     LiteConfig,
@@ -84,9 +87,12 @@ from ..constants import (
     MIN_MAX_RESULTS,
     PARALLEL_WORKERS_MAX,
     PROVIDER_DISPLAY_NAMES,
+    PROVIDER_PROBE_TIMEOUT_SECONDS,
 )
 from ..data_models import SearchProvider
+from ..llm.providers.base import describe_request_failure
 from ..quality.data_models import QualityTier
+from .thread_keeper import keep_until_finished
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +114,57 @@ FALLBACK_CLAUDE_MODELS = [
     "claude-3-haiku-20240307",
     "claude-3-opus-20240229",
 ]
+
+
+class ProbeProviderKwargs(TypedDict, total=False):
+    """The provider arguments one of the dialog's probes passes to ``get_provider``."""
+
+    request_timeout_seconds: float
+    max_retries: int
+    base_url: str
+
+
+def probe_provider_kwargs(provider: str, ollama_host: str) -> ProbeProviderKwargs:
+    """The provider arguments for one of the dialog's probes.
+
+    A probe is one request. It waits ``PROVIDER_PROBE_TIMEOUT_SECONDS`` to
+    connect and again for each read, and is not retried, so a provider that
+    never answers frees its thread before the application's quit wait
+    (``KEPT_THREAD_EXIT_WAIT_MS``) ends.
+
+    Args:
+        provider: "anthropic" or "ollama".
+        ollama_host: The Ollama server URL, or "" for the provider's default.
+
+    Returns:
+        Keyword arguments for ``get_provider``.
+    """
+    kwargs: ProbeProviderKwargs = {
+        "request_timeout_seconds": PROVIDER_PROBE_TIMEOUT_SECONDS,
+    }
+    if provider == "anthropic":
+        kwargs["max_retries"] = 0
+    if provider == "ollama" and ollama_host:
+        kwargs["base_url"] = ollama_host
+    return kwargs
+
+
+def models_fetch_failed_text(error: str) -> str:
+    """What a provider's status says when its model list could not be loaded.
+
+    Args:
+        error: Why the fetch failed, in words for the reader.
+
+    Returns:
+        The status text.
+    """
+    reason = error.strip()
+    if not reason.endswith((".", "!", "?")):
+        reason += "."
+    return (
+        f"Could not load the model list: {reason} "
+        "Showing the built-in models; Test Connection asks again."
+    )
 
 
 class ModelFetchWorker(QThread):
@@ -132,16 +189,10 @@ class ModelFetchWorker(QThread):
         try:
             from bmlibrarian_lite.llm.providers import get_provider
 
-            # Get provider instance with optional base_url for ollama
-            kwargs = {}
-            if self.provider == "ollama" and self.ollama_host:
-                kwargs["base_url"] = self.ollama_host
-
-            provider_instance = get_provider(self.provider, **kwargs)
-            model_metadata = provider_instance.list_models()
-
-            # Extract model IDs
-            model_ids = [m.model_id for m in model_metadata]
+            provider_instance = get_provider(
+                self.provider, **probe_provider_kwargs(self.provider, self.ollama_host)
+            )
+            model_ids = provider_instance.list_model_ids()
 
             # Sort appropriately
             if self.provider == "anthropic":
@@ -151,8 +202,10 @@ class ModelFetchWorker(QThread):
 
             self.models_fetched.emit(self.provider, model_ids)
         except Exception as e:
-            logger.warning(f"Failed to fetch models from {self.provider}: {e}")
-            self.fetch_failed.emit(self.provider, str(e))
+            logger.warning(
+                "Failed to fetch models from %s", self.provider, exc_info=True
+            )
+            self.fetch_failed.emit(self.provider, describe_request_failure(e))
 
 
 class ProviderConnectionTestWorker(QThread):
@@ -176,18 +229,18 @@ class ProviderConnectionTestWorker(QThread):
         try:
             from bmlibrarian_lite.llm.providers import get_provider
 
-            # Get provider instance with optional base_url for ollama
-            kwargs = {}
-            if self.provider == "ollama" and self.ollama_host:
-                kwargs["base_url"] = self.ollama_host
-
-            provider_instance = get_provider(self.provider, **kwargs)
+            provider_instance = get_provider(
+                self.provider, **probe_provider_kwargs(self.provider, self.ollama_host)
+            )
             success, message = provider_instance.test_connection()
             self.test_completed.emit(self.provider, success, message)
-        except ValueError as e:
-            self.test_completed.emit(self.provider, False, str(e))
         except Exception as e:
-            self.test_completed.emit(self.provider, False, str(e))
+            logger.warning(
+                "Connection test for %s failed", self.provider, exc_info=True
+            )
+            self.test_completed.emit(
+                self.provider, False, describe_request_failure(e)
+            )
 
 
 class SettingsDialog(QDialog):
@@ -223,9 +276,12 @@ class SettingsDialog(QDialog):
         self.setMinimumWidth(scaled(550))
         self.setMinimumHeight(scaled(500))
 
-        # Track workers to prevent garbage collection
+        # Every worker the dialog has started, finished or not. Dropping a
+        # running QThread aborts the process, so the dialog lets go of them
+        # only through _release_workers, and starts none after that.
         self._model_fetch_workers: list[ModelFetchWorker] = []
         self._connection_test_workers: list[ProviderConnectionTestWorker] = []
+        self._workers_released = False
 
         # Cache fetched models per provider
         self._available_models: dict[str, list[str]] = {
@@ -240,21 +296,53 @@ class SettingsDialog(QDialog):
         self._load_config()
         self._fetch_all_models()
 
-    def closeEvent(self, event) -> None:
-        """Handle dialog close - wait for background workers to finish."""
-        # Wait for all model fetch workers to complete
+    def done(self, result: int) -> None:
+        """Finish the dialog (OK, Cancel, Escape or the title-bar close).
+
+        Every way out of a shown dialog comes through here, OK and Cancel
+        without a ``closeEvent``.
+
+        Args:
+            result: The dialog's result code.
+        """
+        try:
+            self._release_workers()
+        finally:
+            super().done(result)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """Let go of the workers on a close that skips ``done()``.
+
+        A dialog never shown is closed without ``done()``. A shown dialog's
+        close goes on to ``reject()`` and ``done()``, which find nothing left.
+
+        Args:
+            event: The close event.
+        """
+        try:
+            self._release_workers()
+        finally:
+            super().closeEvent(event)
+
+    def _release_workers(self) -> None:
+        """Disconnect every worker from the dialog and hand it to the keeper.
+
+        The dialog does not wait for a provider: a result sent after this
+        reaches nothing, and the keeper holds a running thread until it ends.
+        A result sent before it is still delivered, so from here on the
+        dialog's result handlers do nothing and it starts no worker.
+        """
+        self._workers_released = True
         for worker in self._model_fetch_workers:
-            if worker.isRunning():
-                worker.wait(500)  # Wait up to 500ms each
+            worker.models_fetched.disconnect(self._on_models_fetched)
+            worker.fetch_failed.disconnect(self._on_models_fetch_failed)
+            keep_until_finished(worker)
         self._model_fetch_workers.clear()
 
-        # Wait for all connection test workers to complete
-        for worker in self._connection_test_workers:
-            if worker.isRunning():
-                worker.wait(500)
+        for test_worker in self._connection_test_workers:
+            test_worker.test_completed.disconnect(self._on_connection_test_completed)
+            keep_until_finished(test_worker)
         self._connection_test_workers.clear()
-
-        super().closeEvent(event)
 
     def _setup_ui(self) -> None:
         """Set up the user interface with tabbed layout."""
@@ -326,6 +414,7 @@ class SettingsDialog(QDialog):
         # Status row with test button
         status_layout = QHBoxLayout()
         self.anthropic_status = QLabel("Not tested")
+        self.anthropic_status.setWordWrap(True)
         self.anthropic_status.setStyleSheet("color: gray;")
         status_layout.addWidget(self.anthropic_status)
         status_layout.addStretch()
@@ -367,6 +456,7 @@ class SettingsDialog(QDialog):
         # Status row with test button
         status_layout = QHBoxLayout()
         self.ollama_status = QLabel("Not tested")
+        self.ollama_status.setWordWrap(True)
         self.ollama_status.setStyleSheet("color: gray;")
         status_layout.addWidget(self.ollama_status)
         status_layout.addStretch()
@@ -1340,25 +1430,29 @@ class SettingsDialog(QDialog):
 
     def _fetch_all_models(self) -> None:
         """Start background fetch of models from all enabled providers."""
-        # Fetch Anthropic models
         if self.anthropic_enabled.isChecked():
-            worker = ModelFetchWorker("anthropic")
-            worker.models_fetched.connect(self._on_models_fetched)
-            worker.fetch_failed.connect(self._on_models_fetch_failed)
-            self._model_fetch_workers.append(worker)
-            worker.start()
-
-        # Fetch Ollama models
+            self._start_model_fetch("anthropic", "")
         if self.ollama_enabled.isChecked():
-            worker = ModelFetchWorker("ollama", self.ollama_host_input.text().strip())
-            worker.models_fetched.connect(self._on_models_fetched)
-            worker.fetch_failed.connect(self._on_models_fetch_failed)
-            self._model_fetch_workers.append(worker)
-            worker.start()
+            self._start_model_fetch("ollama", self.ollama_host_input.text().strip())
+
+    def _start_model_fetch(self, provider: str, ollama_host: str) -> None:
+        """Ask a provider for its models on a worker, unless the dialog is done.
+
+        Args:
+            provider: "anthropic" or "ollama".
+            ollama_host: The Ollama server URL, or "" for the provider's default.
+        """
+        if self._workers_released:
+            return
+        worker = ModelFetchWorker(provider, ollama_host)
+        worker.models_fetched.connect(self._on_models_fetched)
+        worker.fetch_failed.connect(self._on_models_fetch_failed)
+        self._model_fetch_workers.append(worker)
+        worker.start()
 
     def _on_models_fetched(self, provider: str, models: list[str]) -> None:
         """Handle successful model fetch from a provider."""
-        if not models:
+        if self._workers_released or not models:
             return
 
         # Cache the models
@@ -1382,8 +1476,23 @@ class SettingsDialog(QDialog):
         logger.info(f"Loaded {len(models)} models from {provider}")
 
     def _on_models_fetch_failed(self, provider: str, error: str) -> None:
-        """Handle failed model fetch - keep fallback models."""
-        logger.debug(f"Using fallback models for {provider} (fetch failed: {error})")
+        """Keep the built-in models, and tell the reader they are not the live list.
+
+        Args:
+            provider: "anthropic" or "ollama".
+            error: Why the fetch failed, in words for the reader.
+        """
+        if self._workers_released:
+            return
+        status = {"anthropic": self.anthropic_status, "ollama": self.ollama_status}.get(
+            provider
+        )
+        if status is None:
+            return
+        status.setText(models_fetch_failed_text(error))
+        status.setStyleSheet(
+            get_stylesheet_generator().label_stylesheet(color=ThemeColors.WARNING_TEXT)
+        )
 
     def _update_model_combo(self, combo: QComboBox, models: list[str]) -> None:
         """Update a model combo box with new models list."""
@@ -1430,6 +1539,8 @@ class SettingsDialog(QDialog):
 
     def _test_provider_connection(self, provider: str) -> None:
         """Test connection to a provider."""
+        if self._workers_released:
+            return
         # Update UI to show testing
         if provider == "anthropic":
             self.anthropic_status.setText("Testing...")
@@ -1449,6 +1560,8 @@ class SettingsDialog(QDialog):
 
     def _on_connection_test_completed(self, provider: str, success: bool, message: str) -> None:
         """Handle connection test result."""
+        if self._workers_released:
+            return
         if provider == "anthropic":
             self.anthropic_status.setText(message)
             self.anthropic_status.setStyleSheet(
@@ -1465,8 +1578,4 @@ class SettingsDialog(QDialog):
         # Refresh models if successful
         if success:
             host = self.ollama_host_input.text().strip() if provider == "ollama" else ""
-            worker = ModelFetchWorker(provider, host)
-            worker.models_fetched.connect(self._on_models_fetched)
-            worker.fetch_failed.connect(self._on_models_fetch_failed)
-            self._model_fetch_workers.append(worker)
-            worker.start()
+            self._start_model_fetch(provider, host)

@@ -125,6 +125,7 @@ bmlibrarian_lite/
 │   │   ├── benchmark_dialog.py
 │   │   ├── quality_benchmark_dialog.py
 │   │   ├── chat_widgets.py
+│   │   ├── thread_keeper.py   # Holds a thread its owner let go of until it ends
 │   │   └── workers.py
 │   ├── llm/                 # LLM client abstraction
 │   │   ├── client.py
@@ -622,6 +623,35 @@ class WorkerThread(QThread):
         except Exception as e:
             self.error.emit(str(e))
 ```
+
+**Never drop a running thread.** Dropping the last reference to a running
+`QThread` destroys it, and Qt aborts the process ("QThread: Destroyed while
+thread is still running"); so does a thread still running at exit. An owner
+that must not wait for its thread (a dialog the reader closed while a provider
+is still answering) disconnects the thread's signals from itself and hands it
+to `thread_keeper.keep_until_finished(thread)`. The keeper holds it until
+`finished`, then deletes it, and at quit waits up to `KEPT_THREAD_EXIT_WAIT_MS`
+for what it still holds; a thread it waits on must itself be bounded (each of
+the settings dialog's probes is one request, waits
+`PROVIDER_PROBE_TIMEOUT_SECONDS` to connect and again to read, and is not
+retried). An owner's result handlers also check that it has let go: a result
+the thread sent before the disconnect is still delivered, and a thread started
+from it would belong to nobody.
+Override `done()`, not just `closeEvent()`, to act on a dialog's every way
+out: OK and Cancel never send a `closeEvent`. A dialog built per opening is
+`deleteLater()`'d after `exec()`, or it lives as long as its parent.
+
+**Testing a thread and the event loop.** Most tests never pump the shared
+`QApplication`, so earlier tests' leftovers sit unprocessed: Qt objects in
+collectable cycles, and `deleteLater()`'d widgets that crash when deleted
+(see #516). Python's collector runs on whichever thread crosses its
+allocation threshold, and a worker thread (a test's HTTP server, an executor)
+that collects those Qt objects destroys them off their thread, leaving their
+timers to fire into freed memory at the next `processEvents()`. So the suite
+turns automatic collection off and collects on the main thread after each test
+(`tests/conftest.py`, `tests/main_thread_gc.py`); never re-enable it in a test.
+A test that pumps the event loop flushes deferred deletes only for its own
+objects (`sendPostedEvents(obj, QEvent.Type.DeferredDelete)`, never `None`).
 
 #### Audit Trail Components
 

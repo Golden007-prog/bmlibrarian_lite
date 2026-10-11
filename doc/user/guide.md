@@ -442,7 +442,11 @@ Quality badges appear on document cards showing the study type with color coding
 Access Settings from the main window to configure:
 
 - **LLM Provider**: Choose between Anthropic Claude and Ollama
-- **Model Selection**: Select from available models
+- **Model Selection**: Select from available models. Opening Settings asks each
+  enabled provider for its models, waiting a few seconds. If a provider does
+  not answer, its status line says so ("Could not load the model list…"), and
+  the lists offer built-in models, which may not match what the provider has
+  now. Press **Test Connection** to ask again.
 - **Temperature**: Control response creativity (lower = more focused)
 - **Email**: Set for PubMed and Unpaywall API access
 - **API Keys**: Configure provider credentials

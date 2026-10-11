@@ -34,6 +34,7 @@ agents/               # SearchAgent, ScoringAgent, CitationAgent, ReportingAgent
 benchmarking/         # Model comparison, statistics (relevance + quality)
 gui/                  # PySide6: SystematicReview, ResearchQuestions, AuditTrail, Report, DocumentInterrogation tabs
                       #   transparency_badge, transparency_settings_dialog, quality_badge, quality_filter_panel
+                      #   thread_keeper (holds a thread its owner let go of until it ends)
 llm/                  # LLMClient (Anthropic/Ollama providers), token_tracker
 pubmed/               # PubMedSearchClient
 quality/              # QualityManager, study classification, evidence_summary, metadata_filter

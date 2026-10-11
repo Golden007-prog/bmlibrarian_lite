@@ -23,6 +23,7 @@ Provides shared fixtures for testing:
 - Sample document metadata
 """
 
+import gc
 import importlib.util
 import json
 import tempfile
@@ -33,6 +34,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from bmlibrarian_lite.rate_limit import reset_limiters
+from tests.main_thread_gc import collect_if_due
 
 
 @pytest.fixture
@@ -284,3 +286,45 @@ def _no_live_model_fetch(
         settings_dialog.ProviderConnectionTestWorker,
     ):
         monkeypatch.setattr(worker, "start", lambda self, *args, **kwargs: None)
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Turn automatic garbage collection off for the session.
+
+    Python's collector runs on whichever thread crosses its allocation
+    threshold: a test's HTTP server, executor or QThread included. Tests leave
+    Qt objects in collectable cycles, and a worker thread that collects them
+    destroys GUI objects off their thread; their timers stay registered, and
+    the next ``processEvents`` fires one into freed memory, a segfault only in
+    the full suite (#517). Collection runs on the main thread instead, after
+    each test (``pytest_runtest_teardown``).
+
+    Args:
+        config: The pytest configuration.
+    """
+    gc.disable()
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_teardown(
+    item: pytest.Item, nextitem: pytest.Item | None
+) -> Generator[None, None, None]:
+    """After a test and its fixtures are torn down, collect what is due, on this thread.
+
+    Args:
+        item: The test just run.
+        nextitem: The test that runs next, if any.
+    """
+    try:
+        return (yield)
+    finally:
+        collect_if_due()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Hand automatic garbage collection back once the session ends.
+
+    Args:
+        config: The pytest configuration.
+    """
+    gc.enable()

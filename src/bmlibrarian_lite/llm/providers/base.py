@@ -24,8 +24,54 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional
 
+from ...constants import PROVIDER_BUSY_STATUS_CODES
+
 if TYPE_CHECKING:
     from ..data_types import LLMMessage, LLMResponse
+
+
+def describe_request_failure(error: BaseException) -> str:
+    """Plain words for why a request to a provider failed.
+
+    A timeout and a busy provider are told as such, with what to do; anything
+    else keeps the client's own message, which names the cause.
+
+    Args:
+        error: What the provider's client raised.
+
+    Returns:
+        A message for the reader.
+    """
+    if _is_timeout(error):
+        return "No answer in time. Check the server or the network, then try again."
+    status = getattr(error, "status_code", None)
+    if status in PROVIDER_BUSY_STATUS_CODES:
+        return f"The provider is busy (HTTP {status}). Try again shortly."
+    return str(error) or type(error).__name__
+
+
+def _is_timeout(error: BaseException) -> bool:
+    """Whether ``error`` is a request that timed out, from any provider's client.
+
+    Args:
+        error: What the provider's client raised.
+
+    Returns:
+        True for a timeout.
+    """
+    if isinstance(error, TimeoutError):
+        return True
+    try:
+        import httpx
+    except ImportError:
+        return False
+    if isinstance(error, httpx.TimeoutException):
+        return True
+    try:
+        import anthropic
+    except ImportError:
+        return False
+    return isinstance(error, anthropic.APITimeoutError)
 
 
 @dataclass
@@ -207,6 +253,20 @@ class BaseProvider(ABC):
                 caller cannot tell from a real answer.
         """
         pass
+
+    def list_model_ids(self) -> list[str]:
+        """The IDs of the models the provider offers, in as few requests as it allows.
+
+        A provider whose ``list_models`` asks once per model overrides this to
+        ask once.
+
+        Returns:
+            Model IDs. Empty only when the provider answered and offers no models.
+
+        Raises:
+            Exception: If the list cannot be retrieved, as ``list_models``.
+        """
+        return [m.model_id for m in self.list_models()]
 
     @abstractmethod
     def test_connection(self) -> tuple[bool, str]:
