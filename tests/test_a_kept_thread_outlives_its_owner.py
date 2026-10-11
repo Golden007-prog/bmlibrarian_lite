@@ -12,6 +12,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Generator
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -19,9 +20,6 @@ import pytest
 if TYPE_CHECKING:
     from PySide6.QtCore import QThread
     from PySide6.QtWidgets import QApplication
-
-# Each test runs QThreads and pumps the event loop (see the fixture in conftest).
-pytestmark = pytest.mark.usefixtures("gc_on_the_gui_thread_only")
 
 # How long a test lets the event loop run before it gives up on a thread.
 _SETTLE_SECONDS = 5.0
@@ -241,7 +239,9 @@ def test_the_quit_wait_shares_one_deadline_and_never_waits_negative(
     from bmlibrarian_lite.gui import thread_keeper
 
     clock = iter([0.0, 0.0, 0.6, 1.5])
-    monkeypatch.setattr(thread_keeper.time, "monotonic", lambda: next(clock))
+    # The keeper's clock only: patching time.monotonic itself would hand this
+    # clock to every other thread that reads the time meanwhile.
+    monkeypatch.setattr(thread_keeper, "time", SimpleNamespace(monotonic=lambda: next(clock)))
     waits: list[int] = []
     monkeypatch.setattr(thread_keeper, "_kept", {_StuckThread(waits) for _ in range(3)})
 

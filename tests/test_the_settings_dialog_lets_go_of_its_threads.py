@@ -25,9 +25,6 @@ if TYPE_CHECKING:
 
     from bmlibrarian_lite.gui.settings_dialog import SettingsDialog
 
-# Each test runs QThreads and pumps the event loop (see the fixture in conftest).
-pytestmark = pytest.mark.usefixtures("gc_on_the_gui_thread_only")
-
 # How long a test lets the event loop run before it gives up on a thread.
 _SETTLE_SECONDS = 5.0
 

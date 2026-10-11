@@ -46,7 +46,12 @@ the embedded browser):
   running at exit; master aborts quitting on a hung Ollama, the branch exits 0.
 - **The first tests to pump the shared `QApplication`** hit pre-existing
   hazards (guide.md, "Testing a thread and the event loop"): GC on a worker
-  thread leaves dangling timers (**#517**; `gc_on_the_gui_thread_only`), a
+  thread leaves dangling timers (**#517**). A per-test fixture was not enough:
+  CI segfaulted (PySide6 6.11.2, Linux; reproduced in Docker, 3 of 4 amd64
+  runs, 1 of 3 arm64) when a test's HTTP server thread collected leaked Qt
+  objects before the pumping test began. The whole suite now collects on the
+  main thread only (`tests/main_thread_gc.py`): 12 of 12 full container runs
+  pass (6 amd64, 6 arm64). A
   global deferred-delete flush crashes (recorded on #516), and something an
   earlier test leaks takes Escape from the shortcut map, so the Escape test
   calls `keyPressEvent` directly.

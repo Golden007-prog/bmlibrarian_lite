@@ -644,11 +644,14 @@ out: OK and Cancel never send a `closeEvent`. A dialog built per opening is
 **Testing a thread and the event loop.** Most tests never pump the shared
 `QApplication`, so earlier tests' leftovers sit unprocessed: Qt objects in
 collectable cycles, and `deleteLater()`'d widgets that crash when deleted
-(see #516). A test that runs a `QThread` and calls `processEvents()` uses the
-`gc_on_the_gui_thread_only` fixture (a collection on a worker thread destroys
-GUI objects off their thread and leaves their timers to fire into freed
-memory), and flushes deferred deletes only for its own objects
-(`sendPostedEvents(obj, QEvent.Type.DeferredDelete)`, never `None`).
+(see #516). Python's collector runs on whichever thread crosses its
+allocation threshold, and a worker thread (a test's HTTP server, an executor)
+that collects those Qt objects destroys them off their thread, leaving their
+timers to fire into freed memory at the next `processEvents()`. So the suite
+turns automatic collection off and collects on the main thread after each test
+(`tests/conftest.py`, `tests/main_thread_gc.py`); never re-enable it in a test.
+A test that pumps the event loop flushes deferred deletes only for its own
+objects (`sendPostedEvents(obj, QEvent.Type.DeferredDelete)`, never `None`).
 
 #### Audit Trail Components
 
