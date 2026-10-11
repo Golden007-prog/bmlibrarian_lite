@@ -18,35 +18,38 @@ the embedded browser):
   `fulltext_parity/elsevier_article.json` and all three platforms from the
   rows; the same rows settle **#508** (does a bad token answer 401; may the
   key's explanation keep "open-access articles anywhere").
-- **Then on-network acceptance**: the same probe with `--label on-network`,
-  and a desktop fetch of a subscribed `10.1016/` article.
+- **Then on-network**: the same probe `--label on-network`, and a desktop
+  fetch of a subscribed `10.1016/` article.
 - **C1's CORE replay**: the CORE key in `config.json`
   (`discovery.core_api_key`), then `python scripts/core_acceptance_replay.py
   --out tmp/core_acceptance.jsonl`; the bar is ≥ 14 of the spike's 149
   not-open-access rows; record the counts in the spikes README and the
   contract.
 
-**CI was red after #507** (its own pytest check and master's), fixed on
-`fix/settings-dialog-test-threads` (PR #515):
-- **PySide6 6.12.0 segfaults at exit** destroying a widget still alive then
-  (a parentless widget kept alive by a `self`-capturing lambda on its own
-  button). CI resolves the newest deps and got 6.12.0; `uv.lock` pins 6.10.1,
-  so local runs stayed green. **Capped `PySide6<6.12`**; #516 holds the
-  minimal repro, the upstream report still owed, and when to lift the cap.
-- **Test dialogs no longer start provider threads**: each `SettingsDialog`
-  asked Anthropic and Ollama live, and its threads outlived the test. The
-  autouse `_no_live_model_fetch` fixture starts none (opt out:
-  `real_model_fetch`), pinned by `tests/test_a_test_dialog_starts_no_thread.py`.
-- **Check master's CI before a slice**; a green local run proves nothing
-  about CI's newer deps (reproduce with `uv pip install -e ".[dev]"`).
-- Lodged: #514 (the app's dialog waits for its threads only on the
-  title-bar close, and every opening leaks a dialog), #516.
+**Settings dialog lifecycle (#514)**, Python, PR open on `fix/settings-dialog-lifecycle-514`.
+- Every way out of `SettingsDialog` goes through `done()` (OK and Cancel send
+  no `closeEvent`). It disconnects the provider threads and hands any still
+  running to **`gui/thread_keeper.py`**, which holds a thread until `finished`,
+  then deletes it, and at quit waits up to `KEPT_THREAD_EXIT_WAIT_MS` (12 s).
+  `_show_settings` calls `deleteLater()` on each dialog. The probes are bounded:
+  `PROVIDER_PROBE_TIMEOUT_SECONDS` (10 s), no Anthropic retries; the providers
+  take `request_timeout_seconds` (and `max_retries` on Anthropic).
+- **Measured:** a dropped running `QThread` aborts (exit 134), as does one
+  running at exit; master aborts quitting on a hung Ollama, the branch exits 0.
+- **The first tests to pump the shared `QApplication`** hit two pre-existing
+  hazards (guide.md, "Testing a thread and the event loop"): GC on a worker
+  thread leaves dangling timers (**#517**; `gc_on_the_gui_thread_only`), and a
+  global deferred-delete flush crashes (on #516) — flush only your own objects.
+- Accepted: Ollama's `list_models` asks `show()` per model, so a server that
+  stalls after the list can outlast the quit wait.
 
 ## Recently landed (context)
 
 Compressed once merged: the rules that still bind. Git history and the
 `doc/cross_platform/` READMEs carry the rest.
 
+- **PySide6 capped `<6.12`** (PR #515, #516): CI resolves the newest deps,
+  `uv.lock` doesn't; **check master's CI before a slice**.
 - **Machine channels, stage C2: Elsevier's article API** (all three; PR
   #507). Contract "Elsevier's Article API" + `elsevier_article.json`.
   **A first-page PDF is never served**: `X-ELS-Status: WARNING …` on a 200
@@ -82,15 +85,12 @@ Compressed once merged: the rules that still bind. Git history and the
   re-fetch**). **Decided (maintainer):** machine channels first, then a real
   embedded browser; no stealth clients. **Absent only for a listing naming no
   version or a record with no `xml_url`.** A listing 404 is unreachable.
-- **Unpaywall, compressed** (PRs #465–#482; rules in `fulltext_retrieval.md`).
-  An Unpaywall PDF not obtained is refused, never a link. A body that is not
-  `%PDF` is `malformed_response`. Landing pages are read for `citation_pdf_url`
-  (2 MiB cap). The apps store an **`OpenAccessShortfall`** in Python's
-  sentence, and there is **no absence while one is set**. Room migrations
-  register from `AppDatabase.ALL_MIGRATIONS`.
+- **Unpaywall** (PRs #465–#482; `fulltext_retrieval.md`): a PDF not obtained
+  is refused, never a link; non-`%PDF` is `malformed_response`; **no absence
+  while an `OpenAccessShortfall` is set**; Room migrations register from
+  `AppDatabase.ALL_MIGRATIONS`.
 - **iOS/macOS workflow** (PRs #458–#469): one stop path, `stopWork(_:)`;
-  **`session.errorMessage` means a failure and nothing else** (a stop never
-  writes it; per-document misses are notices).
+  **`session.errorMessage` means a failure and nothing else**.
 - **Europe PMC fetches, compressed** (PRs #433–#452). A typed XML fetch on all
   three: served, absent (404) or unreachable. **Preprints are fetched by their
   `PPR` ID.** A chain Europe PMC did not settle is **not** "no full text".
@@ -212,7 +212,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 - **C2's probe and acceptance, and C1's replay** (maintainer), then the **embedded browser and
   review queue** with the `challenged` kind (replaces **#483**); **#481**
   follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
-  **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#514** (settings-dialog lifecycle), **#516** (PySide6 cap); **#467**, **#468** / **#470**, **#476**.
+  **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted
 

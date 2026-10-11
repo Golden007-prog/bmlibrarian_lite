@@ -125,6 +125,7 @@ bmlibrarian_lite/
 │   │   ├── benchmark_dialog.py
 │   │   ├── quality_benchmark_dialog.py
 │   │   ├── chat_widgets.py
+│   │   ├── thread_keeper.py   # Holds a thread its owner let go of until it ends
 │   │   └── workers.py
 │   ├── llm/                 # LLM client abstraction
 │   │   ├── client.py
@@ -622,6 +623,28 @@ class WorkerThread(QThread):
         except Exception as e:
             self.error.emit(str(e))
 ```
+
+**Never drop a running thread.** Dropping the last reference to a running
+`QThread` destroys it, and Qt aborts the process ("QThread: Destroyed while
+thread is still running"); so does a thread still running at exit. An owner
+that must not wait for its thread (a dialog the reader closed while a provider
+is still answering) disconnects the thread's signals from itself and hands it
+to `thread_keeper.keep_until_finished(thread)`. The keeper holds it until
+`finished`, then deletes it, and at quit waits up to `KEPT_THREAD_EXIT_WAIT_MS`
+for what it still holds; a thread it waits on must itself be bounded (the
+settings dialog's probes use `PROVIDER_PROBE_TIMEOUT_SECONDS`, no retries).
+Override `done()`, not just `closeEvent()`, to act on a dialog's every way
+out: OK and Cancel never send a `closeEvent`. A dialog built per opening is
+`deleteLater()`'d after `exec()`, or it lives as long as its parent.
+
+**Testing a thread and the event loop.** No test before #514 pumped the shared
+`QApplication`, so earlier tests' leftovers sit unprocessed: Qt objects in
+collectable cycles, and `deleteLater()`'d widgets that crash when deleted
+(#516). A test that runs a `QThread` and calls `processEvents()` uses the
+`gc_on_the_gui_thread_only` fixture (a collection on a worker thread destroys
+GUI objects off their thread and leaves their timers to fire into freed
+memory), and flushes deferred deletes only for its own objects
+(`sendPostedEvents(obj, QEvent.Type.DeferredDelete)`, never `None`).
 
 #### Audit Trail Components
 

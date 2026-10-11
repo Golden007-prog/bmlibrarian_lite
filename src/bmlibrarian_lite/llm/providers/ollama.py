@@ -57,6 +57,7 @@ class OllamaProvider(BaseProvider):
         self,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        request_timeout_seconds: float | None = None,
         **kwargs: object,
     ) -> None:
         """Initialize the Ollama provider.
@@ -64,6 +65,8 @@ class OllamaProvider(BaseProvider):
         Args:
             api_key: Ignored (Ollama doesn't require API key).
             base_url: Ollama server URL. Defaults to OLLAMA_HOST env var or localhost.
+            request_timeout_seconds: Per-request timeout; None keeps the
+                client's default, which never times out.
             **kwargs: Additional configuration options.
         """
         # Get base URL from environment if not provided
@@ -71,6 +74,7 @@ class OllamaProvider(BaseProvider):
             "OLLAMA_HOST", "http://localhost:11434"
         )
         super().__init__(api_key=None, base_url=resolved_base_url, **kwargs)
+        self._request_timeout_seconds = request_timeout_seconds
 
         # Cache for model metadata from ollama.show()
         self._model_info_cache: dict[str, ModelMetadata] = {}
@@ -118,7 +122,12 @@ class OllamaProvider(BaseProvider):
             try:
                 import ollama
 
-                self._client = ollama.Client(host=self._base_url)
+                if self._request_timeout_seconds is None:
+                    self._client = ollama.Client(host=self._base_url)
+                else:
+                    self._client = ollama.Client(
+                        host=self._base_url, timeout=self._request_timeout_seconds
+                    )
             except ImportError:
                 raise ImportError(
                     "Ollama package not installed. Install with: pip install ollama"

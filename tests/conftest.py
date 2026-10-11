@@ -23,6 +23,7 @@ Provides shared fixtures for testing:
 - Sample document metadata
 """
 
+import gc
 import importlib.util
 import json
 import tempfile
@@ -284,3 +285,24 @@ def _no_live_model_fetch(
         settings_dialog.ProviderConnectionTestWorker,
     ):
         monkeypatch.setattr(worker, "start", lambda self, *args, **kwargs: None)
+
+
+@pytest.fixture
+def gc_on_the_gui_thread_only() -> Generator[None, None, None]:
+    """Keep Python's cyclic garbage collection off the test's worker threads.
+
+    The collector runs in whichever thread allocates when a threshold is
+    crossed. Earlier tests leave Qt objects in collectable cycles; a worker
+    thread that collects them destroys GUI-thread objects off their thread,
+    their timers are never unregistered, and a later ``processEvents`` fires
+    one into freed memory (a segfault, only in the full suite). A test that
+    runs a ``QThread`` and pumps the event loop uses this fixture: garbage is
+    collected on the GUI thread first, and none is collected while it runs.
+    """
+    gc.collect()
+    gc.disable()
+    try:
+        yield
+    finally:
+        gc.enable()
+        gc.collect()

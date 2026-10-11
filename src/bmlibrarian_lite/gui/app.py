@@ -299,7 +299,11 @@ class LiteMainWindow(QMainWindow):
     def _show_settings(self) -> None:
         """Show the settings dialog."""
         dialog = SettingsDialog(self.config, parent=self)
-        if dialog.exec():
+        saved = dialog.exec()
+        # The window is the dialog's parent, so without this every opening
+        # would live until the window does. Its threads are the keeper's now.
+        dialog.deleteLater()
+        if saved:
             # The dialog edits this configuration in place, and every tab
             # holds this same object, so the tabs read the new settings at
             # once. Rebinding it to a fresh load would leave the tabs on the

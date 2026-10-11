@@ -355,6 +355,16 @@ PUBMED_TIMEOUT_MS = 30000
 # How long a status bar message the reader must be able to read stays up
 STATUS_MESSAGE_TIMEOUT_MS = 5000
 
+# How long the settings dialog's model-list and Test Connection probes wait
+# for a provider, per request. A probe is not retried: the dialog falls back to
+# its built-in models, and the reader can press Test Connection again.
+PROVIDER_PROBE_TIMEOUT_SECONDS = 10.0
+
+# How long the application waits at quit for threads whose owner let go of them
+# while they ran (gui/thread_keeper.py). A thread still running at exit aborts
+# the process, so this outlasts one probe request.
+KEPT_THREAD_EXIT_WAIT_MS = 12000
+
 # =============================================================================
 # Scoring Settings
 # =============================================================================
