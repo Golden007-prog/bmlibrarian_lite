@@ -70,8 +70,10 @@ non-empty result means challenged.
 address:
 
 - `SERVICE_UNPAYWALL_PDF` (`unpaywall_pdf`),
-- `SERVICE_OPENALEX_PDF` (`openalex_pdf`),
-- `SERVICE_DOI_PUBLISHER`, when its failure carries the address it asked.
+- `SERVICE_OPENALEX_PDF` (`openalex_pdf`).
+
+The DOI download (`PDFSourceType.DOI_DIRECT`) records no unobtained copy and
+no address today, so it keeps its own reporting (and the OpenAthens offer).
 
 A challenge replaces the kind those answers get today (`http_status` for a
 401/403/429/503, `malformed_response` for a 200 that is not `%PDF`). **A 404
@@ -277,10 +279,14 @@ Each its own PR, Python first as the reference.
 
 | Stage | Adds | Platforms |
 |---|---|---|
-| **1** | `challenged`: `bot_walls.py`, the 64 KiB read, the kind and sentence, the contract and fixtures | Python |
-| **2** | The ports of the kind | Swift, Kotlin |
-| **3** | The queue table, the hidden service, rescue → re-analysis, the #483 removal, live acceptance | Python |
-| **4** | The review queue window and the interrogation tab's priority path | Python |
+| **1** | `challenged`: `bot_walls.py`, the 64 KiB read, the kind and sentence, the contract and fixtures, and the ports | Python, Swift, Kotlin |
+| **2** | The queue table, the hidden service, rescue → re-analysis, the #483 removal, live acceptance | Python |
+| **3** | The review queue window and the interrogation tab's priority path | Python |
+
+The kind and its ports are one PR (maintainer, 2026-10-12): the apps'
+contract tests decode every row of `open_access_unsettled_notice.json` and
+fail on an unknown kind, and CI runs all three platforms on every PR. The
+machine channels' stages landed the same way.
 
 ## Out of scope
 
