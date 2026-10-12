@@ -26,44 +26,38 @@ the embedded browser):
   not-open-access rows; record the counts in the spikes README and the
   contract.
 
-**Settings dialog lifecycle (#514)**, Python, PR #518 (`fix/settings-dialog-lifecycle-514`).
-- Every way out of `SettingsDialog` goes through `done()` (OK and Cancel send
-  no `closeEvent`). It disconnects the provider threads and hands any still
-  running to **`gui/thread_keeper.py`**, which holds a thread until `finished`,
-  then deletes it, and at quit waits up to `KEPT_THREAD_EXIT_WAIT_MS`.
-  `_show_settings` calls `deleteLater()` on each dialog.
-- **A result already sent is still delivered** after the disconnect: once
-  released, the dialog's handlers do nothing and it starts no thread
-  (`_workers_released`); a Test Connection verdict used to start an unkept
-  fetch and abort (review round, reproduced exit 134).
-- **The probes are one request each**: `Provider.list_model_ids` (Ollama asks
-  `list()` only, no `show()` per model; Anthropic asks one page of
-  `ANTHROPIC_MODELS_PAGE_LIMIT`), `PROVIDER_PROBE_TIMEOUT_SECONDS` to connect
-  and again to read (httpx times each phase, not the request), no retries. A
-  failed fetch now says so on the provider's status line; timeouts and busy
-  providers are worded by `describe_request_failure` (`llm/providers/base.py`).
-- **Measured:** a dropped running `QThread` aborts (exit 134), as does one
-  running at exit; master aborts quitting on a hung Ollama, the branch exits 0.
-- **The first tests to pump the shared `QApplication`** hit pre-existing
-  hazards (guide.md, "Testing a thread and the event loop"): GC on a worker
-  thread leaves dangling timers (**#517**). A per-test fixture was not enough:
-  CI segfaulted (PySide6 6.11.2, Linux; reproduced in Docker, 3 of 4 amd64
-  runs, 1 of 3 arm64) when a test's HTTP server thread collected leaked Qt
-  objects before the pumping test began. The whole suite now collects on the
-  main thread only (`tests/main_thread_gc.py`): 12 of 12 full container runs
-  pass (6 amd64, 6 arm64). A
-  global deferred-delete flush crashes (recorded on #516), and something an
-  earlier test leaks takes Escape from the shortcut map, so the Escape test
-  calls `keyPressEvent` directly.
-- Accepted: the host name lookup and an answer that trickles in without pause
-  are not bounded by the probe timeout; a thread outliving the quit wait is
-  logged as an error before the abort. Lodged: **#519** (a provider that does
-  not take the probe's arguments drops them silently).
+**Bot-walled PDFs: `challenged`, an embedded browser, a review queue** (#480
+sub-projects 2 and 3; replaces #483). Branch `feat/browser-rescue-480`.
+- **Spec (approved in conversation 2026-10-12, under review as written):**
+  `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`. Decisions:
+  auto then queue (a run never waits); a rescue re-analyses that document;
+  the kind on all three platforms, the browser desktop only; one recovery
+  path, a QtWebEngine service on the GUI thread driven by a SQLite queue
+  (no cross-thread broker, no helper process); no impersonation.
+- **Stages, one PR each:** 1 `challenged` in Python (`bot_walls.py`, 64 KiB
+  read of a non-PDF answer, contract + `challenge_detection.json`); 2 Swift +
+  Kotlin ports; 3 queue table, hidden service, rescue → re-analysis, #483
+  removal, live acceptance on the spike's 41 addresses; 4 review queue
+  window + interrogation priority path.
+- **Next:** the user reviews the written spec, then an implementation plan
+  (`superpowers:writing-plans`) for stage 1.
 
 ## Recently landed (context)
 
 Compressed once merged: the rules that still bind. Git history and the
 `doc/cross_platform/` READMEs carry the rest.
+
+- **Settings dialog lifecycle** (PR #518, #514). Every way out of
+  `SettingsDialog` goes through `done()`, which hands running threads to
+  `gui/thread_keeper.py` (kept until `finished`, waited on at quit up to
+  `KEPT_THREAD_EXIT_WAIT_MS`); a released dialog's handlers do nothing and
+  start no thread (**a queued signal still arrives after a disconnect**).
+  Provider probes are one request each, bounded per phase, no retries. **The
+  whole suite collects garbage on the main thread only**
+  (`tests/main_thread_gc.py`): GC on a worker thread leaves dangling Qt timers
+  (#517). Any test that pumps the shared `QApplication` inherits earlier
+  tests' backlog (guide.md, "Testing a thread and the event loop"). Lodged:
+  #519.
 
 - **PySide6 capped `<6.12`** (PR #515, #516): CI resolves the newest deps,
   `uv.lock` doesn't; **check master's CI before a slice**.
@@ -226,9 +220,8 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
-- **C2's probe and acceptance, and C1's replay** (maintainer), then the **embedded browser and
-  review queue** with the `challenged` kind (replaces **#483**); **#481**
-  follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+- **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
+  browser and review queue** is in flight (above); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted
