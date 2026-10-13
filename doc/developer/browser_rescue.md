@@ -16,10 +16,11 @@ the full text.
 
 ## Modules
 
-- `browser_rescue.py`: the rules, with no Qt and no SQLite. States, outcomes,
+- `browser_rescue.py`: the rules, with no Qt and no database access (it imports `sqlite3` only to
+  catch its errors). States, outcomes,
   verdicts (`page_verdict`, `download_verdict`), `next_state`, which failures
   are queued (`rescue_requests`, `queue_challenged_copies`), the pacing delay
-  (`rescue_delay_ms`) and `reanalyse_rescued`.
+  (`rescue_delay_ms`), `penalise_host_for_answer` and `reanalyse_rescued`.
 - `rescue_queue_store.py`: the queue's table. SQL only; `LiteStorage` opens the
   connection. `record_verdict` runs its own transaction, because the MCP server
   and the CLI write the same table from other processes.
@@ -28,7 +29,9 @@ the full text.
 - `gui/browser_rescue_service.py`: `BrowserRescueService`, the hidden pass. One
   visit at a time, driven by signals and timers; nothing waits on it.
 - `gui/web_engine.py`: `prepare_web_engine()`, QtWebEngine's start-up
-  requirement.
+  requirement. `gui/app.py` imports the service lazily (`start_browser_rescue`)
+  and guards the preparation (`prepare_browser_rescue`), so an app whose
+  QtWebEngine cannot load starts without the hidden pass, with a warning.
 
 ## States
 
@@ -39,6 +42,10 @@ pending --visit-->+--> gone         (404 or 410)
    ^              +--> too_large    (PDF over MAX_PDF_SIZE)
    |              +--> needs_person (still a challenge)
    +--transport---+
+   |
+   +--transport, attempts >= cap--> needs_person
+needs_person --visit, any outcome--> its answer's state
+needs_person --transport--> needs_person
 ```
 
 `dismissed` (the reader set it aside) and `superseded` (another address of the
@@ -51,6 +58,16 @@ renderer crash, a stalled or interrupted download, a PDF that arrived and could
 not be kept, a visit with no main-frame answer before `RESCUE_HIDDEN_TIMEOUT_MS`,
 and a load failure in Chromium's internal error domain other than ERR_ABORTED
 (-3, which a script-driven navigation produces).
+
+A page that answered with a status that says "not now" and shows no challenge
+marker (408, 425, 429, any 5xx) is transport too: a temporary server error must
+not settle an entry. A 401 or 403 with no marker is a `challenge` with no
+markers and waits for a person, since the HTTP client was already walled at that
+address. Markers win over the status; 404 and 410 stay `gone`; a 2xx or 3xx page
+with no marker and no PDF is `no_pdf`. A main-frame 429 or 503 also penalises
+the host's shared limiter (`limiter_for(host).penalise(retry_after)`, with the
+answer's `Retry-After`), except on loopback, so the rescue and the HTTP client
+back off together. The hidden page is muted.
 
 - **D2.** `too_large` is its own state: the PDF is real, the application just
   does not download that much.

@@ -68,6 +68,12 @@ def test_a_404_is_gone_at_once(harness: dict[str, Any]) -> None:
     assert result["seconds"] < TIMEOUT_SECONDS
 
 
+def test_a_temporarily_unavailable_page_learns_nothing(harness: dict[str, Any]) -> None:
+    """A 503 with no challenge marker is a transport failure, so the entry stays pending."""
+    result = _attempt(harness, "unavailable")
+    assert result["verdict"] == {"outcome": "transport", "http_status": 503, "markers": []}
+
+
 def test_an_abstract_page_has_no_pdf(harness: dict[str, Any]) -> None:
     """A plain HTML page is no PDF."""
     assert _attempt(harness, "abstract")["verdict"] == {"outcome": "no_pdf", "http_status": 200, "markers": []}

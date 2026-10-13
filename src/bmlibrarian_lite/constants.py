@@ -1244,7 +1244,10 @@ BROWSER_RESCUE_EXPLANATION = (
     "Some open-access PDFs sit behind a robot check that blocks the app's "
     "downloads. With this on, the app later opens each such PDF in a hidden "
     "built-in browser, saves it if it arrives, and re-checks that article's "
-    "transparency. Nothing is sent but the page request itself."
+    "transparency. The page opens as in any browser: it loads its own "
+    "resources and runs the publisher's scripts, which is how the robot "
+    "check is passed, and the publisher's cookies are kept in the app's own "
+    "browser folder. Your searches, documents and keys are never sent."
 )
 # The fields' placeholders when the value comes from the environment.
 ELSEVIER_API_KEY_FROM_ENVIRONMENT = (
@@ -1266,6 +1269,16 @@ PDF_MAGIC_BYTES = b"%PDF"
 # is doc/cross_platform/fulltext_parity/challenge_detection.json.
 CHALLENGE_BODY_PREFIX_BYTES = 64 * 1024
 CHALLENGE_GONE_STATUSES = frozenset({404, 410})
+# The statuses of a page that shows no challenge marker and says "not now"
+# rather than "no": a throttle, a server fault (UNANSWERED_HTTP_STATUSES) or
+# a request timeout (HTTP_UNSETTLED_CLIENT_STATUSES). The hidden browser's
+# visit learnt nothing, so its entry stays pending (#480, stage 2).
+RESCUE_UNANSWERED_PAGE_STATUSES = frozenset(
+    {*UNANSWERED_HTTP_STATUSES, *HTTP_UNSETTLED_CLIENT_STATUSES}
+)
+# The main-frame answers that penalise the host's shared limiter, as the
+# polite adapter does for a throttle (429) or a shedding server (503).
+RESCUE_PENALISING_STATUSES = frozenset({429, 503})
 CLOUDFLARE_REFUSAL_STATUSES = frozenset({403, 503})
 CLOUDFLARE_SERVER = "cloudflare"
 # The whitespace HTTP allows around a header's value (RFC 9110's OWS): a space
@@ -1404,3 +1417,6 @@ SERVICE_PDF_DOWNLOAD = "the PDF download"
 # The statuses that mean "this is yours only if you pay or log in". They are
 # a genuine paywall signal, unlike a 5xx, which is the server being broken.
 PAYWALL_HTTP_STATUSES = (401, 403)
+# The statuses of a page that shows no marker but refuses us: the HTTP client
+# was walled at this address already, so the entry waits for a person.
+RESCUE_REFUSED_PAGE_STATUSES = frozenset(PAYWALL_HTTP_STATUSES)

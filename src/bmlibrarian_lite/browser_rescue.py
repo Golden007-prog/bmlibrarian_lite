@@ -7,9 +7,10 @@
 A PDF that an open-access source names, and whose host answered our client
 with a bot wall's challenge (``RequestFailureKind.CHALLENGED``), is queued
 and fetched later by a real embedded web view
-(``gui/browser_rescue_service.py``). This module holds what that needs and
-imports neither Qt nor SQLite: which failures are queued, what one browser
-visit concluded, and how a queue entry moves between states.
+(``gui/browser_rescue_service.py``). This module holds what that needs. It
+imports no Qt and touches no database (``sqlite3`` is imported only to catch
+its errors): which failures are queued, what one browser visit concluded, and
+how a queue entry moves between states.
 ``rescue_queue_store`` only persists these decisions.
 """
 
@@ -34,14 +35,17 @@ from .constants import (
     MAX_RESCUE_ATTEMPTS,
     MS_PER_SECOND,
     PDF_MAGIC_BYTES,
+    RESCUE_PENALISING_STATUSES,
     RESCUE_PRIORITY_DEFAULT,
+    RESCUE_REFUSED_PAGE_STATUSES,
+    RESCUE_UNANSWERED_PAGE_STATUSES,
     SERVICE_OPENALEX_PDF,
     SERVICE_UNPAYWALL_PDF,
 )
 from .data_models import LookupRecord, RequestFailureKind
 from .exceptions import SQLiteError
 from .pdf_utils import generate_pdf_path
-from .polite_session import is_loopback_host
+from .polite_session import is_loopback_host, retry_after_from_headers
 from .rate_limit import limiter_for
 
 logger = logging.getLogger(__name__)
@@ -201,7 +205,12 @@ def page_verdict(status: int | None, headers: Mapping[str, str], html: str) -> R
     rules. Any other page goes through the challenge rules a download's
     answer goes through (``bot_walls.challenge_markers``), on its first
     ``CHALLENGE_BODY_PREFIX_BYTES`` as UTF-8: a bounded read of a lookup
-    page, not research content.
+    page, not research content. A page with markers is a challenge. One
+    without them, whose status says "not now" (408, 429, 5xx), learnt
+    nothing, so it is a transport failure and the entry stays pending; one
+    that refuses us (401, 403) waits for a person, as the HTTP client was
+    already walled at that address. Only an answered page that serves no PDF
+    is ``NO_PDF``.
 
     Args:
         status: The main frame's last HTTP status; ``None`` when none was seen.
@@ -209,8 +218,8 @@ def page_verdict(status: int | None, headers: Mapping[str, str], html: str) -> R
         html: The page as the browser holds it, serialised.
 
     Returns:
-        ``GONE``, ``CHALLENGE`` with the defences named, or ``NO_PDF``; each
-        with the status.
+        ``GONE``, ``CHALLENGE`` with the defences named (none for a bare
+        refusal), ``TRANSPORT`` or ``NO_PDF``; each with the status.
     """
     if status in CHALLENGE_GONE_STATUSES:
         return RescueVerdict(RescueOutcome.GONE, status)
@@ -218,7 +227,35 @@ def page_verdict(status: int | None, headers: Mapping[str, str], html: str) -> R
     markers = challenge_markers(_NO_HTTP_STATUS if status is None else status, headers, body)
     if markers:
         return RescueVerdict(RescueOutcome.CHALLENGE, status, markers)
+    if status in RESCUE_UNANSWERED_PAGE_STATUSES:
+        return RescueVerdict(RescueOutcome.TRANSPORT, status)
+    if status in RESCUE_REFUSED_PAGE_STATUSES:
+        return RescueVerdict(RescueOutcome.CHALLENGE, status, ())
     return RescueVerdict(RescueOutcome.NO_PDF, status)
+
+
+def penalise_host_for_answer(address: str, status: int | None, headers: Mapping[str, str]) -> bool:
+    """Slow the address's host for a throttling answer, as our requests do.
+
+    A main-frame 429 or 503 penalises the host's shared limiter with the
+    answer's ``Retry-After``, so the rescue and the HTTP client back off
+    together. Loopback is never paced.
+
+    Args:
+        address: The address visited.
+        status: The main frame's HTTP status.
+        headers: That answer's headers.
+
+    Returns:
+        Whether the limiter was penalised.
+    """
+    if status not in RESCUE_PENALISING_STATUSES:
+        return False
+    host = urlparse(address).hostname
+    if not host or is_loopback_host(host):
+        return False
+    limiter_for(host).penalise(retry_after_from_headers(headers))
+    return True
 
 
 def download_verdict(first_bytes: bytes) -> RescueVerdict:
@@ -485,7 +522,7 @@ def rescue_delay_ms(host: str) -> int:
 def reanalyse_rescued(
     entry: RescueEntry,
     stored_document: Callable[[str], object | None],
-    reanalyse: Callable[[str, str | None, str | None], None],
+    reanalyse: Callable[[str, str | None, str | None], bool],
 ) -> bool:
     """Re-analyse the document a rescued PDF belongs to, when storage holds it.
 
@@ -501,7 +538,7 @@ def reanalyse_rescued(
         reanalyse: Re-analyses ``(document_id, pmid, doi)``.
 
     Returns:
-        Whether a re-analysis was asked for.
+        Whether a re-analysis was actually queued.
     """
     request = entry.request
     if stored_document(request.document_id) is None:
@@ -510,5 +547,4 @@ def reanalyse_rescued(
             request.document_id,
         )
         return False
-    reanalyse(request.document_id, request.pmid, request.doi)
-    return True
+    return bool(reanalyse(request.document_id, request.pmid, request.doi))

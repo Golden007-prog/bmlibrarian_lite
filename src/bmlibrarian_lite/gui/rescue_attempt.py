@@ -26,7 +26,13 @@ from PySide6.QtWebEngineCore import (
 )
 from shiboken6 import Shiboken
 
-from ..browser_rescue import RescueOutcome, RescueVerdict, download_verdict, page_verdict
+from ..browser_rescue import (
+    RescueOutcome,
+    RescueVerdict,
+    download_verdict,
+    page_verdict,
+    penalise_host_for_answer,
+)
 from ..constants import (
     BROWSER_PROFILE_CACHE_DIRNAME,
     BROWSER_PROFILE_STORAGE_NAME,
@@ -169,6 +175,7 @@ class RescueAttempt(QObject):
         # Parentless, so it is deleted when this visit says, always before
         # the profile, as QtWebEngine requires (_release_page)
         page = QWebEnginePage(self._profile)
+        page.setAudioMuted(True)
         page.loadingChanged.connect(self._on_loading_changed)
         page.renderProcessTerminated.connect(self._on_render_process_terminated)
         self._page = page
@@ -237,6 +244,7 @@ class RescueAttempt(QObject):
             # Every main-frame answer reports its status here, a 200 included
             self._status = info.errorCode()
             self._headers = response_headers(info.responseHeaders())
+            penalise_host_for_answer(self._address, self._status, self._headers)
             if self._status in CHALLENGE_GONE_STATUSES:
                 self._finish(page_verdict(self._status, self._headers, ""))
             return

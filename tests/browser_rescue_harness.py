@@ -103,6 +103,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403, "text/html", WALL_PAGE, {"Server": "cloudflare"})
         elif route == "/gone":
             self._send(404, "text/html", b"<html><title>Not found</title>gone</html>")
+        elif route == "/unavailable":
+            self._send(
+                503, "text/html",
+                b"<html><title>Unavailable</title><p>This page is temporarily unavailable.</p></html>",
+                {"Server": "nginx"},
+            )
         elif route == "/abstract":
             self._send(200, "text/html", b"<html><title>Abstract</title><p>An abstract.</p></html>")
         elif route == "/fakepdf":
@@ -162,6 +168,7 @@ ATTEMPTS = {
     "walled": "/walled",
     "gone": "/gone",
     "abstract": "/abstract",
+    "unavailable": "/unavailable",
     "fakepdf": "/fakepdf",
     "oversize": "/oversize",
     "oversize_unannounced": "/oversize-unannounced",
