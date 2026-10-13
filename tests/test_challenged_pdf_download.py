@@ -52,12 +52,14 @@ class _Response:
         self.url = URL
         self._chunks = chunks
         self._break_after = break_after
+        self.chunks_read = 0
 
     def iter_content(self, chunk_size: int = 8192) -> Iterator[bytes]:
         """Yield the chunks, breaking where scripted."""
         for index, chunk in enumerate(self._chunks):
             if self._break_after is not None and index >= self._break_after:
                 raise requests.exceptions.ChunkedEncodingError("broken")
+            self.chunks_read += 1
             yield chunk
 
     def raise_for_status(self) -> None:
@@ -150,6 +152,27 @@ def test_control_a_404_with_challenge_markup_is_gone(discovery: PDFDiscoverer, t
     """Gone is gone, whatever the page says."""
     result = _download(discovery, tmp_path, _Response(404, {"Server": "cloudflare"}, [b"Just a moment..."]))
     assert result.failure == RequestFailure(RequestFailureKind.HTTP_STATUS, 404)
+
+
+def test_a_gone_answer_is_not_read_past_the_sniff(discovery: PDFDiscoverer, tmp_path: Path) -> None:
+    """A 404 is discarded whatever its page says, so the page is not read."""
+    response = _Response(404, {"Server": "cloudflare"}, [b"<html>  ", b"Just a moment...", b"more"])
+    result = _download(discovery, tmp_path, response)
+    assert result.failure == RequestFailure(RequestFailureKind.HTTP_STATUS, 404)
+    assert response.chunks_read == 1
+
+
+def test_control_a_200_pdf_labelled_page_without_markers_is_malformed(
+    discovery: PDFDiscoverer, tmp_path: Path
+) -> None:
+    """A sign-in page labelled application/pdf: no wall, no PDF, nothing saved."""
+    result = _download(
+        discovery,
+        tmp_path,
+        _Response(200, {"Content-Type": "application/pdf"}, [b"<html><title>Sign in</title>"]),
+    )
+    assert result.failure == RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
+    assert not (tmp_path / "out.pdf").exists()
 
 
 def test_control_a_non_pdf_without_markers_is_malformed(discovery: PDFDiscoverer, tmp_path: Path) -> None:

@@ -54,6 +54,7 @@ from urllib3.util.retry import Retry
 
 from .constants import (
     CHALLENGE_BODY_PREFIX_BYTES,
+    CHALLENGE_GONE_STATUSES,
     DOI_RESOLVER_ABSENCE_STATUSES,
     DOI_RESOLVER_HOSTS,
     FALLBACK_CONTACT_EMAIL,
@@ -2079,12 +2080,15 @@ class PDFDiscoverer:
 
             # An open-access copy whose answer is not a PDF is read further,
             # to recognise a bot wall's challenge page: that is no answer
-            # about the article, and is recorded as its own kind (#480). The
+            # about the article, and is recorded as its own kind (#480). A
+            # gone answer (404, 410) is discarded whatever its page says, so
+            # its page is not read. The
             # longer read is its own copy: the paywall sniff and the write
             # keep ``body_prefix``, so only the recorded kind can change.
             challenge = None
             if (
                 source.source_type in _UNOBTAINED_PDF_SERVICE
+                and response.status_code not in CHALLENGE_GONE_STATUSES
                 and not self._looks_like_pdf(body_prefix)
             ):
                 page = read_more_of_prefix(
