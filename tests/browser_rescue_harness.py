@@ -42,14 +42,25 @@ POLL_MS = 500
 SCENARIO_LIMIT_SECONDS = 30
 STALL_HOLD_SECONDS = 8
 SLOW_ANSWER_SECONDS = 5
-TRICKLE_CHUNKS = 6
+TRICKLE_CHUNKS = 10
 TRICKLE_CHUNK_BYTES = 100
 TRICKLE_PAUSE_SECONDS = 0.4
-# Starts a slow download, then replaces the page with a 404 while it arrives
+# How long after /trickle sent its headers the server calls the download begun,
+# which gives QtWebEngine time to turn the response into a download
+DOWNLOAD_SETTLE_SECONDS = 0.5
+DOWNLOAD_POLL_MS = 100
+# Starts a slow download, then replaces the page with a 404 while it arrives.
+# The page waits for the server to say the download has begun rather than for a
+# fixed time: on a slow runner a wall-clock timer fired before the download had
+# started, so the second navigation aborted it and "gone" was the right verdict.
 REPLACING_PAGE = (
     b"<html><title>Replacing</title><script>"
     b"setTimeout(function(){location='/trickle'},100);"
-    b"setTimeout(function(){location='/gone'},800);"
+    b"function poll(){fetch('/trickle-started').then(function(r){return r.text()})"
+    b".then(function(t){if(t==='yes'){location='/gone'}else{setTimeout(poll,"
+    + str(DOWNLOAD_POLL_MS).encode()
+    + b")}})}"
+    b"setTimeout(poll,200);"
     b"</script></html>"
 )
 PDF_BODY = b"%PDF-1.4\n" + b"0" * 500
@@ -69,6 +80,8 @@ class Handler(BaseHTTPRequestHandler):
     """The loopback publisher: one route per scenario."""
 
     visits: list[str] = []
+    # When /trickle's headers went out (time.monotonic()); None before any
+    trickle_headers_sent: float | None = None
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
         """Keep the harness's output to its JSON line."""
@@ -130,11 +143,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html", b"<html><title>Late</title><p>Late.</p></html>")
         elif route == "/replacing":
             self._send(200, "text/html", REPLACING_PAGE)
+        elif route == "/trickle-started":
+            sent = Handler.trickle_headers_sent
+            begun = sent is not None and time.monotonic() - sent >= DOWNLOAD_SETTLE_SECONDS
+            self._send(200, "text/plain", b"yes" if begun else b"no")
         elif route == "/trickle":
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
             self.send_header("Content-Length", str(len(b"%PDF-1.4\n") + TRICKLE_CHUNKS * TRICKLE_CHUNK_BYTES))
             self.end_headers()
+            Handler.trickle_headers_sent = time.monotonic()
             self.wfile.write(b"%PDF-1.4\n")
             for _ in range(TRICKLE_CHUNKS):
                 self.wfile.flush()
@@ -187,6 +205,7 @@ def attempt_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
     addresses = {name: base + path for name, path in ATTEMPTS.items()}
     addresses["refused"] = f"http://127.0.0.1:{closed_port()}/x.pdf"
     for name, address in addresses.items():
+        Handler.trickle_headers_sent = None
         out = root / "attempts" / name
         out.mkdir(parents=True)
         pdf_path = out / "article.pdf"
