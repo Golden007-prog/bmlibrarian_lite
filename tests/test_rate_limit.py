@@ -609,3 +609,24 @@ class TestTheRegistryKeyIsNormalised:
 
         assert limiter_for("WWW.EBI.AC.UK") is first
         assert limiter_for("www.ebi.ac.uk.") is first
+
+
+def test_claim_takes_the_next_slot_without_sleeping() -> None:
+    """The browser rescue schedules its visit for the slot (#480, stage 2)."""
+    now = [100.0]
+    slept: list[float] = []
+    limiter = RateLimiter(HostPolicy(1.0), clock=lambda: now[0], sleep=slept.append)
+    assert limiter.claim() == 0.0
+    assert limiter.claim() == pytest.approx(1.0)
+    assert limiter.claim() == pytest.approx(2.0)
+    assert slept == []
+
+
+def test_a_claim_counts_against_the_budget_acquire_shares() -> None:
+    """A claimed slot is spent for ``acquire`` too (#480, stage 2)."""
+    now = [100.0]
+    slept: list[float] = []
+    limiter = RateLimiter(HostPolicy(1.0), clock=lambda: now[0], sleep=slept.append)
+    limiter.claim()
+    limiter.acquire()
+    assert slept == [pytest.approx(1.0)]

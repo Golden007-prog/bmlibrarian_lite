@@ -276,3 +276,30 @@ def test_an_entry_carries_its_request() -> None:
     request = rescue_requests(SUBJECT, _record(_challenged()))[0]
     entry = RescueEntry(1, request, RescueState.PENDING, 0, None, 0, "t", "t")
     assert entry.request.address == ADDRESS
+
+
+def test_a_loopback_visit_is_never_paced() -> None:
+    """A visit to this machine is not somebody else's service (#480, stage 2)."""
+    from bmlibrarian_lite.browser_rescue import rescue_delay_ms
+
+    assert rescue_delay_ms("127.0.0.1") == 0
+    assert rescue_delay_ms("localhost") == 0
+
+
+def test_a_visit_takes_its_hosts_shared_slot(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The visit claims its host's slot from the shared limiter (#480, stage 2)."""
+    from bmlibrarian_lite import browser_rescue
+
+    claimed: list[str] = []
+
+    class _Limiter:
+        def claim(self) -> float:
+            return 1.2345
+
+    def _limiter_for(host: str) -> _Limiter:
+        claimed.append(host)
+        return _Limiter()
+
+    monkeypatch.setattr(browser_rescue, "limiter_for", _limiter_for)
+    assert browser_rescue.rescue_delay_ms("pubs.rsc.org") == 1235
+    assert claimed == ["pubs.rsc.org"]

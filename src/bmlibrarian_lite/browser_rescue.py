@@ -16,6 +16,7 @@ visit concluded, and how a queue entry moves between states.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from .constants import (
     HTTP_STATUS_CODE_MAX,
     HTTP_STATUS_CODE_MIN,
     MAX_RESCUE_ATTEMPTS,
+    MS_PER_SECOND,
     PDF_MAGIC_BYTES,
     RESCUE_PRIORITY_DEFAULT,
     SERVICE_OPENALEX_PDF,
@@ -39,6 +41,8 @@ from .constants import (
 from .data_models import LookupRecord, RequestFailureKind
 from .exceptions import SQLiteError
 from .pdf_utils import generate_pdf_path
+from .polite_session import is_loopback_host
+from .rate_limit import limiter_for
 
 logger = logging.getLogger(__name__)
 
@@ -456,3 +460,23 @@ def queue_challenged_copies(
             subject.document_id,
         )
     return changed
+
+
+def rescue_delay_ms(host: str) -> int:
+    """How long a visit to ``host`` waits for its pacing slot, claimed now.
+
+    The browser reaches the publisher hosts our requests reach, so it takes
+    its slot from the same per-host limiter
+    (``doc/cross_platform/polite_request_pacing.md``). The slot is claimed
+    without sleeping; the service schedules the visit for then. Loopback is
+    never paced.
+
+    Args:
+        host: The address's host.
+
+    Returns:
+        Milliseconds to wait, rounded up.
+    """
+    if is_loopback_host(host):
+        return 0
+    return math.ceil(limiter_for(host).claim() * MS_PER_SECOND)
