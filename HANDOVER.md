@@ -36,34 +36,45 @@ sub-projects 2 and 3; replaces #483).
   (no cross-thread broker, no helper process); no impersonation.
 - **Stage 1 landed** (PR #521, merged 2026-10-13): `challenged` on Python,
   Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
-  `challenge_detection.json`, contract "A challenged PDF (#480)").
-- **Stage 2 (Python), planning:** branch `feat/browser-rescue-stage2-480`.
-  Plan `docs/superpowers/plans/2026-10-13-browser-rescue-stage-2.md` awaits
-  the user's review before implementation: queue table, hidden QtWebEngine
-  service, rescue -> re-analysis, #483 removal, live acceptance. Stage 3:
-  the review queue window + interrogation priority path.
-- **Carried from stage 1's review into stage 2** (the plan's decision D1
-  settles it): a challenged 401/403 on an
-  open-access PDF still takes the paywall branch (`is_paywall=True`), and so
-  does a challenged `text/html` 200 at an address the paywall sniff matches
-  ("access", "login", "pay" …), so the reader is first told "A source refused
-  access…" and the interrogation tab may offer OpenAthens. Which copies reach
-  #483's fallback therefore turns on a URL substring, not on the kind; decide
-  this when the queue takes those copies. With an address the reader's
-  sentence is the tried-sources statement ("… (the host asked for a robot
-  check)"), not "could not be asked". Lodged: **#520** (the survey keeps its
-  own Cloudflare rule), **#522** (BioMedLit: a broken-off challenge page is a
-  transport failure), **#523** (iOS tells a challenged copy "Try again later.").
-- **Detection rules, from the second review** (all in
-  `challenge_detection.json`): header values are never searched, only the
-  `header_markers` names (`cf-mitigated`, `x-amzn-waf-action`). Cookies, a
-  CDN's `Server` value and a CSP naming a captcha come with ordinary answers.
-  Akamai is recognised by `errors&#46;edgesuite&#46;net`, as its live refusal
-  escapes it; "you don't have permission to access" is Apache's stock 403 too.
-  Cloudflare is recognised by `_cf_chl_opt`; `challenge-platform` also names
-  the bot-management script on ordinary pages, and the survey's four
-  "cloudflare" 200s were such pages. Change a needle only against live pages
-  and the survey, never to fit one case.
+  `challenge_detection.json`, contract "A challenged PDF (#480)"). Lodged
+  from it: #520, #522, #523.
+- **Stage 2 (Python) in review:** branch `feat/browser-rescue-stage2-480`
+  (PR named in the commit after this one). The queue
+  (`browser_rescue.py`, `rescue_queue_store.py`), the hidden QtWebEngine
+  pass (`gui/rescue_attempt.py`, `gui/browser_rescue_service.py`), rescue →
+  re-analysis, the setting, the #483 removal. Developer doc
+  `doc/developer/browser_rescue.md`. Live acceptance (spikes README §4):
+  PMC 12/12, other walls 12/14 (spike 5/14), ScienceDirect 10/10
+  `needs_person`, controls 5/5 `no_pdf`. **Check the PR's CI run**: the
+  QtWebEngine apt libraries, `QTWEBENGINE_DISABLE_SANDBOX` and the engine
+  harness have only run locally on PySide6 6.10.1. The maintainer should
+  launch and quit the real app once (a scripted 8 s smoke run passed).
+- **Next, stage 3 (Python):** the review queue window, its status-bar
+  indicator, and the interrogation tab's priority path (spec section 4).
+  Write its plan first; the user reviews it. Carry in from stage 2:
+  `RescueAttempt.accept_download` must check `request.page()` is its own page
+  once a shown view shares the profile; test `needs_person → rescued`;
+  derive `rescue_queue_store._OPEN` from `OPEN_RESCUE_STATES` when touching
+  states; the setting's text says searches, documents and keys are never
+  sent but not that the visit tells the publisher which article was asked
+  for (consider a clause). Lodged from stage 2: **#524** (a `no_pdf`/`gone`
+  verdict keeps the stored "could not be asked" sentence), **#525** (no
+  watchdog for the hidden pass), **#526** (a rescue during that document's
+  analysis is not re-analysed), **#527** (frozen bundle and QtWebEngine),
+  **#528** (two instances, no lease).
+- **Stage 2's rules that bind:** a challenged copy is never a paywall (D1).
+  A visit that learnt nothing (no answer, a network error, 408/429/5xx with
+  no marker) is `transport`: the entry stays pending, retried no sooner than
+  15 min, `needs_person` after 3; a marker-less 401/403 waits for a person.
+  A rescued PDF lands at `generate_pdf_path({"doi": doi})`. QtWebEngine is
+  prepared before any `QApplication` (`gui/web_engine.py`) and is optional at
+  start-up; pages go before the profile. Engine tests run only in
+  `tests/browser_rescue_harness.py`'s subprocess and fail rather than skip.
+- **Detection rules** (`challenge_detection.json`): only `header_markers`
+  names are matched, never header values; Akamai by
+  `errors&#46;edgesuite&#46;net`, Cloudflare by `_cf_chl_opt`
+  (`challenge-platform` appears on ordinary pages). Change a needle only
+  against live pages and the survey, never to fit one case.
 
 ## Recently landed (context)
 
@@ -86,28 +97,16 @@ Compressed once merged: the rules that still bind. Git history and the
   `uv.lock` doesn't; **check master's CI before a slice**.
 - **Machine channels, stage C2: Elsevier's article API** (all three; PR
   #507). Contract "Elsevier's Article API" + `elsevier_article.json`.
-  **A first-page PDF is never served**: `X-ELS-Status: WARNING …` on a 200
-  (trimmed, any case, read before the body) is an absence. **Whatever the
-  requestor is entitled to is served** (no open-access-only check). A 403
-  with `AUTHENTICATION_ERROR` in the first 64 KiB is "not available from this
-  network", scoped to `sha256(key + "\n" + token)`; a 401 refuses that key.
-  **Never a redirect, never a link**: the apps hold a served PDF only as a
-  local file, read Elsevier's cached PDF before asking, and Android reopens
-  it from disk. Not saved: the apps walk on and store
-  `OpenAccessShortfall(elsevier, request_failed)`; the desktop keeps
-  `NOT_SAVED`. **Credentials that cannot be sent are never sent** (a
-  character outside printable ASCII: no request, a WARNING that never names
-  it). The environment's token goes only with the environment's key. The
-  apps ask by the cleaned DOI. `urllib3>=2.0` enforces Content-Length.
-  Accepted limits: Android asks only without a Europe PMC render URL (#493);
-  Swift skips it when `extractPDFText` is off. Lodged: #506, #508–#513.
-- **Machine channels, stage C1: CORE's text and the key settings** (all
-  three; PR #501). Contract "CORE's Extracted Text" + `core_fulltext.json`.
-  **A hit counts only if its own DOI is this article's.** Asked last and once,
-  only with a key and a DOI. **No key: no request, nothing recorded.**
-  **A configured channel that could not be asked is unsettled.** Two 429s
-  pause it; a 401 refuses that key. Desktop cache `*.core.txt` (v2). Android
-  shows it as plain text.
+  **A first-page PDF is never served** (`X-ELS-Status: WARNING` on a 200 is an
+  absence). A 403 `AUTHENTICATION_ERROR` is "not available from this
+  network" (scoped to key + token); a 401 refuses that key. **Never a
+  redirect, never a link**; **credentials that cannot be sent are never
+  sent**; the environment's token goes only with its key. Lodged: #506,
+  #508–#513.
+- **Machine channels, stage C1: CORE's text** (all three; PR #501). **A hit
+  counts only if its own DOI is this article's**; asked last, once, only with
+  a key and a DOI; **no key, nothing recorded**; a configured channel that
+  could not be asked is unsettled.
 - **Machine channels, stage B: every Unpaywall PDF in the apps, then
   OpenAlex's** (all three; PR #491). Contract "Tried sources (#480)" and
   "OpenAlex's Locations". **The first copy served ends the walk; one not saved
@@ -132,24 +131,16 @@ Compressed once merged: the rules that still bind. Git history and the
   is an answer except a 429 or a 5xx** (`RequestFailure.is_answer`, pinned by
   `answered_lookup_verb.json`).
 - **A missing statement is charged only when the end matter is known**
-  (Python; PR #431, #428). The converter writes `END_MATTER_MARKER` where end
-  matter begins (converter version **5**); a COI/data charge needs every
-  end-matter heading classified (`statement_headings.py`,
-  `unclassified_headings`). **No marker, no charge** (user's call): PDF text
-  and JATS without end matter are `not_assessed`; #430 plugs into
-  `segment_unmarked_end_matter`. Analyser **2.6**. Stem-based heading words
-  and asking about every empty heading were **dropped**: both released honest
-  data charges.
-- **Statements reach the analyser** (Python; PR #426, #420, #421). **The
-  converter is `jats_markdown.py`**: every `<back>` element but the ref-list,
-  plus PLOS's front statements, each under a heading, after the body;
-  `<sub-article>`s are ignored. **In the
-  end matter no piece goes without a heading once a sibling has one**.
-  **Recognising more end matter creates charges** (the #359 trap; `_mentions`
-  and #428's heading rule guard it). **Bump
+  (Python; PR #431, #428). `END_MATTER_MARKER` marks where end matter begins
+  (converter **5**); a COI/data charge needs every end-matter heading
+  classified. **No marker, no charge** (user's call); #430 plugs into
+  `segment_unmarked_end_matter`. Analyser **2.6**.
+- **Statements reach the analyser** (Python; PR #426, #420, #421).
+  **`jats_markdown.py` is the converter** (every `<back>` element but the
+  ref-list, plus PLOS's front statements, under headings). **Recognising
+  more end matter creates charges** (#359). **Bump
   `JATS_MARKDOWN_CONVERTER_VERSION`** whenever the same XML converts
-  differently (cached markdown carries the stamp). **No full text, no
-  data-availability request** (#421, user's call). Survey scratch: `tmp/jats-*`.
+  differently. **No full text, no data-availability request** (#421).
 - **Transparency, compressed** (PRs #358–#419):
   - Every no-full-text rating says "Limited certainty because of lack of full
     text access". "Without full text" means nothing in it was recognised.
@@ -192,50 +183,32 @@ Compressed once merged: the rules that still bind. Git history and the
     worker); `should_cancel` is asked before each document; `except
     Exception` does not catch a `BaseException`; `PassOutcome` /
     `PassFailure` refuse impossible counts. **No git in a mutation restore.**
-  - **One parser for the screen and the export** (#233/#230); **a removal
-    takes machine syntax, never the report's words**, and the reader is told
-    (`RemovedCitationNotice`). **`Document.id` is an opaque UUID** (#208).
-    **Find the surface a reader actually reaches** (#221). **A shared gate is
-    only shared if every caller reads it.**
-    **An identifier is only what a source stated it to be**: the shape of a
-    number never states a PubMed ID (`fulltext_retrieval.md`). **A downloaded
-    PDF contributes its text** (PR #198); **a guard must name its own cause**
-    (PR #195). **Logging is not reporting** (#180/#181); a reader-facing
-    payload is typed, not rendered English (#184); a persisted tagged union
-    needs named keys and a `schemaVersion` (#163). **A view's private computed
-    state cannot be tested.** **Route markup on the owning element, not on
-    ambient parser state** (#156–#175). **Measure JATS prevalence from the
-    XML, never through the parser** (`scripts/jats_survey.py`, #164); **bmlib
-    is ahead of Swift — port from it** (#165).
-  - **Real PMC JATS corpus** (#146) under `doc/cross_platform/jats_corpus/`.
-    **Read that directory's `README.md` before touching it.** Two traps it
-    omits: **the fixture walk stops at the checkout root** in both
-    `JATSRealCorpusTests` and `TransparencyParityTests` and they must not
-    drift — worktrees live *inside* the checkout, so a climb to `/`
-    validates a branch against the main checkout's fixtures and passes; and
-    **a test only hears what the logger records** — the recorder ignored
-    `debug`, so the corpus dropped 21 of 62 captions under a green test.
+  - **One parser for the screen and the export** (#233/#230); a removal takes
+    machine syntax and the reader is told. **`Document.id` is an opaque UUID**
+    (#208). **An identifier is only what a source stated it to be.**
+    **Logging is not reporting** (#180/#181); a reader-facing payload is
+    typed (#184); a persisted tagged union needs named keys and a
+    `schemaVersion` (#163). **Route markup on the owning element** (#156–#175).
+    **Measure JATS prevalence from the XML, never through the parser** (#164);
+    **bmlib is ahead of Swift — port from it** (#165).
+  - **Real PMC JATS corpus** (#146) under `doc/cross_platform/jats_corpus/`:
+    read its `README.md` first. **The fixture walk stops at the checkout
+    root** (worktrees live inside the checkout); **a test only hears what the
+    logger records** (the recorder once ignored `debug`).
   - **Funder classification** (#143/#147/#152): `sponsor_patterns.json` is
     the contract, `confidence_probes` checked behaviourally; never merge
     funder lists into `INDUSTRY_KEYWORDS`; `NONPROFIT` means "not
     recognised".
   - **CI on all three platforms** (#129). **No job may gain a `paths:`
-    filter** (the parity fixtures live outside `src/` and `tests/`). **A Qt
-    preflight constructs a `QApplication` before pytest**, or a broken Qt
-    install skips ~100 `importorskip` tests green. **No test starts a
-    settings-dialog thread** (`_no_live_model_fetch`). **`lint_delta.py`** diffs
-    against the merge base in a throwaway worktree; **ruff config stays in
-    `[tool.ruff.lint]`**, or head and base shrink together.
-  - **Cross-platform parity drift guard** (#105, #101–#125). Python
-    `study_transparency_analyzer.py` is canonical; Swift and Android mirror
-    the data-availability and funder-name classifiers byte-for-byte, *not*
-    `INDUSTRY_KEYWORDS` (#148). **Read
+    filter.** **The Qt preflight (`.github/scripts/qt_preflight.py`, QtWebEngine
+    included) runs before pytest.** No test starts a settings-dialog thread.
+    **`lint_delta.py`** diffs against the merge base; ruff config stays in
+    `[tool.ruff.lint]`.
+  - **Cross-platform parity drift guard** (#105). Python is canonical; read
     `doc/cross_platform/transparency_parity/README.md` before touching a
-    pattern.** Not in it: **keep `inputs.dir` in `app/build.gradle.kts`**;
-    **do not reword the pattern fixtures**; **Kotlin's
-    `negatedOpennessPatterns` stays declared before `restrictedPatterns`**
-    (declaration-order init silently appends nothing). `RegexHelper` uses
-    `(?U)`.
+    pattern; keep `inputs.dir` in `app/build.gradle.kts`; don't reword the
+    pattern fixtures; Kotlin's `negatedOpennessPatterns` stays declared
+    before `restrictedPatterns`.
 
 ## Potential follow-ups
 
@@ -244,7 +217,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 ### Next up
 
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
-  browser and review queue** is in flight (above); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+  browser's stage 3** is next (above); **#524**–**#528** (stage 2 follow-ups); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted
