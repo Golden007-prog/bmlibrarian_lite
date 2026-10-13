@@ -155,7 +155,7 @@ def attempt_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
         current[:] = [attempt]
         started = time.monotonic()
         attempt.start()
-        finished = run_until(app, lambda: bool(verdicts), SCENARIO_LIMIT_SECONDS)
+        finished = run_until(app, lambda v=verdicts: bool(v), SCENARIO_LIMIT_SECONDS)
         results[name] = {
             "finished": finished,
             "verdict": verdicts[0].to_dict() if verdicts else None,
@@ -176,7 +176,8 @@ def main() -> int:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{server.server_port}"
     app = QApplication(sys.argv)
-    with tempfile.TemporaryDirectory() as tmp:
+    # The engine's helper processes may still be flushing the profile as it goes
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         root = Path(tmp)
         output = {"attempts": attempt_scenarios(app, base, root)}
     print(json.dumps(output))

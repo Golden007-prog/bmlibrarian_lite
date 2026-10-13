@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -94,7 +94,7 @@ def _header_text(raw: Any) -> str:
     return bytes(data).decode(_HEADER_ENCODING)
 
 
-def response_headers(raw: Mapping[Any, Sequence[Any]]) -> dict[str, str]:
+def response_headers(raw: Mapping[Any, Any]) -> dict[str, str]:
     """A loading info's response headers, as the challenge rules take them.
 
     Args:
