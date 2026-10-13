@@ -588,8 +588,7 @@ failures are bot walls, not missing copies** (#480; measured in
 `doc/developer/unpaywall_pdf_survey/`). Our clients obtained 28% of 400 Unpaywall
 PDFs; 81% of the rest were walls, 12% addresses that serve no PDF. A failure
 whose answer was a challenge page, or a 403/503 from Cloudflare itself, was a wall
-89% of the time. Whether such a failure gets its own kind, or a link to open in
-the browser, is the maintainer's decision, not yet made.
+89% of the time. It gets its own kind, `challenged` (below); no link is offered.
 
 **Our own stops are not the copy's answer**, and none of them is "no copy":
 
@@ -780,6 +779,32 @@ The maintainer's decisions of 2026-10-05. Pinned by
     cleared by every fetch, as the shortfall is, and shown beside it
     (iOS/macOS: its own line in `ParseWarningBanner`; Android: the full-text
     screen, the fact-check card and the report's document sheet).
+
+### A challenged PDF (#480)
+
+An open-access PDF (Unpaywall's or OpenAlex's) whose answer is a bot wall's
+challenge page is recorded as `challenged`, with the status the page came
+with, in place of `http_status` or `malformed_response`. It is not an answer
+about the article: the reader is told the copy went unobtained because the
+host asked for a robot check (through the tried-sources statement where the
+copy carries an address, through the "could not be asked" notice where it
+does not), and no absence is settled.
+
+A non-PDF answer is challenged when `challenge_markers` names a defence:
+
+- a needle of the shared marker table in the body's first 64 KiB, ASCII-
+  lowercased and decoded as UTF-8 with invalid bytes replaced, or in a header
+  line `name: value`;
+- or Cloudflare's own refusal: a 403 or 503 whose `Server` header is
+  `cloudflare` (ScienceDirect's markup lies past the bytes read).
+
+Never for a 404 or 410, and never for a body beginning `%PDF`. The table, the
+bounds and the cases are `fulltext_parity/challenge_detection.json`; every
+platform's table must equal it. Survey: 89% of challenged failures were walls,
+about 6% had no free PDF behind them
+(`doc/developer/unpaywall_pdf_survey/`). The desktop's embedded browser and
+review queue (stages 2 and 3 of
+`docs/superpowers/specs/2026-10-12-browser-rescue-design.md`) fetch these.
 
 ### PDF Downloading and Caching
 

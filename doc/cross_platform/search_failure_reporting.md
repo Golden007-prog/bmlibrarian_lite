@@ -98,11 +98,11 @@ enum RequestFailureKind:          # raw values are persisted: never rename
     MALFORMED_RESPONSE = "malformed_response"
     INCOMPLETE_RESPONSE = "incomplete_response" # fewer records than it counted
     REQUEST_FAILED     = "request_failed"      # anything else
-    CHALLENGED = "challenged"  # a bot wall's challenge page in place of the answer (#480)
+    CHALLENGED         = "challenged"          # a bot wall's challenge page in place of the answer (#480)
 
 struct RequestFailure:
     kind: RequestFailureKind
-    status_code: Int?                  # HTTP_STATUS and REDIRECT_REFUSED only; 100–999
+    status_code: Int?                  # HTTP_STATUS, REDIRECT_REFUSED and CHALLENGED only; 100–999
 
 struct RetrievalShortfall:
     provider: "pubmed" | "europepmc"   # a source, never "both"

@@ -28,19 +28,19 @@ the embedded browser):
 
 **Bot-walled PDFs: `challenged`, an embedded browser, a review queue** (#480
 sub-projects 2 and 3; replaces #483). Branch `feat/browser-rescue-480`.
-- **Spec (approved in conversation 2026-10-12, under review as written):**
+- **Spec (approved 2026-10-12):**
   `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`. Decisions:
   auto then queue (a run never waits); a rescue re-analyses that document;
   the kind on all three platforms, the browser desktop only; one recovery
   path, a QtWebEngine service on the GUI thread driven by a SQLite queue
   (no cross-thread broker, no helper process); no impersonation.
-- **Stages, one PR each:** 1 `challenged` in Python (`bot_walls.py`, 64 KiB
-  read of a non-PDF answer, contract + `challenge_detection.json`); 2 Swift +
-  Kotlin ports; 3 queue table, hidden service, rescue → re-analysis, #483
-  removal, live acceptance on the spike's 41 addresses; 4 review queue
-  window + interrogation priority path.
-- **Next:** the user reviews the written spec, then an implementation plan
-  (`superpowers:writing-plans`) for stage 1.
+- **Stage 1 implemented on this branch, PR pending:** `challenged` on
+  Python, Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
+  `challenge_detection.json`, contract "A challenged PDF (#480)"). Refs #480.
+- **Next, stage 2 (Python):** queue table, hidden QtWebEngine service,
+  rescue -> re-analysis, #483 removal, live acceptance. Plan:
+  `docs/superpowers/plans/2026-10-13-browser-rescue-stage-2.md`. Stage 3: the
+  review queue window + interrogation priority path.
 
 ## Recently landed (context)
 
