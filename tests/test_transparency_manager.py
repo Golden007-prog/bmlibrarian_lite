@@ -31,6 +31,7 @@ from bmlibrarian_lite.transparency import (
     TransparencyRisk,
     TransparencySettings,
 )
+from bmlibrarian_lite.transparency.transparency_models import may_replace_stored
 from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer import (
     TransparencyReport,
     DataAvailabilityInfo,
@@ -215,6 +216,34 @@ class TestAnalyzeDocument:
         assert len(signals) == 1
         assert signals[0][0] == "doc1"
         assert signals[0][1].kind is TransparencyFailureKind.NO_IDENTIFIER
+
+    def test_a_rescue_reanalyses_past_this_builds_stored_result(self, manager, mock_storage):
+        """A rescued PDF re-runs the analysis though a final row is stored (#480, stage 2)."""
+        mock_storage.get_transparency_result.return_value = TransparencyResult(
+            document_id="doc1", transparency_score=80, risk_level=TransparencyRisk.LOW
+        )
+        served = []
+        manager.analysis_complete.connect(lambda _id, r: served.append(r))
+        with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
+            manager.reanalyse("doc1", pmid="12345678", doi="10.1/x")
+        assert served == []
+        assert executor.submit.called
+        assert executor.submit.call_args.args[1:4] == ("doc1", "12345678", "10.1/x")
+
+    def test_a_rescue_never_overwrites_a_newer_builds_row(self, manager, mock_storage):
+        """Control: may_replace_stored still decides (#374)."""
+        newer = TransparencyResult(
+            document_id="doc1", transparency_score=80, risk_level=TransparencyRisk.LOW,
+            analyzer_version="999.0",
+        )
+        assert not may_replace_stored(newer)
+        mock_storage.get_transparency_result.return_value = newer
+        served = []
+        manager.analysis_complete.connect(lambda _id, r: served.append(r))
+        with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
+            manager.reanalyse("doc1", pmid="12345678")
+        assert served == [newer]
+        assert not executor.submit.called
 
     def test_cached_result_returned(self, manager, mock_storage):
         """Test that cached results are returned without re-analysis."""

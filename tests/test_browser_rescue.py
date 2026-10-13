@@ -303,3 +303,27 @@ def test_a_visit_takes_its_hosts_shared_slot(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(browser_rescue, "limiter_for", _limiter_for)
     assert browser_rescue.rescue_delay_ms("pubs.rsc.org") == 1235
     assert claimed == ["pubs.rsc.org"]
+
+
+def _rescued_entry(document_id: str = "doc-1") -> RescueEntry:
+    """A rescued entry for a document."""
+    request = RescueRequest(document_id, DOI, "123", "A title", ADDRESS, "www.sciencedirect.com", SERVICE_UNPAYWALL_PDF)
+    return RescueEntry(1, request, RescueState.RESCUED, 1, RescueVerdict(RescueOutcome.PDF), 0, "t", "t")
+
+
+def test_a_rescued_document_is_reanalysed_by_its_doi() -> None:
+    """A held document is re-analysed under its PMID and DOI."""
+    from bmlibrarian_lite.browser_rescue import reanalyse_rescued
+
+    asked: list[tuple[str, str | None, str | None]] = []
+    assert reanalyse_rescued(_rescued_entry(), lambda doc_id: object(), lambda *a: asked.append(a))
+    assert asked == [("doc-1", "123", DOI)]
+
+
+def test_a_rescue_of_a_document_storage_does_not_hold_is_not_reanalysed() -> None:
+    """The MCP server queues under its own ID; analysing it would store a row for nothing."""
+    from bmlibrarian_lite.browser_rescue import reanalyse_rescued
+
+    asked: list[object] = []
+    assert not reanalyse_rescued(_rescued_entry(f"doi-{DOI}"), lambda doc_id: None, lambda *a: asked.append(a))
+    assert asked == []

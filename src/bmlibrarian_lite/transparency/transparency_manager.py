@@ -196,6 +196,7 @@ class TransparencyManager(QObject):
         pmid: Optional[str] = None,
         doi: Optional[str] = None,
         full_text: Optional[str] = None,
+        reuse_stored: bool = True,
     ) -> None:
         """
         Queue a document for background transparency analysis.
@@ -209,6 +210,11 @@ class TransparencyManager(QObject):
                 and whether it arrives is what separates a study that
                 declares no conflicts from one nobody read, so it is not
                 an argument to drop as unused.
+            reuse_stored: Serve this build's stored final result instead of
+                analysing. ``False`` for a document whose PDF was just
+                rescued (#480, stage 2): its stored result was made without
+                that full text. A newer build's row is never overwritten
+                either way.
         """
         if not self.settings.enabled:
             return
@@ -250,7 +256,7 @@ class TransparencyManager(QObject):
                 )
                 self.analysis_complete.emit(document_id, cached)
             return
-        if self.settings.cache_results:
+        if self.settings.cache_results and reuse_stored:
             if isinstance(cached, UndecodableTransparencyRow):
                 logger.debug(
                     f"Re-analysing {document_id}: its stored result could "
@@ -290,6 +296,26 @@ class TransparencyManager(QObject):
             future.add_done_callback(
                 lambda f: self._on_analysis_complete(document_id, f)
             )
+
+    def reanalyse(
+        self,
+        document_id: str,
+        pmid: str | None = None,
+        doi: str | None = None,
+    ) -> None:
+        """Analyse a document again now that its PDF is held (#480, stage 2).
+
+        Ignores this build's stored result, still refuses to overwrite a
+        newer build's (``may_replace_stored``), and queues the analysis as
+        usual: discovery finds the PDF at the cached-PDF tier, and
+        ``analysis_complete`` updates the badge.
+
+        Args:
+            document_id: Internal document ID.
+            pmid: PubMed ID.
+            doi: The DOI the rescued PDF is saved under.
+        """
+        self.analyze_document(document_id, pmid=pmid, doi=doi, reuse_stored=False)
 
     def analyze_batch(
         self,

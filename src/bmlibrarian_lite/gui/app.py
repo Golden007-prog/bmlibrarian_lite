@@ -55,10 +55,12 @@ from ..audit_records import (
     recorded_extraction_failures,
     recorded_min_score,
 )
+from ..browser_rescue import RescueEntry, reanalyse_rescued
 from ..config import LiteConfig
 from ..constants import STATUS_MESSAGE_TIMEOUT_MS
 from ..exceptions import SQLiteError
 from ..storage import LiteStorage
+from .browser_rescue_service import BrowserRescueService
 from .web_engine import prepare_web_engine
 from ..analysis_failures import (
     unreadable_assessment_caveat,
@@ -128,6 +130,8 @@ class LiteMainWindow(QMainWindow):
         # Token tracker for usage display
         self._token_tracker = get_token_tracker()
         self._last_token_count = 0
+
+        self._rescue_service: BrowserRescueService | None = None
 
         self._setup_ui()
         self._apply_styles()
@@ -782,6 +786,38 @@ class LiteMainWindow(QMainWindow):
             logger.exception("Failed to load research question data")
             self.status_bar.showMessage(f"Error loading data: {e}", 5000)
 
+    def attach_rescue_service(self, service: BrowserRescueService) -> None:
+        """Run the browser rescue beside this window (#480, stage 2).
+
+        A rescue re-analyses its document; an analysis's outcome wakes the
+        service, since an analysis is where walled PDFs are queued.
+
+        Args:
+            service: The service, not yet started.
+        """
+        self._rescue_service = service
+        service.rescued.connect(self._on_pdf_rescued)
+        self.systematic_review_tab.transparency_outcome_ready.connect(service.wake)
+        self.research_questions_tab.transparency_outcome_ready.connect(service.wake)
+
+    def _on_pdf_rescued(self, entry: RescueEntry) -> None:
+        """Re-analyse a document whose walled PDF the browser fetched, and say so.
+
+        Args:
+            entry: The rescued entry.
+        """
+        asked = reanalyse_rescued(
+            entry,
+            self.storage.get_document,
+            self.systematic_review_tab.reanalyse_transparency,
+        )
+        title = entry.request.title or entry.request.doi
+        self.status_bar.showMessage(
+            f"Fetched the PDF of \u201c{title}\u201d in the hidden browser"
+            + ("; re-checking its transparency." if asked else "."),
+            STATUS_MESSAGE_TIMEOUT_MS,
+        )
+
 
 def run_lite_app() -> int:
     """
@@ -797,5 +833,14 @@ def run_lite_app() -> int:
 
     window = LiteMainWindow()
     window.show()
+
+    # The hidden browser starts once the window is shown, and stops before
+    # the event loop ends: its pages go before its profile (#480, stage 2)
+    rescue = BrowserRescueService(
+        window.storage, window.config, window.config.storage.browser_profile_dir
+    )
+    window.attach_rescue_service(rescue)
+    app.aboutToQuit.connect(rescue.shutdown)
+    QTimer.singleShot(0, rescue.start)
 
     return app.exec()

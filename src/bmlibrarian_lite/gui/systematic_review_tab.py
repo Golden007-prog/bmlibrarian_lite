@@ -1762,6 +1762,21 @@ class SystematicReviewTab(QWidget):
         self._transparency_manager.update_settings(settings)
         logger.debug(f"Transparency filtering {'enabled' if enabled else 'disabled'}")
 
+    def reanalyse_transparency(
+        self, document_id: str, pmid: str | None, doi: str | None
+    ) -> None:
+        """Re-run a document's transparency analysis now that its PDF is held.
+
+        The outcome arrives through ``transparency_outcome_ready`` as any
+        analysis's does (#480, stage 2).
+
+        Args:
+            document_id: Internal document ID.
+            pmid: PubMed ID.
+            doi: The DOI the rescued PDF is saved under.
+        """
+        self._transparency_manager.reanalyse(document_id, pmid=pmid, doi=doi)
+
     def _on_transparency_result(
         self,
         doc_id: str,

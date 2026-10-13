@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 import math
 import sqlite3
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -480,3 +480,35 @@ def rescue_delay_ms(host: str) -> int:
     if is_loopback_host(host):
         return 0
     return math.ceil(limiter_for(host).claim() * MS_PER_SECOND)
+
+
+def reanalyse_rescued(
+    entry: RescueEntry,
+    stored_document: Callable[[str], object | None],
+    reanalyse: Callable[[str, str | None, str | None], None],
+) -> bool:
+    """Re-analyse the document a rescued PDF belongs to, when storage holds it.
+
+    By the entry's DOI, which names the saved PDF, so the analysis's
+    cached-PDF tier finds it. The MCP server queues under its own document
+    ID (``doi-...``), which storage need not hold: such a rescue is not
+    re-analysed, as that would store a transparency row for no document. Its
+    PDF is saved all the same, for the next request.
+
+    Args:
+        entry: The rescued entry.
+        stored_document: Reads a document from storage by ID.
+        reanalyse: Re-analyses ``(document_id, pmid, doi)``.
+
+    Returns:
+        Whether a re-analysis was asked for.
+    """
+    request = entry.request
+    if stored_document(request.document_id) is None:
+        logger.info(
+            "Rescued the PDF of %s, which storage does not hold; nothing to re-analyse",
+            request.document_id,
+        )
+        return False
+    reanalyse(request.document_id, request.pmid, request.doi)
+    return True
