@@ -54,6 +54,9 @@ _TRANSPORT_DOMAINS = frozenset(
     }
 )
 
+#: Chromium's ERR_ABORTED, which a script-driven navigation produces: not a failure.
+_ERR_ABORTED = -3
+
 #: How header bytes become text for the challenge rules; no byte is lost.
 _HEADER_ENCODING = "latin-1"
 
@@ -226,6 +229,9 @@ class RescueAttempt(QObject):
         """
         if self._done or info.isDownload() or info.status() == _LoadStatus.LoadStartedStatus:
             return
+        if self._download is not None:
+            # A download is under way: what the page does now is not the answer
+            return
         domain = info.errorDomain()
         if domain == _Domain.HttpStatusCodeDomain:
             # Every main-frame answer reports its status here, a 200 included
@@ -234,7 +240,10 @@ class RescueAttempt(QObject):
             if self._status in CHALLENGE_GONE_STATUSES:
                 self._finish(page_verdict(self._status, self._headers, ""))
             return
-        if info.status() == _LoadStatus.LoadFailedStatus and domain in _TRANSPORT_DOMAINS:
+        if info.status() == _LoadStatus.LoadFailedStatus and (
+            domain in _TRANSPORT_DOMAINS
+            or (domain == _Domain.InternalErrorDomain and info.errorCode() != _ERR_ABORTED)
+        ):
             self._finish(RescueVerdict(RescueOutcome.TRANSPORT, self._status))
 
     def _on_render_process_terminated(self, *_args: object) -> None:
@@ -259,8 +268,14 @@ class RescueAttempt(QObject):
         Args:
             html: The page's HTML.
         """
-        if not self._done and self._download is None:
-            self._finish(page_verdict(self._status, self._headers, html))
+        if self._done or self._download is not None:
+            return
+        if self._status is None:
+            # No server ever answered: the page read is the empty initial
+            # document, and the visit learnt nothing
+            self._finish(RescueVerdict(RescueOutcome.TRANSPORT))
+            return
+        self._finish(page_verdict(self._status, self._headers, html))
 
     def _on_progress(self) -> None:
         """A download moved: refuse it past the limit, else wait on."""
@@ -324,6 +339,11 @@ class RescueAttempt(QObject):
         self._done = True
         self._timeout.stop()
         self._stall.stop()
+        download = self._download
+        if download is not None and not download.isFinished():
+            # A visit that ends mid-download must not leave its partial file
+            download.cancel()
+            discard_partial_download(partial_download_path(self._pdf_path))
         self._release_page(at_once=False)
         self.finished.emit(verdict)
 

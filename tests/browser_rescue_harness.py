@@ -35,6 +35,17 @@ STALL_MS = 1_500
 MAX_PDF_BYTES = 1_024
 SCENARIO_LIMIT_SECONDS = 30
 STALL_HOLD_SECONDS = 8
+SLOW_ANSWER_SECONDS = 5
+TRICKLE_CHUNKS = 6
+TRICKLE_CHUNK_BYTES = 100
+TRICKLE_PAUSE_SECONDS = 0.4
+# Starts a slow download, then replaces the page with a 404 while it arrives
+REPLACING_PAGE = (
+    b"<html><title>Replacing</title><script>"
+    b"setTimeout(function(){location='/trickle'},100);"
+    b"setTimeout(function(){location='/gone'},800);"
+    b"</script></html>"
+)
 PDF_BODY = b"%PDF-1.4\n" + b"0" * 500
 OVERSIZE_BODY = b"%PDF-1.4\n" + b"0" * 4_096
 CHALLENGE_PAGE = (
@@ -102,6 +113,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b"%PDF-1.4\n")
             self.wfile.flush()
             time.sleep(STALL_HOLD_SECONDS)
+        elif route == "/slow":
+            time.sleep(SLOW_ANSWER_SECONDS)
+            self._send(200, "text/html", b"<html><title>Late</title><p>Late.</p></html>")
+        elif route == "/replacing":
+            self._send(200, "text/html", REPLACING_PAGE)
+        elif route == "/trickle":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(b"%PDF-1.4\n") + TRICKLE_CHUNKS * TRICKLE_CHUNK_BYTES))
+            self.end_headers()
+            self.wfile.write(b"%PDF-1.4\n")
+            for _ in range(TRICKLE_CHUNKS):
+                self.wfile.flush()
+                time.sleep(TRICKLE_PAUSE_SECONDS)
+                self.wfile.write(b"0" * TRICKLE_CHUNK_BYTES)
         else:
             self._send(404, "text/html", b"no such route")
 
@@ -134,6 +160,8 @@ ATTEMPTS = {
     "oversize": "/oversize",
     "oversize_unannounced": "/oversize-unannounced",
     "stall": "/stall",
+    "slow": "/slow",
+    "replacing": "/replacing",
 }
 
 

@@ -100,6 +100,21 @@ def test_a_refused_connection_is_a_transport_failure(harness: dict[str, Any]) ->
     assert _attempt(harness, "refused")["verdict"]["outcome"] == "transport"
 
 
+def test_a_server_that_never_answers_is_a_transport_failure(harness: dict[str, Any]) -> None:
+    """No main-frame answer in time: the visit learnt nothing, not no_pdf."""
+    result = _attempt(harness, "slow")
+    assert result["verdict"]["outcome"] == "transport"
+    assert result["verdict"]["http_status"] is None
+
+
+def test_a_page_replaced_during_a_download_does_not_end_it(harness: dict[str, Any]) -> None:
+    """A 404 navigated to mid-download is ignored; the PDF arrives whole."""
+    result = _attempt(harness, "replacing")
+    assert result["verdict"]["outcome"] == "pdf"
+    assert result["saved"] and result["left"] == []
+    assert "/gone" in harness["out"]["attempts"]["visits"]
+
+
 def test_response_headers_join_a_multimap() -> None:
     """Repeated headers are joined as HTTP joins them."""
     from PySide6.QtCore import QByteArray
