@@ -79,8 +79,8 @@ public struct RequestFailure: Sendable, Equatable, Hashable {
     /// What went wrong.
     public let kind: RequestFailureKind
 
-    /// The HTTP status, for ``RequestFailureKind/httpStatus`` and
-    /// ``RequestFailureKind/redirectRefused``; `nil` otherwise or when unknown.
+    /// The HTTP status, for ``RequestFailureKind/httpStatus``,
+    /// ``RequestFailureKind/redirectRefused`` and ``RequestFailureKind/challenged``; `nil` otherwise or when unknown.
     public let statusCode: Int?
 
     /// Build a failure of a kind that carries no status, or one already checked.

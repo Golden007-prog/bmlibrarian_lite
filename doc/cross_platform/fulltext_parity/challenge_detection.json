@@ -52,6 +52,7 @@
     {"name": "control: a PDF that mentions a captcha", "status": 200, "headers": {}, "body": "%PDF-1.7 captcha study", "expected": []},
     {"name": "control: an abstract page", "status": 200, "headers": {"Content-Type": "text/html"}, "body": "<html><title>Effect of aspirin</title><p>Abstract</p></html>", "expected": []},
     {"name": "a marker ending exactly at the prefix's end", "status": 200, "headers": {}, "body_padding_bytes": 65529, "body": "captcha", "expected": ["captcha"]},
-    {"name": "a marker beyond the prefix", "status": 200, "headers": {}, "body_padding_bytes": 65536, "body": "captcha", "expected": []}
+    {"name": "a marker beyond the prefix", "status": 200, "headers": {}, "body_padding_bytes": 65536, "body": "captcha", "expected": []},
+    {"name": "a needle followed by a combining mark", "status": 200, "headers": {}, "body": "<p>captcha\u0301</p>", "expected": ["captcha"]}
   ]
 }

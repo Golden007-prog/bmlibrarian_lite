@@ -34,10 +34,28 @@ public enum BotWalls {
 
     /// The sorted defence names a page's text and header lines name.
     static func namedDefences(text: String, headers: [String: String]) -> [String] {
-        let haystacks = [asciiLowercased(text)] + headers.map { asciiLowercased("\($0.key): \($0.value)") }
+        let haystacks = ([text] + headers.map { "\($0.key): \($0.value)" })
+            .map { Array(asciiLowercased($0).utf8) }
         return wallMarkers.compactMap { name, needles in
-            needles.contains { needle in haystacks.contains { $0.contains(needle) } } ? name : nil
+            needles.contains { needle in
+                let bytes = Array(needle.utf8)
+                return haystacks.contains { containsBytes($0, bytes) }
+            } ? name : nil
         }.sorted()
+    }
+
+    /// Whether `needle` occurs in `haystack` as a run of bytes.
+    ///
+    /// Not `String.contains`: that compares grapheme clusters, so a needle
+    /// followed by a combining mark would not match, where Python and Kotlin
+    /// (code points, code units) find it. Every needle is ASCII.
+    static func containsBytes(_ haystack: [UInt8], _ needle: [UInt8]) -> Bool {
+        guard !needle.isEmpty, haystack.count >= needle.count else { return needle.isEmpty }
+        for start in 0...(haystack.count - needle.count)
+        where haystack[start] == needle[0] && haystack[start..<(start + needle.count)].elementsEqual(needle) {
+            return true
+        }
+        return false
     }
 
     /// The defences an answer names, if it is a challenge page; empty otherwise.
