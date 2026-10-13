@@ -367,9 +367,16 @@ class TransparencyReport:
     warnings: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
+    # What full-text discovery left unsettled, when it ran and obtained no
+    # full text: the browser rescue queues its walled copies (#480, stage 2).
+    fulltext_lookups: LookupRecord = field(default_factory=LookupRecord)
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert report to dictionary for JSON serialization."""
         d = asdict(self)
+        # Working state for the rescue queue, not part of the report: its
+        # failure kinds are enums that JSON cannot carry (#480, stage 2).
+        d.pop('fulltext_lookups', None)
         # Convert enums to strings
         d['sponsor_type'] = self.sponsor_type.value
         d['results_compliance'] = self.results_compliance.value
@@ -3037,6 +3044,11 @@ class StudyTransparencyAnalyzer:
                 )
                 report.data_sources_used.append(f"Full-text ({source})")
                 return result.markdown_content
+
+            # Kept for the caller, which queues the walled copies for the
+            # embedded browser (#480, stage 2). Only here: a discovery that
+            # obtained the text has nothing to rescue.
+            report.fulltext_lookups = result.lookups
 
             if result.is_paywall:
                 logger.info(
