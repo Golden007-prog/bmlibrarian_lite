@@ -18,6 +18,7 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from bmlibrarian_lite.gui.web_engine import prepare_web_engine
 
@@ -27,12 +28,17 @@ from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from shiboken6 import Shiboken  # noqa: E402
 
-from bmlibrarian_lite.browser_rescue import RescueVerdict  # noqa: E402
+from bmlibrarian_lite.browser_rescue import RescueRequest, RescueState, RescueVerdict  # noqa: E402
+from bmlibrarian_lite.config import LiteConfig  # noqa: E402
+from bmlibrarian_lite.constants import RESCUE_PRIORITY_WAITING, SERVICE_UNPAYWALL_PDF  # noqa: E402
+from bmlibrarian_lite.gui.browser_rescue_service import BrowserRescueService  # noqa: E402
 from bmlibrarian_lite.gui.rescue_attempt import RescueAttempt, rescue_profile  # noqa: E402
+from bmlibrarian_lite.storage import LiteStorage  # noqa: E402
 
 TIMEOUT_MS = 3_000
 STALL_MS = 1_500
 MAX_PDF_BYTES = 1_024
+POLL_MS = 500
 SCENARIO_LIMIT_SECONDS = 30
 STALL_HOLD_SECONDS = 8
 SLOW_ANSWER_SECONDS = 5
@@ -198,6 +204,77 @@ def attempt_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
     return results
 
 
+def pump(app: QApplication, seconds: float) -> None:
+    """Run the event loop for a while."""
+    run_until(app, lambda: False, seconds)
+
+
+def service_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any]:
+    """Work a queue through the real service, then quit mid-visit."""
+    config = LiteConfig()
+    config.storage.data_dir = root / "data"
+    storage = LiteStorage(config)
+    out = root / "service-pdfs"
+
+    def request(doc: str, path: str) -> RescueRequest:
+        return RescueRequest(doc, f"10.1/{doc}", None, f"Title {doc}", base + path, "127.0.0.1",
+                             SERVICE_UNPAYWALL_PDF)
+
+    def states() -> dict[str, str]:
+        rows = storage.rescue_entries(list(RescueState))
+        return {f"{urlparse(e.request.address).path}?{urlparse(e.request.address).query}": e.state.value
+                for e in rows}
+
+    def entry_of(tag: str) -> Any:
+        return next(e for e in storage.rescue_entries(list(RescueState)) if e.request.address.endswith(tag))
+
+    storage.enqueue_rescues([request("doc-a", "/pdf?a"), request("doc-a", "/walled?a")])
+    storage.enqueue_rescues([request("doc-b", "/abstract?b")])
+    storage.enqueue_rescues([request("doc-c", "/gone?c")], priority=RESCUE_PRIORITY_WAITING)
+    service = BrowserRescueService(
+        storage, config, root / "service-profile",
+        pdf_path_for=lambda e: out / f"{e.request.document_id}.pdf",
+        timeout_ms=TIMEOUT_MS, stall_ms=STALL_MS, poll_ms=POLL_MS, max_pdf_bytes=MAX_PDF_BYTES,
+    )
+    rescued: list[str] = []
+    service.rescued.connect(lambda e: rescued.append(e.request.document_id))
+    Handler.visits.clear()
+    service.start()
+    drained = run_until(
+        app, lambda: storage.next_rescue_entry() is None and not service.busy, SCENARIO_LIMIT_SECONDS
+    )
+    result: dict[str, Any] = {
+        "drained": drained,
+        # The browser asks for a site icon after a page; that is not a visit
+        "visits": [v for v in Handler.visits if v != "/favicon.ico"],
+        "states": states(),
+        "rescued": list(rescued),
+        "doc_a_saved": (out / "doc-a.pdf").exists(),
+    }
+
+    # Written by another process: the poll finds it
+    LiteStorage(config).enqueue_rescues([request("doc-d", "/pdf?d")])
+    result["polled"] = run_until(app, lambda: "doc-d" in rescued, SCENARIO_LIMIT_SECONDS)
+
+    # The hidden pass switched off: entries collect, unvisited
+    config.discovery.browser_rescue_hidden = False
+    storage.enqueue_rescues([request("doc-e", "/pdf?e")])
+    pump(app, 3 * POLL_MS / 1000)
+    result["off"] = {"visited": any(v.endswith("?e") for v in Handler.visits),
+                     "state": entry_of("?e").state.value}
+    config.discovery.browser_rescue_hidden = True
+    result["back_on"] = run_until(app, lambda: "doc-e" in rescued, SCENARIO_LIMIT_SECONDS)
+
+    # Quit mid-visit: the entry stays pending, its attempts unchanged
+    storage.enqueue_rescues([request("doc-f", "/abstract?f")])
+    result["visiting"] = run_until(app, lambda: "/abstract?f" in Handler.visits, SCENARIO_LIMIT_SECONDS)
+    service.shutdown()
+    pump(app, 0.5)
+    quit_entry = entry_of("?f")
+    result["quit"] = {"state": quit_entry.state.value, "attempts": quit_entry.attempts}
+    return result
+
+
 def main() -> int:
     """Run the scenarios and print the results."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
@@ -207,7 +284,10 @@ def main() -> int:
     # The engine's helper processes may still be flushing the profile as it goes
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         root = Path(tmp)
-        output = {"attempts": attempt_scenarios(app, base, root)}
+        output = {
+            "attempts": attempt_scenarios(app, base, root),
+            "service": service_scenarios(app, base, root),
+        }
     print(json.dumps(output))
     return 0
 

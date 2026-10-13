@@ -123,3 +123,63 @@ def test_response_headers_join_a_multimap() -> None:
 
     raw = {QByteArray(b"Server"): [QByteArray(b"cloudflare")], QByteArray(b"Vary"): [QByteArray(b"a"), QByteArray(b"b")]}
     assert response_headers(raw) == {"Server": "cloudflare", "Vary": "a, b"}
+
+
+PROFILE_RELEASE_WARNING = "Release of profile requested but WebEnginePage still not deleted"
+
+
+def _service(harness: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = harness["out"]["service"]
+    assert result["drained"], "the queue was never drained"
+    return result
+
+
+def test_the_waiting_entry_goes_first_then_the_oldest(harness: dict[str, Any]) -> None:
+    """A waiting entry is visited first, then the oldest."""
+    visits = _service(harness)["visits"]
+    assert visits[:3] == ["/gone?c", "/pdf?a", "/abstract?b"]
+
+
+def test_a_rescue_supersedes_its_documents_other_address(harness: dict[str, Any]) -> None:
+    """A rescued document's other address is superseded and never visited."""
+    service = _service(harness)
+    assert service["states"]["/pdf?a"] == "rescued"
+    assert service["states"]["/walled?a"] == "superseded"
+    assert "/walled?a" not in service["visits"]
+    assert service["doc_a_saved"]
+
+
+def test_each_entry_settles_by_its_verdict(harness: dict[str, Any]) -> None:
+    """Each entry's state follows its verdict."""
+    states = _service(harness)["states"]
+    assert (states["/abstract?b"], states["/gone?c"]) == ("no_pdf", "gone")
+
+
+def test_a_rescue_is_announced_once(harness: dict[str, Any]) -> None:
+    """A rescue is announced exactly once."""
+    assert _service(harness)["rescued"][:1] == ["doc-a"]
+    assert _service(harness)["rescued"].count("doc-a") == 1
+
+
+def test_an_entry_another_process_wrote_is_found_by_the_poll(harness: dict[str, Any]) -> None:
+    """The poll finds an entry another process wrote."""
+    assert _service(harness)["polled"]
+
+
+def test_with_the_hidden_pass_off_entries_collect_unvisited(harness: dict[str, Any]) -> None:
+    """With the pass off, entries stay pending and unvisited."""
+    service = _service(harness)
+    assert service["off"] == {"visited": False, "state": "pending"}
+    assert service["back_on"]
+
+
+def test_a_quit_mid_visit_leaves_the_entry_pending(harness: dict[str, Any]) -> None:
+    """A quit mid-visit leaves the entry pending with no attempt counted."""
+    service = _service(harness)
+    assert service["visiting"]
+    assert service["quit"] == {"state": "pending", "attempts": 0}
+
+
+def test_quit_releases_the_page_before_the_profile(harness: dict[str, Any]) -> None:
+    """No QtWebEngine release warning at quit."""
+    assert PROFILE_RELEASE_WARNING not in harness["stderr"]
