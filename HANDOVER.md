@@ -42,6 +42,13 @@ sub-projects 2 and 3; replaces #483). Branch `feat/browser-rescue-480`.
   plan first (`superpowers:writing-plans`); the user reviews it before
   implementation. Stage 3: the review queue window + interrogation priority
   path.
+- **Carried from stage 1's review into stage 2:** a challenged 401/403 on an
+  open-access PDF still takes the paywall branch (`is_paywall=True`), so the
+  reader is first told "A source refused access…" and the interrogation tab
+  may offer OpenAthens; decide this when the queue takes those copies. With an
+  address the reader's sentence is the tried-sources statement ("… (the host
+  asked for a robot check)"), not "could not be asked". Lodged: **#520** (the
+  survey keeps its own Cloudflare rule).
 
 ## Recently landed (context)
 
