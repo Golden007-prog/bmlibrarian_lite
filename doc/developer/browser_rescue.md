@@ -123,6 +123,6 @@ a skip would leave CI green with the feature untested. CI sets
 ## Accepted Limits
 
 - A `no_pdf` or `gone` verdict does not rewrite the stored sentence the reader
-  saw ("could not be asked"). Lodged as an issue.
+  saw ("could not be asked"). Lodged as #524.
 - Only one visit runs at a time.
 - Until stage 3 the reader sees no persistent indicator of the queue.
