@@ -34,7 +34,7 @@ sub-projects 2 and 3; replaces #483). Branch `feat/browser-rescue-480`.
   the kind on all three platforms, the browser desktop only; one recovery
   path, a QtWebEngine service on the GUI thread driven by a SQLite queue
   (no cross-thread broker, no helper process); no impersonation.
-- **Stage 1 implemented on this branch, PR pending:** `challenged` on
+- **Stage 1 in review, PR #521:** `challenged` on
   Python, Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
   `challenge_detection.json`, contract "A challenged PDF (#480)"). Refs #480.
 - **Next, stage 2 (Python):** queue table, hidden QtWebEngine service,
