@@ -27,22 +27,23 @@ the embedded browser):
   contract.
 
 **Bot-walled PDFs: `challenged`, an embedded browser, a review queue** (#480
-sub-projects 2 and 3; replaces #483). Branch `feat/browser-rescue-480`.
+sub-projects 2 and 3; replaces #483).
 - **Spec (approved 2026-10-12):**
   `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`. Decisions:
   auto then queue (a run never waits); a rescue re-analyses that document;
   the kind on all three platforms, the browser desktop only; one recovery
   path, a QtWebEngine service on the GUI thread driven by a SQLite queue
   (no cross-thread broker, no helper process); no impersonation.
-- **Stage 1 in review, PR #521:** `challenged` on
-  Python, Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
-  `challenge_detection.json`, contract "A challenged PDF (#480)"). Refs #480.
-- **Next, stage 2 (Python):** queue table, hidden QtWebEngine service,
-  rescue -> re-analysis, #483 removal, live acceptance. Write the stage 2
-  plan first (`superpowers:writing-plans`); the user reviews it before
-  implementation. Stage 3: the review queue window + interrogation priority
-  path.
-- **Carried from stage 1's review into stage 2:** a challenged 401/403 on an
+- **Stage 1 landed** (PR #521, merged 2026-10-13): `challenged` on Python,
+  Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
+  `challenge_detection.json`, contract "A challenged PDF (#480)").
+- **Stage 2 (Python), planning:** branch `feat/browser-rescue-stage2-480`.
+  Plan `docs/superpowers/plans/2026-10-13-browser-rescue-stage-2.md` awaits
+  the user's review before implementation: queue table, hidden QtWebEngine
+  service, rescue -> re-analysis, #483 removal, live acceptance. Stage 3:
+  the review queue window + interrogation priority path.
+- **Carried from stage 1's review into stage 2** (the plan's decision D1
+  settles it): a challenged 401/403 on an
   open-access PDF still takes the paywall branch (`is_paywall=True`), and so
   does a challenged `text/html` 200 at an address the paywall sniff matches
   ("access", "login", "pay" …), so the reader is first told "A source refused
