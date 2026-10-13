@@ -35,6 +35,7 @@ benchmarking/         # Model comparison, statistics (relevance + quality)
 gui/                  # PySide6: SystematicReview, ResearchQuestions, AuditTrail, Report, DocumentInterrogation tabs
                       #   transparency_badge, transparency_settings_dialog, quality_badge, quality_filter_panel
                       #   thread_keeper (holds a thread its owner let go of until it ends)
+                      #   rescue_attempt / browser_rescue_service (the hidden browser pass), web_engine (QtWebEngine start-up)
 llm/                  # LLMClient (Anthropic/Ollama providers), token_tracker
 pubmed/               # PubMedSearchClient
 quality/              # QualityManager, study classification, evidence_summary, metadata_filter
@@ -60,6 +61,8 @@ keyed_service_session.py # KeyedServiceSession: a keyed service's 429 pause, ref
 bot_walls.py          # Bot-wall challenge pages recognised from an answer (#480): WALL_MARKERS, challenge_markers
 pdf_download.py       # PDF download helpers: body prefix, .part file, MAX_PDF_SIZE
 pdf_discovery.py      # PDF source discovery
+browser_rescue.py     # Walled PDFs queued for the embedded browser: states, verdicts, what is queued
+rescue_queue_store.py # The browser rescue queue's table
 rate_limit.py         # Host-keyed, thread-safe pacing for outbound requests
 polite_session.py     # PoliteAdapter + mount_politely for requests.Session
 embeddings.py         # LiteEmbedder (FastEmbed)

@@ -107,6 +107,20 @@ never with a key typed in the settings. A key pasted with an invisible
 character (one that cannot be sent in a request) is never sent: the app says
 Elsevier could not be asked, and the log asks you to enter the key again.
 
+#### Bot-walled PDFs (hidden browser)
+
+Some open-access PDFs sit behind a robot check that blocks the app's downloads.
+Under Settings → Full Text, "Try bot-walled PDFs in a hidden browser" (on by
+default) lets the app later open each such PDF in a hidden built-in browser,
+save it if it arrives, and re-check that article's transparency. Nothing is
+sent but the page request itself.
+
+Rescued PDFs are saved in your PDF library, and a rescued article's
+transparency badge is re-checked, so it may change once the full text has been
+read. The browser keeps its cookies in `~/.bmlibrarian_lite/browser_profile/`
+(readable by you alone). While a copy has not been rescued (or cannot be), the
+article reads "could not be asked … (the host asked for a robot check)".
+
 ### Launching the Application
 
 ```bash
