@@ -1,0 +1,268 @@
+# BMLibrarian Lite - Biomedical Literature Research Tool
+# Copyright (C) 2024-2026 Dr Horst Herb
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""The browser rescue queue's table (#480, stage 2).
+
+SQL only; the rules are ``browser_rescue``'s. Every function takes an open
+connection whose ``row_factory`` is ``sqlite3.Row``. ``LiteStorage`` opens
+it and commits after :func:`enqueue`. :func:`record_verdict` runs its own
+transaction, because the MCP server and the CLI write this table from other
+processes.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+from collections.abc import Iterable, Sequence
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+
+from .browser_rescue import (
+    OPEN_RESCUE_STATES,
+    RescueEntry,
+    RescueRequest,
+    RescueState,
+    RescueVerdict,
+    next_state,
+)
+from .constants import RESCUE_RETRY_DELAY_SECONDS
+
+logger = logging.getLogger(__name__)
+
+TABLE = "browser_rescue_queue"
+
+# No foreign key to documents: the MCP server queues under its own document
+# ID, which storage may not hold (spec section 2).
+SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {TABLE} (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL,
+    doi TEXT NOT NULL,
+    pmid TEXT,
+    title TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL,
+    host TEXT NOT NULL,
+    service TEXT NOT NULL,
+    state TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    verdict TEXT,      -- JSON, RescueVerdict.to_dict(); NULL before a visit
+    priority INTEGER NOT NULL DEFAULT 0,
+    retry_after TEXT,  -- NULL: may be visited now
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (document_id, address)
+);
+CREATE INDEX IF NOT EXISTS idx_{TABLE}_next
+    ON {TABLE}(state, priority, created_at);
+"""
+
+#: The open states' stored values, for SQL.
+_OPEN = tuple(state.value for state in (RescueState.PENDING, RescueState.NEEDS_PERSON))
+
+
+def stamp(moment: datetime) -> str:
+    """A moment as stored: UTC ISO 8601 to the microsecond, so text order is time order.
+
+    Args:
+        moment: A timezone-aware moment.
+
+    Returns:
+        The stored text.
+    """
+    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
+    """Read one stored entry.
+
+    Args:
+        row: A row of the table.
+
+    Returns:
+        The entry, its verdict ``None`` when unreadable; ``None`` for a
+        state this build does not know (a newer build's), which is left
+        alone.
+    """
+    try:
+        state = RescueState(row["state"])
+    except ValueError:
+        logger.debug("Leaving rescue entry %s alone: state %r is a newer build's", row["id"], row["state"])
+        return None
+    verdict = None
+    if row["verdict"] is not None:
+        try:
+            verdict = RescueVerdict.from_dict(json.loads(row["verdict"]))
+        except (TypeError, ValueError):
+            verdict = None
+    return RescueEntry(
+        id=row["id"],
+        request=RescueRequest(
+            document_id=row["document_id"],
+            doi=row["doi"],
+            pmid=row["pmid"],
+            title=row["title"],
+            address=row["address"],
+            host=row["host"],
+            service=row["service"],
+        ),
+        state=state,
+        attempts=row["attempts"],
+        verdict=verdict,
+        priority=row["priority"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+    )
+
+
+def enqueue(conn: sqlite3.Connection, requests: Sequence[RescueRequest], priority: int, now: datetime) -> int:
+    """Queue walled PDFs, idempotently; the caller commits.
+
+    A new (document, address) is added ``pending``. An existing one is left
+    as it is, open or settled, so a later run never reopens a settled entry.
+    The one exception: a higher priority raises an open entry's.
+
+    Args:
+        conn: The connection.
+        requests: What to queue.
+        priority: Their priority.
+        now: The moment, as ``created_at`` and ``updated_at``.
+
+    Returns:
+        How many entries were added or raised.
+    """
+    at = stamp(now)
+    changed = 0
+    for request in requests:
+        cursor = conn.execute(
+            f"""
+            INSERT INTO {TABLE} (
+                document_id, doi, pmid, title, address, host, service,
+                state, priority, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (document_id, address) DO UPDATE
+                SET priority = excluded.priority, updated_at = excluded.updated_at
+                WHERE {TABLE}.priority < excluded.priority
+                  AND {TABLE}.state IN (?, ?)
+            """,
+            (
+                request.document_id, request.doi, request.pmid, request.title,
+                request.address, request.host, request.service,
+                RescueState.PENDING.value, priority, at, at, *_OPEN,
+            ),
+        )
+        changed += cursor.rowcount
+    return changed
+
+
+def next_pending(conn: sqlite3.Connection, now: datetime) -> RescueEntry | None:
+    """The entry the hidden browser visits next.
+
+    Args:
+        conn: The connection.
+        now: The moment; an entry held back past it is not due.
+
+    Returns:
+        The due ``pending`` entry with the highest priority, then the
+        oldest; ``None`` when none is due.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT * FROM {TABLE}
+        WHERE state = ? AND (retry_after IS NULL OR retry_after <= ?)
+        ORDER BY priority DESC, created_at, id
+        """,
+        (RescueState.PENDING.value, stamp(now)),
+    )
+    for row in rows:
+        entry = entry_from_row(row)
+        if entry is not None:
+            return entry
+    return None
+
+
+def record_verdict(
+    conn: sqlite3.Connection, entry_id: int, verdict: RescueVerdict, now: datetime
+) -> RescueEntry | None:
+    """Apply one visit's verdict to its entry; on a rescue, supersede its siblings.
+
+    One immediate transaction, taken before the row is read, so a dismissal
+    or rescue another process wrote in between is not overwritten. Work the
+    caller left uncommitted on ``conn`` (an :func:`enqueue` with no commit)
+    is committed first, since it cannot share that transaction. A transport
+    failure that leaves the entry ``pending`` holds it back for
+    ``RESCUE_RETRY_DELAY_SECONDS``.
+
+    Args:
+        conn: The connection.
+        entry_id: The entry visited.
+        verdict: What the visit concluded.
+        now: The moment.
+
+    Returns:
+        The entry as it now stands. It is unchanged when no longer open
+        (dismissed or settled meanwhile). ``None`` when it is gone or its
+        state is a newer build's.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (entry_id,)).fetchone()
+        entry = entry_from_row(row) if row is not None else None
+        if entry is None or entry.state not in OPEN_RESCUE_STATES:
+            conn.rollback()
+            return entry
+        attempts = entry.attempts + 1
+        state = next_state(entry.state, verdict, attempts)
+        at = stamp(now)
+        retry_after = (
+            stamp(now + timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS))
+            if state is RescueState.PENDING
+            else None
+        )
+        conn.execute(
+            f"""
+            UPDATE {TABLE}
+            SET state = ?, attempts = ?, verdict = ?, retry_after = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (state.value, attempts, json.dumps(verdict.to_dict()), retry_after, at, entry_id),
+        )
+        if state is RescueState.RESCUED:
+            conn.execute(
+                f"""
+                UPDATE {TABLE} SET state = ?, updated_at = ?
+                WHERE document_id = ? AND id != ? AND state IN (?, ?)
+                """,
+                (RescueState.SUPERSEDED.value, at, entry.request.document_id, entry_id, *_OPEN),
+            )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return replace(entry, state=state, attempts=attempts, verdict=verdict, updated_at=at)
+
+
+def entries(conn: sqlite3.Connection, states: Iterable[RescueState]) -> list[RescueEntry]:
+    """The entries in the given states, as the queue window orders them.
+
+    Args:
+        conn: The connection.
+        states: The states wanted.
+
+    Returns:
+        Highest priority first, then oldest; rows this build cannot read
+        are left out.
+    """
+    values = [state.value for state in states]
+    if not values:
+        return []
+    marks = ", ".join("?" for _ in values)
+    rows = conn.execute(
+        f"SELECT * FROM {TABLE} WHERE state IN ({marks}) ORDER BY priority DESC, created_at, id",
+        values,
+    )
+    return [entry for entry in map(entry_from_row, rows) if entry is not None]
