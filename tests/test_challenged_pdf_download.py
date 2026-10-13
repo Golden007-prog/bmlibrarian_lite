@@ -177,6 +177,14 @@ def test_control_other_sources_keep_their_reporting(discovery: PDFDiscoverer, tm
     assert result.failure == RequestFailure(RequestFailureKind.HTTP_STATUS, 403)
 
 
+def test_the_paywall_sniff_keeps_its_own_prefix(discovery: PDFDiscoverer, tmp_path: Path) -> None:
+    """The longer read is for the challenge only: a phrase past the first chunk is no paywall."""
+    chunks = [b"<html>" + b" " * 9000, b"<p>access denied</p>"]
+    result = _download(discovery, tmp_path, _Response(200, {"Content-Type": "text/html"}, chunks))
+    assert result.is_paywall is False
+    assert result.failure == RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
+
+
 def test_a_challenged_copy_is_told_as_a_non_answer() -> None:
     """The record a challenged download leaves is told as a source that gave no answer."""
     from bmlibrarian_lite.analysis_failures import unestablished_access_clause

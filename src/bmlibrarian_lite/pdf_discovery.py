@@ -2079,17 +2079,19 @@ class PDFDiscoverer:
 
             # An open-access copy whose answer is not a PDF is read further,
             # to recognise a bot wall's challenge page: that is no answer
-            # about the article, and is recorded as its own kind (#480).
+            # about the article, and is recorded as its own kind (#480). The
+            # longer read is its own copy: the paywall sniff and the write
+            # keep ``body_prefix``, so only the recorded kind can change.
             challenge = None
             if (
                 source.source_type in _UNOBTAINED_PDF_SERVICE
                 and not self._looks_like_pdf(body_prefix)
             ):
-                body_prefix = read_more_of_prefix(
+                page = read_more_of_prefix(
                     content_iter, body_prefix, CHALLENGE_BODY_PREFIX_BYTES
                 )
                 challenge = challenge_failure(
-                    response.status_code, response.headers, body_prefix
+                    response.status_code, response.headers, page
                 )
 
             # A broken server is not a paywall. The paywall sniff below
