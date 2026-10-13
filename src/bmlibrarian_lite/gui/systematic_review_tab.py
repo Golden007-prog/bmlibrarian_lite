@@ -1764,7 +1764,7 @@ class SystematicReviewTab(QWidget):
 
     def reanalyse_transparency(
         self, document_id: str, pmid: str | None, doi: str | None
-    ) -> None:
+    ) -> bool:
         """Re-run a document's transparency analysis now that its PDF is held.
 
         The outcome arrives through ``transparency_outcome_ready`` as any
@@ -1774,8 +1774,11 @@ class SystematicReviewTab(QWidget):
             document_id: Internal document ID.
             pmid: PubMed ID.
             doi: The DOI the rescued PDF is saved under.
+
+        Returns:
+            Whether an analysis was actually queued.
         """
-        self._transparency_manager.reanalyse(document_id, pmid=pmid, doi=doi)
+        return self._transparency_manager.reanalyse(document_id, pmid=pmid, doi=doi)
 
     def _on_transparency_result(
         self,

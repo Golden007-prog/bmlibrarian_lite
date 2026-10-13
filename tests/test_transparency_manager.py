@@ -225,7 +225,8 @@ class TestAnalyzeDocument:
         served = []
         manager.analysis_complete.connect(lambda _id, r: served.append(r))
         with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
-            manager.reanalyse("doc1", pmid="12345678", doi="10.1/x")
+            queued = manager.reanalyse("doc1", pmid="12345678", doi="10.1/x")
+        assert queued is True
         assert served == []
         assert executor.submit.called
         assert executor.submit.call_args.args[1:4] == ("doc1", "12345678", "10.1/x")
@@ -241,9 +242,23 @@ class TestAnalyzeDocument:
         served = []
         manager.analysis_complete.connect(lambda _id, r: served.append(r))
         with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
-            manager.reanalyse("doc1", pmid="12345678")
+            queued = manager.reanalyse("doc1", pmid="12345678")
+        assert queued is False
         assert served == [newer]
         assert not executor.submit.called
+
+    def test_reanalyse_queues_nothing_when_disabled_or_without_identifiers(self, manager, mock_storage):
+        """False when analysis is off or the document has no PMID or DOI."""
+        assert manager.reanalyse("doc1") is False
+        manager.settings.enabled = False
+        assert manager.reanalyse("doc1", pmid="12345678") is False
+
+    def test_reanalyse_queues_nothing_when_already_pending(self, manager, mock_storage):
+        """False for a document whose analysis is already queued."""
+        mock_storage.get_transparency_result.return_value = None
+        with patch.object(manager, "start"), patch.object(manager, "_executor"):
+            assert manager.reanalyse("doc1", pmid="12345678") is True
+            assert manager.reanalyse("doc1", pmid="12345678") is False
 
     def test_cached_result_returned(self, manager, mock_storage):
         """Test that cached results are returned without re-analysis."""

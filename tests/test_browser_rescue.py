@@ -316,7 +316,7 @@ def test_a_rescued_document_is_reanalysed_by_its_doi() -> None:
     from bmlibrarian_lite.browser_rescue import reanalyse_rescued
 
     asked: list[tuple[str, str | None, str | None]] = []
-    assert reanalyse_rescued(_rescued_entry(), lambda doc_id: object(), lambda *a: asked.append(a))
+    assert reanalyse_rescued(_rescued_entry(), lambda doc_id: object(), lambda *a: asked.append(a) or True)
     assert asked == [("doc-1", "123", DOI)]
 
 
@@ -327,3 +327,116 @@ def test_a_rescue_of_a_document_storage_does_not_hold_is_not_reanalysed() -> Non
     asked: list[object] = []
     assert not reanalyse_rescued(_rescued_entry(f"doi-{DOI}"), lambda doc_id: None, lambda *a: asked.append(a))
     assert asked == []
+
+
+def test_a_rescue_whose_reanalysis_was_not_queued_is_not_reported_as_asked() -> None:
+    """The result is the manager's own answer, not just that storage holds the document."""
+    from bmlibrarian_lite.browser_rescue import reanalyse_rescued
+
+    assert not reanalyse_rescued(_rescued_entry(), lambda doc_id: object(), lambda *a: False)
+
+
+# -- a page that says "not now" -----------------------------------------------
+
+
+@pytest.mark.parametrize("status", [408, 429, 500, 502, 503])
+def test_a_temporary_error_page_with_no_marker_learns_nothing(status: int) -> None:
+    """It stays pending under the retry delay and the attempt cap."""
+    verdict = page_verdict(status, {"Server": "nginx"}, "<html>temporarily unavailable</html>")
+    assert verdict == RescueVerdict(RescueOutcome.TRANSPORT, status)
+    assert next_state(RescueState.PENDING, verdict, 1) is RescueState.PENDING
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_refusal_with_no_marker_waits_for_a_person(status: int) -> None:
+    """The HTTP client was walled here already: it is not settled as no_pdf."""
+    verdict = page_verdict(status, {"Server": "nginx"}, "<html>forbidden</html>")
+    assert verdict == RescueVerdict(RescueOutcome.CHALLENGE, status, ())
+
+
+def test_an_answered_page_with_no_pdf_is_still_no_pdf() -> None:
+    """Control: a 200 abstract page settles."""
+    assert page_verdict(200, {}, "<html>An abstract.</html>") == RescueVerdict(RescueOutcome.NO_PDF, 200)
+
+
+def test_a_503_behind_a_cloudflare_marker_is_still_a_challenge() -> None:
+    """Control: markers win over the status."""
+    verdict = page_verdict(503, {"Server": "cloudflare"}, "<html>Just a moment...</html>")
+    assert verdict.outcome is RescueOutcome.CHALLENGE
+    assert verdict.markers
+
+
+def test_a_gone_page_stays_gone() -> None:
+    """Control: 404 and 410."""
+    assert page_verdict(410, {}, "").outcome is RescueOutcome.GONE
+
+
+class _StubLimiter:
+    """Records what penalised it."""
+
+    def __init__(self) -> None:
+        self.penalties: list[float | None] = []
+
+    def penalise(self, retry_after: float | None = None) -> None:
+        self.penalties.append(retry_after)
+
+
+def _stub_limiters(monkeypatch: pytest.MonkeyPatch) -> dict[str, _StubLimiter]:
+    from bmlibrarian_lite import browser_rescue
+
+    limiters: dict[str, _StubLimiter] = {}
+    monkeypatch.setattr(browser_rescue, "limiter_for", lambda host: limiters.setdefault(host, _StubLimiter()))
+    return limiters
+
+
+@pytest.mark.parametrize("status", [429, 503])
+def test_a_throttling_answer_penalises_the_hosts_limiter(monkeypatch: pytest.MonkeyPatch, status: int) -> None:
+    """The host's shared limiter is penalised with the Retry-After, case-insensitively."""
+    from bmlibrarian_lite.browser_rescue import penalise_host_for_answer
+
+    limiters = _stub_limiters(monkeypatch)
+    assert penalise_host_for_answer(ADDRESS, status, {"retry-after": "30"})
+    assert limiters["www.sciencedirect.com"].penalties == [30.0]
+
+
+def test_a_throttle_without_retry_after_still_penalises(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Retry-After: the limiter halves, as for the HTTP client."""
+    from bmlibrarian_lite.browser_rescue import penalise_host_for_answer
+
+    limiters = _stub_limiters(monkeypatch)
+    assert penalise_host_for_answer(ADDRESS, 429, {})
+    assert limiters["www.sciencedirect.com"].penalties == [None]
+
+
+def test_other_answers_and_loopback_do_not_penalise(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Control: a 500 or a loopback host leaves the limiter alone."""
+    from bmlibrarian_lite.browser_rescue import penalise_host_for_answer
+
+    limiters = _stub_limiters(monkeypatch)
+    assert not penalise_host_for_answer(ADDRESS, 500, {})
+    assert not penalise_host_for_answer("http://127.0.0.1:8000/x", 503, {})
+    assert limiters == {}
+
+
+def test_the_transparency_report_with_a_challenged_lookup_serialises() -> None:
+    """Lookup records are not part of the report's JSON (a regression guard)."""
+    import json
+
+    from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer import (
+        TransparencyReport,
+    )
+
+    report = TransparencyReport(fulltext_lookups=_record(_challenged()))
+    data = report.to_dict()
+    json.dumps(data)
+    assert "fulltext_lookups" not in data
+
+
+def test_retry_after_is_read_from_headers_whatever_their_case() -> None:
+    """The numeric form only; a date or nothing is None."""
+    from bmlibrarian_lite.polite_session import retry_after_from_headers
+
+    assert retry_after_from_headers({"Retry-After": "12"}) == 12.0
+    assert retry_after_from_headers({"retry-after": "3"}) == 3.0
+    assert retry_after_from_headers({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}) is None
+    assert retry_after_from_headers({}) is None
