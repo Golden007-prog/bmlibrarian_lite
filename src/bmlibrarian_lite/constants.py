@@ -1308,6 +1308,11 @@ MAX_RESCUE_ATTEMPTS = 3
 #: A visit that failed in transit is not retried sooner than this, so one
 #: network blip does not spend every attempt at once.
 RESCUE_RETRY_DELAY_SECONDS = 15 * 60
+#: How long after a visit's verdict could not be saved the save is tried
+#: again; the wait doubles with each further failure, up to
+#: RESCUE_RETRY_DELAY_SECONDS. The visit is never repeated for it: only the
+#: bookkeeping was lost, and a database lock usually clears in seconds.
+RESCUE_VERDICT_SAVE_RETRY_SECONDS = 30
 #: How often the queue is read for entries another process wrote (the MCP
 #: server, the CLI) or that arrived while the hidden pass was off.
 RESCUE_POLL_INTERVAL_MS = 60_000

@@ -77,9 +77,13 @@ back off together. The hidden page is muted.
 
 Two rules inside a visit: once a download is accepted, later page answers are
 ignored, and a visit that ends mid-download cancels the download and discards
-the partial file. If the verdict cannot be written to storage, the whole hidden
-pass pauses for `RESCUE_RETRY_DELAY_SECONDS` rather than revisit the same entry
-at once.
+the partial file. If the verdict cannot be written to storage, the service keeps
+it and tries the write again, never the visit: the entry is still pending, and
+visiting it again would ask the publisher twice. The retry waits
+`RESCUE_VERDICT_SAVE_RETRY_SECONDS` (30 s), doubling with each further failure
+up to `RESCUE_RETRY_DELAY_SECONDS`, and a successful write resets the wait.
+While a verdict is unsaved no new entry is taken, since the next write would
+most likely fail too. At quit an unsaved verdict gets one last try.
 
 ## Who Queues
 
