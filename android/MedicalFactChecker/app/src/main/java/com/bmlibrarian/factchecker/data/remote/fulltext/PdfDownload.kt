@@ -169,3 +169,21 @@ internal fun InputStream.copyToCache(file: File) {
  * @return Its doi.org URL
  */
 fun doiLink(doi: String): String = "${Constants.DOI_URL_PREFIX}$doi"
+
+/**
+ * The first [limit] bytes of a file (fewer when it is shorter).
+ *
+ * `InputStream.readNBytes` needs API 33; the app's minSdk is lower.
+ */
+internal fun readPrefix(file: File, limit: Int): ByteArray {
+    val buffer = ByteArray(limit)
+    var filled = 0
+    file.inputStream().use { input ->
+        while (filled < limit) {
+            val n = input.read(buffer, filled, limit - filled)
+            if (n < 0) break
+            filled += n
+        }
+    }
+    return buffer.copyOf(filled)
+}

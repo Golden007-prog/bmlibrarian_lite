@@ -97,11 +97,36 @@ class FullTextServicePdfDownloadTest {
     /** A challenge page served with 200 is not the PDF, and nothing is cached (#480). */
     @Test
     fun `a page served in place of the PDF is not saved`() = runTest {
-        server.enqueue(MockResponse().setHeader("Content-Type", "text/html").setBody("<html>Just a moment...</html>"))
+        server.enqueue(MockResponse().setHeader("Content-Type", "text/html").setBody("<html>Sign in to read</html>"))
 
         assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)), download())
         assertEquals(emptyList<String>(), cachedFiles())
         assertNull(service.getCachedPdfPath("d"))
+    }
+
+    @Test
+    fun `a challenge served as a PDF is challenged and not saved`() = runTest {
+        server.enqueue(
+            MockResponse().setHeader("Content-Type", "application/pdf").setBody("<title>Preparing to download")
+        )
+
+        assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 200)), download())
+        assertEquals(emptyList<String>(), cachedFiles())
+        assertNull(service.getCachedPdfPath("d"))
+    }
+
+    @Test
+    fun `a cloudflare 403 is challenged`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(403).setHeader("Server", "cloudflare").setBody("<html>"))
+
+        assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 403)), download())
+    }
+
+    @Test
+    fun `an ordinary 403 keeps its status`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(403).setHeader("Server", "nginx").setBody("<html>"))
+
+        assertEquals(PdfDownload.Failed(RequestFailure.forHttpStatus(403)), download())
     }
 
     @Test

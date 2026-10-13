@@ -1047,7 +1047,10 @@ class FullTextService @Inject constructor(
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.w(TAG, "PDF download failed: HTTP ${response.code}")
-                    return@withContext PdfDownload.Failed(RequestFailure.forHttpStatus(response.code))
+                    // A bot wall's challenge page is no answer about the article (#480)
+                    val page = response.peekBody(Constants.CHALLENGE_BODY_PREFIX_BYTES.toLong()).bytes()
+                    val challenge = BotWalls.challengeFailure(response.code, response.headers.toList(), page)
+                    return@withContext PdfDownload.Failed(challenge ?: RequestFailure.forHttpStatus(response.code))
                 }
                 val body = response.body ?: return@withContext PdfDownload.Failed(
                     RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
@@ -1058,7 +1061,11 @@ class FullTextService @Inject constructor(
                     body.byteStream().use { input -> input.copyToCache(partial) }
                     if (!isCachedPdf(partial)) {
                         Log.w(TAG, "PDF download from $pdfUrl is not a PDF")
-                        return@withContext PdfDownload.Failed(RequestFailure(RequestFailureKind.MALFORMED_RESPONSE))
+                        val page = readPrefix(partial, Constants.CHALLENGE_BODY_PREFIX_BYTES)
+                        val challenge = BotWalls.challengeFailure(response.code, response.headers.toList(), page)
+                        return@withContext PdfDownload.Failed(
+                            challenge ?: RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
+                        )
                     }
                     if (!partial.renameTo(localFile)) {
                         Log.e(TAG, "Could not cache the PDF at ${localFile.absolutePath}")
