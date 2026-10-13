@@ -1269,6 +1269,45 @@ HTTP_HEADER_WHITESPACE = " \t"
 # is renamed into place only once the body has arrived whole (#478).
 PDF_PARTIAL_SUFFIX = ".part"
 
+# ---------------------------------------------------------------------------
+# Browser rescue (#480, stage 2): an open-access PDF a bot wall kept from our
+# client, fetched later by a real embedded browser driven from a queue --
+# never inline in a run.
+# ---------------------------------------------------------------------------
+
+#: How long a hidden visit waits for a download before it reads the page:
+#: the spike's 25 s, which passed PMC's wall 12 times in 12.
+RESCUE_HIDDEN_TIMEOUT_MS = 25_000
+#: A started download that receives nothing for this long is cancelled: the
+#: survey's IEEE download stalled for ever.
+RESCUE_DOWNLOAD_STALL_MS = 20_000
+#: How long a visit waits for the page it stayed on to hand over its HTML.
+RESCUE_PAGE_READ_GRACE_MS = 5_000
+#: Visits that failed in transit before an entry waits for a person, so no
+#: entry is retried for ever.
+MAX_RESCUE_ATTEMPTS = 3
+#: A visit that failed in transit is not retried sooner than this, so one
+#: network blip does not spend every attempt at once.
+RESCUE_RETRY_DELAY_SECONDS = 15 * 60
+#: How often the queue is read for entries another process wrote (the MCP
+#: server, the CLI) or that arrived while the hidden pass was off.
+RESCUE_POLL_INTERVAL_MS = 60_000
+#: The priority of an entry an analysis queued.
+RESCUE_PRIORITY_DEFAULT = 0
+#: The priority of an entry a reader is waiting on (stage 3's interrogation
+#: tab): visited before every default one.
+RESCUE_PRIORITY_WAITING = 1
+#: The browser's persistent profile, under the data directory: its cookies
+#: are kept, so a clearance or a person's tick carries over between pages
+#: and sessions.
+BROWSER_PROFILE_DIRNAME = "browser_profile"
+#: The profile's name; QtWebEngine keys its on-disk store by it.
+BROWSER_PROFILE_STORAGE_NAME = "browser-rescue"
+#: The profile's HTTP cache, inside the profile directory.
+BROWSER_PROFILE_CACHE_DIRNAME = "cache"
+#: Milliseconds in a second.
+MS_PER_SECOND = 1000
+
 # The Highwire Press meta tag a landing page declares its PDF in. Repositories
 # (DSpace, EPrints) and most publishers emit it for Google Scholar (#464).
 CITATION_PDF_URL_META_NAME = "citation_pdf_url"
