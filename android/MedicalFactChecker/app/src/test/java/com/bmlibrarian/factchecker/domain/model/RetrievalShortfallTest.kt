@@ -54,6 +54,7 @@ class RetrievalShortfallTest {
                 RequestFailureKind.MALFORMED_RESPONSE to "malformed_response",
                 RequestFailureKind.INCOMPLETE_RESPONSE to "incomplete_response",
                 RequestFailureKind.REQUEST_FAILED to "request_failed",
+                RequestFailureKind.CHALLENGED to "challenged",
             ),
             RequestFailureKind.entries.associateWith { it.persistedValue }
         )

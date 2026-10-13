@@ -161,6 +161,7 @@ class OpenAccessShortfallContractTest {
             RequestFailure(RequestFailureKind.HTTP_STATUS, 408),
             RequestFailure(RequestFailureKind.REDIRECT_REFUSED, 307),
             RequestFailure(RequestFailureKind.REDIRECT_REFUSED),
+            RequestFailure(RequestFailureKind.CHALLENGED, 403),
         )
         for (source in OpenAccessSource.entries) {
             for (failure in failures) {

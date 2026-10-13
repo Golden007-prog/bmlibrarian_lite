@@ -108,6 +108,10 @@ class RequestFailureKind(Enum):
     # 57 with an empty list of IDs.
     INCOMPLETE_RESPONSE = "incomplete_response"
     REQUEST_FAILED = "request_failed"
+    # A bot wall's challenge page served in place of the answer: a defence
+    # against programs, not the source's answer about the article (#480).
+    # Carries the status the challenge came with (200, 403, 503 ...).
+    CHALLENGED = "challenged"
 
 
 @dataclass(frozen=True)
@@ -121,8 +125,8 @@ class RequestFailure:
 
     Attributes:
         kind: What went wrong.
-        status_code: The HTTP status, for ``HTTP_STATUS`` and
-            ``REDIRECT_REFUSED``; ``None`` otherwise or when unknown.
+        status_code: The HTTP status, for ``HTTP_STATUS``,
+            ``REDIRECT_REFUSED`` and ``CHALLENGED``; ``None`` otherwise or when unknown.
 
     Raises:
         ValueError: On construction, if a status code is given for another
@@ -570,7 +574,11 @@ class LookupRecord:
 
 
 # The kinds whose failure is an HTTP answer, and so can name its status.
-_STATUS_CODE_KINDS = (RequestFailureKind.HTTP_STATUS, RequestFailureKind.REDIRECT_REFUSED)
+_STATUS_CODE_KINDS = (
+    RequestFailureKind.HTTP_STATUS,
+    RequestFailureKind.REDIRECT_REFUSED,
+    RequestFailureKind.CHALLENGED,
+)
 
 _REQUEST_FAILURE_REASONS: dict[RequestFailureKind, str] = {
     RequestFailureKind.TIMEOUT: "the request timed out",
@@ -579,6 +587,7 @@ _REQUEST_FAILURE_REASONS: dict[RequestFailureKind, str] = {
     RequestFailureKind.MALFORMED_RESPONSE: "the response could not be read",
     RequestFailureKind.INCOMPLETE_RESPONSE: "the response was incomplete",
     RequestFailureKind.REQUEST_FAILED: "the request failed",
+    RequestFailureKind.CHALLENGED: "the host asked for a robot check",
 }
 
 # The reason phrases a clause names, fixed here rather than taken from

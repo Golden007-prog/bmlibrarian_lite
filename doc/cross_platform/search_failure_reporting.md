@@ -98,6 +98,7 @@ enum RequestFailureKind:          # raw values are persisted: never rename
     MALFORMED_RESPONSE = "malformed_response"
     INCOMPLETE_RESPONSE = "incomplete_response" # fewer records than it counted
     REQUEST_FAILED     = "request_failed"      # anything else
+    CHALLENGED = "challenged"  # a bot wall's challenge page in place of the answer (#480)
 
 struct RequestFailure:
     kind: RequestFailureKind
@@ -191,6 +192,7 @@ The last two apply only to [alternative queries](#alternative-queries-smart-sear
 | `malformed_response` | `"the response could not be read"` |
 | `incomplete_response` | `"the response was incomplete"` |
 | `request_failed` | `"the request failed"` |
+| `challenged` | `"the host asked for a robot check"` |
 
 The phrases are fixed here (RFC 9110 wording), not taken from a platform
 library, whose phrases differ (Python 3.13 renamed 413, 414 and 422; Swift's

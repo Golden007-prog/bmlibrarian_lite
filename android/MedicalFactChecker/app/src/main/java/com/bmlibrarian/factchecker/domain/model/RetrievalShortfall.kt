@@ -59,11 +59,18 @@ enum class RequestFailureKind(val persistedValue: String) {
     INCOMPLETE_RESPONSE("incomplete_response"),
 
     /** Anything else. */
-    REQUEST_FAILED("request_failed");
+    REQUEST_FAILED("request_failed"),
+
+    /**
+     * A bot wall's challenge page in place of the answer (#480): a defence
+     * against programs, not the source's answer about the article. Carries the
+     * status the challenge came with.
+     */
+    CHALLENGED("challenged");
 
     /** Whether a failure of this kind is an HTTP answer, and so can name its status. */
     val carriesStatusCode: Boolean
-        get() = this == HTTP_STATUS || this == REDIRECT_REFUSED
+        get() = this == HTTP_STATUS || this == REDIRECT_REFUSED || this == CHALLENGED
 
     companion object {
         /**
@@ -94,6 +101,7 @@ private val REQUEST_FAILURE_REASONS = mapOf(
     RequestFailureKind.MALFORMED_RESPONSE to "the response could not be read",
     RequestFailureKind.INCOMPLETE_RESPONSE to "the response was incomplete",
     RequestFailureKind.REQUEST_FAILED to "the request failed",
+    RequestFailureKind.CHALLENGED to "the host asked for a robot check",
 )
 
 /**

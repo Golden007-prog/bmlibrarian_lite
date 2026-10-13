@@ -41,7 +41,11 @@
     {"kind": "service_error", "status_code": null, "is_answer": false},
     {"kind": "malformed_response", "status_code": null, "is_answer": false},
     {"kind": "incomplete_response", "status_code": null, "is_answer": false},
-    {"kind": "request_failed", "status_code": null, "is_answer": false}
+    {"kind": "request_failed", "status_code": null, "is_answer": false},
+    {"kind": "challenged", "status_code": 200, "is_answer": false},
+    {"kind": "challenged", "status_code": 403, "is_answer": false},
+    {"kind": "challenged", "status_code": 503, "is_answer": false},
+    {"kind": "challenged", "status_code": null, "is_answer": false}
   ],
   "absence_not_established": [
     {

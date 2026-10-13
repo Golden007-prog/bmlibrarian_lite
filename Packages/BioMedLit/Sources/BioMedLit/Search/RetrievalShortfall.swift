@@ -51,9 +51,14 @@ public enum RequestFailureKind: String, Sendable, Codable, CaseIterable {
     /// Anything else.
     case requestFailed = "request_failed"
 
+    /// A bot wall's challenge page in place of the answer (#480): a defence
+    /// against programs, not the source's answer about the article. Carries
+    /// the status the challenge came with.
+    case challenged
+
     /// Whether a failure of this kind is an HTTP answer, and so can name its status.
     public var carriesStatusCode: Bool {
-        self == .httpStatus || self == .redirectRefused
+        self == .httpStatus || self == .redirectRefused || self == .challenged
     }
 }
 
@@ -208,6 +213,14 @@ public struct RequestFailure: Sendable, Equatable, Hashable {
         return !BioMedLitConstants.unansweredStatusCodes.contains(statusCode)
     }
 
+    /// A bot wall's challenge page, served with this status (#480).
+    ///
+    /// - Parameter statusCode: The status the challenge came with.
+    /// - Returns: The failure, with the status kept when it is a three-digit HTTP status.
+    public static func challenged(statusCode: Int) -> RequestFailure {
+        RequestFailure(kind: .challenged, statusCode: checkedStatusCode(statusCode))
+    }
+
     /// Describe the failure as a clause for a sentence shown to the user.
     ///
     /// - Returns: For example `"HTTP 429 Too Many Requests"` or `"the request timed out"`.
@@ -228,6 +241,8 @@ public struct RequestFailure: Sendable, Equatable, Hashable {
             return "the response could not be read"
         case .incompleteResponse:
             return "the response was incomplete"
+        case .challenged:
+            return "the host asked for a robot check"
         case .requestFailed:
             return "the request failed"
         }

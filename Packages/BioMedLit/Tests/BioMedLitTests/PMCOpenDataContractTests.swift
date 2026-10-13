@@ -235,6 +235,8 @@ final class PMCOpenDataContractTests: XCTestCase {
         case .incompleteResponse: return .incompleteResponse
         case .requestFailed: return .requestFailed
         case .redirectRefused: return .redirectRefused(statusCode: statusCode)
+        // A bot wall's page: no PMC open-data row names one, but it carries a status like an HTTP error.
+        case .challenged: return .challenged(statusCode: try XCTUnwrap(statusCode))
         }
     }
 }
