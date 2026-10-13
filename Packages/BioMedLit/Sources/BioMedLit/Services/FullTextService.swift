@@ -2671,15 +2671,26 @@ public actor FullTextService {
         guard let httpResponse = response as? HTTPURLResponse else {
             throw FullTextError.pdfDownloadFailed(.malformedResponse)
         }
+        let headers = Dictionary(
+            httpResponse.allHeaderFields.compactMap { key, value in
+                (key as? String).map { ($0, "\(value)") }
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let pdfMagic = Data(BioMedLitConstants.pdfMagicBytes)
+        let isPDF = data.count > pdfMagic.count && data.prefix(pdfMagic.count) == pdfMagic
+        // A bot wall's challenge page in place of the PDF is no answer about
+        // the article (#480), whatever status it came with.
+        if !isPDF, let challenge = BotWalls.challengeFailure(
+            status: httpResponse.statusCode, headers: headers, body: data
+        ) {
+            throw FullTextError.pdfDownloadFailed(challenge)
+        }
         guard httpResponse.statusCode == BioMedLitConstants.httpStatusOK else {
             throw FullTextError.pdfDownloadFailed(.httpStatus(httpResponse.statusCode))
         }
-
-        // Verify it looks like a PDF by checking magic bytes (%PDF). A login
-        // page or a bot wall's challenge served with a 200 stops here (#480).
-        let pdfMagic = Data(BioMedLitConstants.pdfMagicBytes)
-        guard data.count > pdfMagic.count,
-              data.prefix(pdfMagic.count) == pdfMagic else {
+        // A login page served with a 200 stops here (#480).
+        guard isPDF else {
             throw FullTextError.pdfDownloadFailed(.malformedResponse)
         }
 
