@@ -95,6 +95,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlparse, urlunparse
 
+# WALL_MARKERS is re-exported: the survey's name for the app's table.
+from bmlibrarian_lite.bot_walls import WALL_MARKERS, named_defences  # noqa: F401
 from bmlibrarian_lite.constants import (
     EUROPEPMC_REQUEST_TIMEOUT_SECONDS,
     EUROPEPMC_SEARCH_URL,
@@ -172,31 +174,6 @@ CLIENTS: tuple[str, ...] = ("desktop", "android", "apple", "browser-headers", "b
 # The clients that are one of ours; ``analyse`` classifies relative to each.
 APP_CLIENTS: tuple[str, ...] = ("desktop", "android", "apple")
 
-# Markup and headers that name a defence against automated clients. Matched
-# on the lowercased start of a non-PDF body, and on header names and values.
-WALL_MARKERS: dict[str, tuple[str, ...]] = {
-    "cloudflare": ("just a moment", "cf-chl", "challenge-platform", "cf-mitigated", "attention required! | cloudflare"),
-    "akamai": ("akamaighost", "errors.edgesuite.net", "you don't have permission to access"),
-    "imperva": ("incapsula", "_incapsula_resource", "visid_incap"),
-    "datadome": ("datadome", "captcha-delivery.com"),
-    "perimeterx": ("px-captcha", "perimeterx", "_pxhd"),
-    "aws-waf": ("awswaf", "aws-waf-token", "x-amzn-waf-action"),
-    "anubis": ("anubis", "making sure you're not a bot"),
-    "captcha": ("g-recaptcha", "hcaptcha", "turnstile", "captcha"),
-    "proof-of-work": ("proof of work", "pow-challenge", "checking your browser", "preparing to download"),
-    "robot-text": (
-        "verify you are human",
-        "are you a robot",
-        "unusual traffic",
-        "not a robot",
-        "automated access",
-        "bot detection",
-        "ai crawlers",
-        "hostile web agent",
-    ),
-}
-
-
 # --------------------------------------------------------------------------
 # Pure helpers: what a row says
 
@@ -238,6 +215,9 @@ def requestable(url: str) -> bool:
 def wall_markers(text: str, headers: Mapping[str, str] | None = None) -> list[str]:
     """The defences named in a page's start and its headers.
 
+    The table and the matching are the app's own (``bmlibrarian_lite.bot_walls``),
+    so the survey measures exactly what the app recognises.
+
     Args:
         text: The start of a non-PDF body, any case.
         headers: The answer's headers, when there are any.
@@ -245,12 +225,7 @@ def wall_markers(text: str, headers: Mapping[str, str] | None = None) -> list[st
     Returns:
         The sorted names in ``WALL_MARKERS`` that matched.
     """
-    haystack = text.lower()
-    if headers:
-        haystack += "\n" + "\n".join(f"{k}: {v}" for k, v in headers.items()).lower()
-    return sorted(
-        name for name, needles in WALL_MARKERS.items() if any(n in haystack for n in needles)
-    )
+    return list(named_defences(text, headers))
 
 
 _TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)

@@ -1253,6 +1253,15 @@ ELSEVIER_SOURCE_LABEL = "Elsevier's API (PDF)"
 # What a PDF file begins with. A body that does not is not the PDF, whatever
 # it was served as -- a login page or a bot wall's challenge (#478, #480).
 PDF_MAGIC_BYTES = b"%PDF"
+# Bot walls (#480): how much of a non-PDF answer is read to recognise a
+# challenge page (a bounded read of a lookup page, never research content),
+# the statuses that say the file is gone whatever the page shows, and the
+# statuses Cloudflare answers a challenge or a block with. The shared contract
+# is doc/cross_platform/fulltext_parity/challenge_detection.json.
+CHALLENGE_BODY_PREFIX_BYTES = 64 * 1024
+CHALLENGE_GONE_STATUSES = frozenset({404, 410})
+CLOUDFLARE_REFUSAL_STATUSES = frozenset({403, 503})
+CLOUDFLARE_SERVER = "cloudflare"
 # Appended to a PDF's cache path while its download is in progress; the file
 # is renamed into place only once the body has arrived whole (#478).
 PDF_PARTIAL_SUFFIX = ".part"
