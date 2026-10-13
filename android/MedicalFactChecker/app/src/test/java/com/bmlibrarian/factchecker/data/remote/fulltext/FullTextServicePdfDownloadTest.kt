@@ -122,6 +122,49 @@ class FullTextServicePdfDownloadTest {
         assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 403)), download())
     }
 
+    /** The page's markers, not the Server header, are what name the wall here (#480). */
+    @Test
+    fun `a 403 whose page names the wall is challenged`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(403).setHeader("Server", "nginx").setBody("<html><title>Just a moment...")
+        )
+
+        assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 403)), download())
+    }
+
+    /**
+     * A refusal whose page cannot be read keeps its answer: the unread page is
+     * no reason to call a 403 a connection failure. The enqueued response
+     * promises more body than it sends, then drops the connection, which fails
+     * the read of the page.
+     */
+    @Test
+    fun `a cloudflare 403 whose page breaks off is still challenged`() = runTest {
+        server.enqueue(brokenBody(403).setHeader("Server", "cloudflare"))
+
+        assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 403)), download())
+    }
+
+    @Test
+    fun `an ordinary 403 whose page breaks off keeps its status`() = runTest {
+        server.enqueue(brokenBody(403).setHeader("Server", "nginx"))
+
+        assertEquals(PdfDownload.Failed(RequestFailure.forHttpStatus(403)), download())
+    }
+
+    @Test
+    fun `a 404 whose page breaks off is still gone`() = runTest {
+        server.enqueue(brokenBody(404))
+
+        assertEquals(PdfDownload.Failed(RequestFailure.forHttpStatus(404)), download())
+    }
+
+    private fun brokenBody(status: Int): MockResponse =
+        MockResponse()
+            .setResponseCode(status)
+            .setBody(Buffer().write(ByteArray(BROKEN_PAGE_BYTES)))
+            .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
+
     @Test
     fun `an ordinary 403 keeps its status`() = runTest {
         server.enqueue(MockResponse().setResponseCode(403).setHeader("Server", "nginx").setBody("<html>"))
@@ -227,5 +270,8 @@ class FullTextServicePdfDownloadTest {
     private companion object {
         /** Enough body that the server breaks off well before its end. */
         const val TRUNCATED_BODY_PADDING = 256 * 1024
+
+        /** Well under the 64 KiB read of a refusal's page, of which MockWebServer sends half. */
+        const val BROKEN_PAGE_BYTES = 8 * 1024
     }
 }

@@ -1047,8 +1047,19 @@ class FullTextService @Inject constructor(
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.w(TAG, "PDF download failed: HTTP ${response.code}")
-                    // A bot wall's challenge page is no answer about the article (#480)
-                    val page = response.peekBody(Constants.CHALLENGE_BODY_PREFIX_BYTES.toLong()).bytes()
+                    // A bot wall's challenge page is no answer about the article (#480).
+                    // A gone answer is discarded whatever its page says, so it is not read;
+                    // a page that cannot be read leaves the refusal its answer, the headers alone
+                    val page = if (response.code in Constants.CHALLENGE_GONE_STATUSES) {
+                        ByteArray(0)
+                    } else {
+                        try {
+                            response.peekBody(Constants.CHALLENGE_BODY_PREFIX_BYTES.toLong()).bytes()
+                        } catch (e: IOException) {
+                            Log.d(TAG, "The refusal's page could not be read: ${e.javaClass.simpleName}")
+                            ByteArray(0)
+                        }
+                    }
                     val challenge = BotWalls.challengeFailure(response.code, response.headers.toList(), page)
                     return@withContext PdfDownload.Failed(challenge ?: RequestFailure.forHttpStatus(response.code))
                 }

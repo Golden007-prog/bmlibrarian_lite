@@ -133,7 +133,7 @@ private val HTTP_REASON_PHRASES = mapOf(
  *
  * @property kind What went wrong
  * @property statusCode The HTTP status, for [RequestFailureKind.HTTP_STATUS] and
- *   [RequestFailureKind.REDIRECT_REFUSED]; null otherwise or when unknown
+ *   [RequestFailureKind.REDIRECT_REFUSED] and [RequestFailureKind.CHALLENGED]; null otherwise or when unknown
  * @throws IllegalArgumentException if a status is given for another kind, or is
  *   not a three-digit HTTP status
  */
