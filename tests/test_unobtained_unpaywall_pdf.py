@@ -571,3 +571,42 @@ def test_a_copy_not_saved_names_its_pdf() -> None:
         SourceLookupSkipped(SERVICE_UNPAYWALL_PDF, LookupSkipReason.NOT_SAVED)
     with pytest.raises(ValueError):
         SourceLookupSkipped(SERVICE_UNPAYWALL_PDF, LookupSkipReason.NOT_SAVED, "   ")
+
+
+CHALLENGED_SENTENCE = (
+    "Failed to obtain a PDF from the following tried sources: repo.example.org, "
+    "named by Unpaywall (the host asked for a robot check). A freely available "
+    "copy may exist. Whether this document is open access was not established."
+)
+
+
+@pytest.mark.parametrize(
+    ("status", "url"),
+    [
+        (403, UNPAYWALL_PDF),
+        (401, UNPAYWALL_PDF),
+        # A 200 page at an address the paywall sniff matches ("access")
+        (200, "https://repo.example.org/openaccess/a.pdf"),
+    ],
+)
+def test_a_challenged_copy_is_not_a_paywall(tmp_path: Path, status: int, url: str) -> None:
+    """The reader is told the copy could not be asked, and offered no login (#480, stage 2)."""
+    page = b"<html><title>Just a moment...</title></html>"
+    session = _Session({url: _response(status, page, "text/html", url)})
+
+    result = _discover([_unpaywall(url)], tmp_path, session)
+
+    assert not result.is_paywall
+    assert result.paywall_url is None
+    assert result.lookups == _pdf_failure(RequestFailure(RequestFailureKind.CHALLENGED, status), url)
+    assert result.error == CHALLENGED_SENTENCE
+
+
+def test_a_plain_refusal_is_still_a_paywall(tmp_path: Path) -> None:
+    """Control: a 403 that names no wall keeps the paywall branch."""
+    page = b"<html><title>Forbidden</title></html>"
+    session = _Session({UNPAYWALL_PDF: _response(403, page, "text/html", UNPAYWALL_PDF)})
+
+    result = _discover([_unpaywall()], tmp_path, session)
+
+    assert result.is_paywall

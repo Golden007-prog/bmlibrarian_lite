@@ -599,8 +599,8 @@ def refused_download_failure(status_code: int) -> RequestFailure:
     ``MALFORMED_RESPONSE``: that says nothing about the article, so the
     reader is told the copy could not be asked (#478). An open-access copy's
     page that :func:`~bmlibrarian_lite.bot_walls.challenge_failure`
-    recognises as a bot wall's challenge is recorded as ``CHALLENGED`` in
-    place of this (#480).
+    recognises as a bot wall's challenge never reaches here: it is recorded
+    as ``CHALLENGED`` and is no paywall (#480).
 
     Args:
         status_code: The status the page was served with.
@@ -2088,8 +2088,7 @@ class PDFDiscoverer:
             # gone answer (404, 410) is discarded whatever its page says, so
             # its page is not read. The longer read is its own copy: the
             # paywall sniff and the write keep ``body_prefix``. A challenge
-            # changes the recorded kind, and for a non-paywall error status
-            # (429, 5xx) also the error text, below.
+            # ends the attempt just below.
             challenge = None
             if (
                 source.source_type in _UNOBTAINED_PDF_SERVICE
@@ -2109,6 +2108,18 @@ class PDFDiscoverer:
                         f"(HTTP {response.status_code}): {', '.join(defences)}"
                     )
 
+            # A bot wall's challenge is no paywall: the copy is free, and the
+            # browser queue takes it (#480, stage 2). Returned before the
+            # paywall sniff, which matched it by its status (401, 403) or by
+            # a word in its address ("access", "pay"), and told the reader "A
+            # source refused access" with an OpenAthens offer.
+            if challenge is not None:
+                return DiscoveryResult(
+                    success=False,
+                    error=challenge.describe(),
+                    failure=challenge,
+                )
+
             # A broken server is not a paywall. The paywall sniff below
             # treats any text/html body whose URL contains "access" as a
             # paywall, which matches every ".../openaccess/..." URL, so a
@@ -2122,12 +2133,6 @@ class PDFDiscoverer:
                 response.status_code >= HTTP_ERROR_STATUS_MIN
                 and response.status_code not in PAYWALL_HTTP_STATUSES
             ):
-                if challenge is not None:
-                    return DiscoveryResult(
-                        success=False,
-                        error=challenge.describe(),
-                        failure=challenge,
-                    )
                 response.raise_for_status()
 
             # Check for paywall indicators
@@ -2138,7 +2143,7 @@ class PDFDiscoverer:
                     is_paywall=True,
                     paywall_url=source.url,
                     error="Access requires institutional subscription or purchase.",
-                    failure=challenge or refused_download_failure(response.status_code),
+                    failure=refused_download_failure(response.status_code),
                 )
 
             response.raise_for_status()
@@ -2152,7 +2157,7 @@ class PDFDiscoverer:
                 return DiscoveryResult(
                     success=False,
                     error=f"Server returned non-PDF content: {content_type}",
-                    failure=challenge or RequestFailure(RequestFailureKind.MALFORMED_RESPONSE),
+                    failure=RequestFailure(RequestFailureKind.MALFORMED_RESPONSE),
                 )
 
             # Check file size

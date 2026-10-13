@@ -112,7 +112,8 @@ def test_a_cloudflare_403_is_challenged(
         source_type=source_type,
     )
     assert result.failure == RequestFailure(RequestFailureKind.CHALLENGED, 403)
-    assert result.is_paywall is True  # the branch it took is unchanged
+    # A wall's challenge is not a paywall: the browser queue takes the copy (#480, stage 2)
+    assert result.is_paywall is False
 
 
 def test_a_cloudflare_503_is_challenged(discovery: PDFDiscoverer, tmp_path: Path) -> None:
