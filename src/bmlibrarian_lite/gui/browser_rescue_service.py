@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -31,6 +32,7 @@ from ..constants import (
     RESCUE_DOWNLOAD_STALL_MS,
     RESCUE_HIDDEN_TIMEOUT_MS,
     RESCUE_POLL_INTERVAL_MS,
+    RESCUE_RETRY_DELAY_SECONDS,
 )
 from ..exceptions import SQLiteError
 from .rescue_attempt import RescueAttempt, rescue_profile
@@ -74,6 +76,7 @@ class BrowserRescueService(QObject):
         stall_ms: int = RESCUE_DOWNLOAD_STALL_MS,
         poll_ms: int = RESCUE_POLL_INTERVAL_MS,
         max_pdf_bytes: int = MAX_PDF_SIZE,
+        clock: Callable[[], float] = time.monotonic,
         parent: QObject | None = None,
     ) -> None:
         """Prepare the pass; :meth:`start` begins it.
@@ -90,6 +93,7 @@ class BrowserRescueService(QObject):
             poll_ms: How often the queue is read for entries written
                 elsewhere.
             max_pdf_bytes: The largest PDF kept.
+            clock: A monotonic clock in seconds; replaced in tests.
             parent: The owning object.
         """
         super().__init__(parent)
@@ -100,6 +104,8 @@ class BrowserRescueService(QObject):
         self._timeout_ms = timeout_ms
         self._stall_ms = stall_ms
         self._max_pdf_bytes = max_pdf_bytes
+        self._clock = clock
+        self._paused_until = 0.0
         self._profile: QWebEngineProfile | None = None
         self._attempt: RescueAttempt | None = None
         self._busy = False
@@ -175,9 +181,12 @@ class BrowserRescueService(QObject):
 
         Returns:
             The entry; ``None`` when off, when none is due, or when the
+            pass is paused after a failed write, or when the
             queue cannot be read (logged; the next poll tries again).
         """
         if not self._config.discovery.browser_rescue_hidden:
+            return None
+        if self._clock() < self._paused_until:
             return None
         try:
             return self._storage.next_rescue_entry()
@@ -251,7 +260,13 @@ class BrowserRescueService(QObject):
             # The PDF, if any, is saved; the next discovery finds it anyway
             logger.error("The verdict for a walled PDF at %s could not be recorded: %s",
                          entry.request.host, e)
-            updated = None
+            # A write failure is storage-wide, and the entry is still due: a
+            # revisit loop would hammer the publisher (and re-download a
+            # rescued PDF), so the whole pass waits out the retry delay
+            self._paused_until = self._clock() + RESCUE_RETRY_DELAY_SECONDS
+            logger.error("The hidden browser pauses for %d seconds", RESCUE_RETRY_DELAY_SECONDS)
+            self._busy = False
+            return
         logger.info("The hidden browser's visit to %s: %s", entry.request.host, verdict.outcome.value)
         self._busy = False
         if updated is not None and updated.state is RescueState.RESCUED:
