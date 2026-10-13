@@ -39,7 +39,7 @@ sub-projects 2 and 3; replaces #483).
   `challenge_detection.json`, contract "A challenged PDF (#480)"). Lodged
   from it: #520, #522, #523.
 - **Stage 2 (Python) in review:** branch `feat/browser-rescue-stage2-480`
-  (PR named in the commit after this one). The queue
+  (PR #529). The queue
   (`browser_rescue.py`, `rescue_queue_store.py`), the hidden QtWebEngine
   pass (`gui/rescue_attempt.py`, `gui/browser_rescue_service.py`), rescue →
   re-analysis, the setting, the #483 removal. Developer doc
