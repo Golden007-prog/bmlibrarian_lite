@@ -478,6 +478,18 @@ public enum BioMedLitConstants {
     /// PDF magic bytes ("%PDF").
     public static let pdfMagicBytes: [UInt8] = [0x25, 0x50, 0x44, 0x46]
 
+    /// Bot walls (#480): how much of a non-PDF answer is read to recognise a
+    /// challenge page, the statuses that say the file is gone whatever the
+    /// page shows, and the statuses Cloudflare answers a challenge with.
+    /// Contract: `doc/cross_platform/fulltext_parity/challenge_detection.json`.
+    public static let challengeBodyPrefixBytes = 64 * 1024
+    public static let challengeGoneStatuses: Set<Int> = [404, 410]
+    public static let cloudflareRefusalStatuses: Set<Int> = [403, 503]
+    public static let cloudflareServer = "cloudflare"
+    /// The whitespace HTTP allows around a header's value (RFC 9110's OWS): a
+    /// space or a tab, and nothing else, so every platform trims a value alike.
+    public static let httpHeaderWhitespace = CharacterSet(charactersIn: " \t")
+
     /// The URL scheme a report uses to point a reference at its document.
     ///
     /// Written by this app's report prompt — ``PromptTemplates`` spells it out

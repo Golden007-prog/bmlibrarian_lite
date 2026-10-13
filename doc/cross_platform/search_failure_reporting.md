@@ -98,10 +98,11 @@ enum RequestFailureKind:          # raw values are persisted: never rename
     MALFORMED_RESPONSE = "malformed_response"
     INCOMPLETE_RESPONSE = "incomplete_response" # fewer records than it counted
     REQUEST_FAILED     = "request_failed"      # anything else
+    CHALLENGED         = "challenged"          # a bot wall's challenge page in place of the answer (#480)
 
 struct RequestFailure:
     kind: RequestFailureKind
-    status_code: Int?                  # HTTP_STATUS and REDIRECT_REFUSED only; 100–999
+    status_code: Int?                  # HTTP_STATUS, REDIRECT_REFUSED and CHALLENGED only; 100–999
 
 struct RetrievalShortfall:
     provider: "pubmed" | "europepmc"   # a source, never "both"
@@ -191,6 +192,7 @@ The last two apply only to [alternative queries](#alternative-queries-smart-sear
 | `malformed_response` | `"the response could not be read"` |
 | `incomplete_response` | `"the response was incomplete"` |
 | `request_failed` | `"the request failed"` |
+| `challenged` | `"the host asked for a robot check"` |
 
 The phrases are fixed here (RFC 9110 wording), not taken from a platform
 library, whose phrases differ (Python 3.13 renamed 413, 414 and 422; Swift's
@@ -226,7 +228,9 @@ source was asked and answered, so it "did not serve it" --
 and any 5xx "could not be asked". A throttle says only "not now"; a 5xx says
 nothing about the article either -- the server failed, or a gateway (502, 504,
 Cloudflare's 52x) never heard from its origin (#445). A refused redirect is our
-own refusal, and a blank or garbled 200 says nothing about the article. That the
+own refusal, and a blank or garbled 200 says nothing about the article; nor does
+a bot wall's challenge page (`challenged`, #480), whatever status it carries,
+403 included. That the
 4xx refusals (400, 401, 403, 408, 422) and a missing status are answers is a
 decision (#445), not a law of HTTP. The search clauses above are unaffected:
 "could not be searched" is true of an answered error too.

@@ -57,6 +57,7 @@ openalex.py           # OpenAlexLocationsClient: the PDFs OpenAlex's locations n
 core_api.py           # CoreTextClient: CORE's extracted text by DOI (user's key); CoreThrottle (429 pause, refused key)
 elsevier_api.py       # ElsevierArticleClient: Elsevier's article API, keyed PDF by DOI (10.1016/ only); ElsevierFetch, ElsevierSession
 keyed_service_session.py # KeyedServiceSession: a keyed service's 429 pause, refused key, refused network (process-wide)
+bot_walls.py          # Bot-wall challenge pages recognised from an answer (#480): WALL_MARKERS, challenge_markers
 pdf_download.py       # PDF download helpers: body prefix, .part file, MAX_PDF_SIZE
 pdf_discovery.py      # PDF source discovery
 rate_limit.py         # Host-keyed, thread-safe pacing for outbound requests
@@ -78,7 +79,7 @@ exceptions.py         # Custom exception hierarchy
 
 **Android** (`android/MedicalFactChecker/`):
 - data/local: Room DB + DAOs
-- data/remote: PubMed, Europe PMC, LLM, Unpaywall, FullText APIs (incl. PmcOpenData, PMC's open-data bucket; OpenAlex; Core, CORE's extracted text; Elsevier, Elsevier's API PDFs with a key; KeyedServiceSession, CORE's and Elsevier's session state)
+- data/remote: PubMed, Europe PMC, LLM, Unpaywall, FullText APIs (incl. PmcOpenData, PMC's open-data bucket; OpenAlex; Core, CORE's extracted text; Elsevier, Elsevier's API PDFs with a key; KeyedServiceSession, CORE's and Elsevier's session state; BotWalls, bot-wall challenge pages)
 - domain: Models, WorkflowState, workflow/ (scoring, searching, reporting)
 - ui: Compose screens + ViewModels (factcheck, report, history, settings, fulltext, onboarding)
 - ui/components: DocumentCard (with transparency), FullTextSourceBadge, SortingControls
@@ -89,7 +90,7 @@ exceptions.py         # Custom exception hierarchy
 
 Shared iOS/macOS components:
 - `JATS/`: XML parsing → HTML/Markdown (JATSXMLParser, JATSModels)
-- `Services/`: EuropePMCService, PubMedService, FullTextService, PMCOpenData (PMC's open-data bucket), OpenAlex, CORE (extracted text), Elsevier (PDFs, with a key), KeyedServiceSession (CORE's and Elsevier's session state)
+- `Services/`: EuropePMCService, PubMedService, FullTextService, PMCOpenData (PMC's open-data bucket), OpenAlex, CORE (extracted text), Elsevier (PDFs, with a key), KeyedServiceSession (CORE's and Elsevier's session state), BotWalls (bot-wall challenge pages)
 - `Transparency/`: Study transparency analysis
   - `Analysis/`: TransparencyScorer, FundingAnalyzer, COIAnalyzer, DataAvailabilityAnalyzer, TrialComplianceAnalyzer
   - `Models/`: TransparencyModels, TransparencyConstants

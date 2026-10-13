@@ -145,6 +145,48 @@ final class FullTextServiceUnpaywallLocationsTests: XCTestCase {
         XCTAssertNil(result.pdfNotSavedFrom, "a refusal is the source's, not a caching problem")
     }
 
+    /// A bot wall's challenge in place of the PDF is its own kind (#480).
+    func testACloudflareRefusalIsRecordedAsChallenged() async throws {
+        StubURLProtocol.routes["unpaywall"] = (200, unpaywall([first]))
+        StubURLProtocol.routes["walled.example.org"] = (403, Data("<html>".utf8))
+        StubURLProtocol.headers["walled.example.org"] = ["Server": "cloudflare"]
+
+        let result = try await fetch()
+
+        XCTAssertEqual(
+            result.openAccessShortfall,
+            OpenAccessShortfall(source: .pdf, failure: .challenged(statusCode: 403), address: first)
+        )
+    }
+
+    func testAChallengePageServedAsAPDFWith200IsChallengedAndNotCached() async throws {
+        StubURLProtocol.routes["unpaywall"] = (200, unpaywall([first]))
+        StubURLProtocol.routes["walled.example.org"] = (200, Data("<title>Preparing to download".utf8))
+        StubURLProtocol.headers["walled.example.org"] = ["Content-Type": "application/pdf"]
+
+        let result = try await fetch()
+
+        XCTAssertEqual(
+            result.openAccessShortfall,
+            OpenAccessShortfall(source: .pdf, failure: .challenged(statusCode: 200), address: first)
+        )
+        XCTAssertNil(FullTextService.cachedPDFPath(for: cacheKey, from: URL(string: first)!), "a challenge page is no PDF")
+    }
+
+    /// The control: a plain 403 from another server stays the host's answer.
+    func testAPlainRefusalIsStillTheHostsAnswer() async throws {
+        StubURLProtocol.routes["unpaywall"] = (200, unpaywall([first]))
+        StubURLProtocol.routes["walled.example.org"] = (403, Data("<html>Forbidden</html>".utf8))
+        StubURLProtocol.headers["walled.example.org"] = ["Server": "nginx"]
+
+        let result = try await fetch()
+
+        XCTAssertEqual(
+            result.openAccessShortfall,
+            OpenAccessShortfall(source: .pdf, failure: .httpStatus(403), address: first)
+        )
+    }
+
     func testTheRepeatedBestLocationIsRequestedOnce() async throws {
         StubURLProtocol.routes["unpaywall"] = (200, unpaywall([first, first]))
         StubURLProtocol.routes["walled.example.org"] = (403, Data())

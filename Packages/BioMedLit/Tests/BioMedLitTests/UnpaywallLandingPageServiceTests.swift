@@ -446,15 +446,16 @@ final class UnpaywallLandingPageServiceTests: XCTestCase {
 
     /// A PDF Unpaywall named whose download fails is refused, not offered as
     /// a link (#478): the reader gets the DOI link, told why the open-access
-    /// copy went unassessed. A bot wall's 403, a dead file's 404 and a
-    /// challenge page served with 200 each keep their cause, so the reader
-    /// gets the right verb.
+    /// copy went unassessed. A plain 403, a dead file's 404 and a login page
+    /// served with 200 each keep their cause, and a bot wall's challenge page
+    /// is its own kind (#480), so the reader gets the right verb.
     func testAPDFUnpaywallNamedThatCannotBeDownloadedIsRefused() async throws {
         let answer = #"{"best_oa_location": {"url_for_pdf": "\#(Self.pdf)"}}"#
         let cases: [(status: Int, body: Data, failure: RequestFailure)] = [
             (403, Data("Forbidden".utf8), .httpStatus(403)),
             (404, Data(), .httpStatus(404)),
-            (200, Data("<html>Just a moment...</html>".utf8), .malformedResponse),
+            (200, Data("<html>Just a moment...</html>".utf8), .challenged(statusCode: 200)),
+            (200, Data("<html>Sign in</html>".utf8), .malformedResponse),
         ]
         for served in cases {
             StubURLProtocol.reset()

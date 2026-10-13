@@ -42,7 +42,7 @@ import re
 import time
 import threading
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -53,6 +53,8 @@ import requests
 from urllib3.util.retry import Retry
 
 from .constants import (
+    CHALLENGE_BODY_PREFIX_BYTES,
+    CHALLENGE_GONE_STATUSES,
     DOI_RESOLVER_ABSENCE_STATUSES,
     DOI_RESOLVER_HOSTS,
     FALLBACK_CONTACT_EMAIL,
@@ -87,6 +89,7 @@ from .analysis_failures import (
     unestablished_access_clause,
     with_unestablished_access,
 )
+from .bot_walls import challenge_failure, challenge_markers
 from .core_api import CoreFetch
 from .data_models import (
     LookupRecord,
@@ -588,13 +591,16 @@ class DiscoveryResult:
 
 
 def refused_download_failure(status_code: int) -> RequestFailure:
-    """The failure a download met by a paywall or a bot wall records.
+    """The failure a download met by a paywall records, when no wall was recognised.
 
     A refusal status (401, 403) is that status, which the reader is told
     "did not serve it". A page served with a success status in place of the
-    PDF -- a login form, a captcha, a challenge page -- is a body that is
-    not the PDF, ``MALFORMED_RESPONSE``: that says nothing about the
-    article, so the reader is told the copy could not be asked (#478, #480).
+    PDF -- a login form, say -- is a body that is not the PDF,
+    ``MALFORMED_RESPONSE``: that says nothing about the article, so the
+    reader is told the copy could not be asked (#478). An open-access copy's
+    page that :func:`~bmlibrarian_lite.bot_walls.challenge_failure`
+    recognises as a bot wall's challenge is recorded as ``CHALLENGED`` in
+    place of this (#480).
 
     Args:
         status_code: The status the page was served with.
@@ -607,7 +613,35 @@ def refused_download_failure(status_code: int) -> RequestFailure:
     return RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
 
 
-#: Whose PDF an unobtained open-access copy is recorded against (#478, #480).
+def read_more_of_prefix(chunks: Iterator[bytes], prefix: bytes, up_to: int) -> bytes:
+    """Read on from an answer's prefix, as far as ``up_to`` bytes in all.
+
+    For a non-PDF answer, whose page is read to recognise a challenge
+    (#480). A stream that breaks here ends the read: what was already
+    read still decides, so a challenge page is not lost to its own
+    connection closing.
+
+    Args:
+        chunks: The rest of the body.
+        prefix: What was read already.
+        up_to: The most bytes to hold in all.
+
+    Returns:
+        ``prefix`` and what followed it, up to ``up_to`` bytes.
+    """
+    more = bytearray(prefix)
+    try:
+        for chunk in chunks:
+            more += chunk
+            if len(more) >= up_to:
+                break
+    except requests.exceptions.RequestException as e:
+        logger.debug(f"An answer's stream broke after {len(more)} bytes of its page: {e!r}")
+    return bytes(more[:up_to])
+
+
+#: Whose PDF an unobtained open-access copy is recorded against (#478, #480);
+#: also the sources whose non-PDF answers are read for a bot wall's challenge.
 _UNOBTAINED_PDF_SERVICE = {
     PDFSourceType.UNPAYWALL_OA: SERVICE_UNPAYWALL_PDF,
     PDFSourceType.OPENALEX_OA: SERVICE_OPENALEX_PDF,
@@ -2048,6 +2082,33 @@ class PDFDiscoverer:
             content_iter = response.iter_content(chunk_size=8192)
             body_prefix = read_body_prefix(content_iter, len(PDF_MAGIC_BYTES))
 
+            # An open-access copy whose answer is not a PDF is read further,
+            # to recognise a bot wall's challenge page: that is no answer
+            # about the article, and is recorded as its own kind (#480). A
+            # gone answer (404, 410) is discarded whatever its page says, so
+            # its page is not read. The longer read is its own copy: the
+            # paywall sniff and the write keep ``body_prefix``. A challenge
+            # changes the recorded kind, and for a non-paywall error status
+            # (429, 5xx) also the error text, below.
+            challenge = None
+            if (
+                source.source_type in _UNOBTAINED_PDF_SERVICE
+                and response.status_code not in CHALLENGE_GONE_STATUSES
+                and not self._looks_like_pdf(body_prefix)
+            ):
+                page = read_more_of_prefix(
+                    content_iter, body_prefix, CHALLENGE_BODY_PREFIX_BYTES
+                )
+                challenge = challenge_failure(
+                    response.status_code, response.headers, page
+                )
+                if challenge is not None:
+                    defences = challenge_markers(response.status_code, response.headers, page)
+                    logger.warning(
+                        f"A bot wall's challenge answered {source.url} "
+                        f"(HTTP {response.status_code}): {', '.join(defences)}"
+                    )
+
             # A broken server is not a paywall. The paywall sniff below
             # treats any text/html body whose URL contains "access" as a
             # paywall, which matches every ".../openaccess/..." URL, so a
@@ -2061,6 +2122,12 @@ class PDFDiscoverer:
                 response.status_code >= HTTP_ERROR_STATUS_MIN
                 and response.status_code not in PAYWALL_HTTP_STATUSES
             ):
+                if challenge is not None:
+                    return DiscoveryResult(
+                        success=False,
+                        error=challenge.describe(),
+                        failure=challenge,
+                    )
                 response.raise_for_status()
 
             # Check for paywall indicators
@@ -2071,7 +2138,7 @@ class PDFDiscoverer:
                     is_paywall=True,
                     paywall_url=source.url,
                     error="Access requires institutional subscription or purchase.",
-                    failure=refused_download_failure(response.status_code),
+                    failure=challenge or refused_download_failure(response.status_code),
                 )
 
             response.raise_for_status()
@@ -2085,7 +2152,7 @@ class PDFDiscoverer:
                 return DiscoveryResult(
                     success=False,
                     error=f"Server returned non-PDF content: {content_type}",
-                    failure=RequestFailure(RequestFailureKind.MALFORMED_RESPONSE),
+                    failure=challenge or RequestFailure(RequestFailureKind.MALFORMED_RESPONSE),
                 )
 
             # Check file size

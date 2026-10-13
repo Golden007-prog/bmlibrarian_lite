@@ -25,6 +25,8 @@ import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.InputStream
+import okhttp3.ResponseBody
+import okio.Buffer
 
 private const val TAG = "PdfDownload"
 
@@ -46,9 +48,10 @@ sealed class PdfDownload {
     /**
      * The source did not serve the PDF.
      *
-     * @property failure Why: the status, the transport failure,
-     *   `MALFORMED_RESPONSE` for a body that is not a PDF, or `REQUEST_FAILED`
-     *   for an address that cannot be requested.
+     * @property failure Why: the status, the transport failure, `CHALLENGED`
+     *   (with its status) for a bot wall's challenge page, `MALFORMED_RESPONSE`
+     *   for any other body that is not a PDF, or `REQUEST_FAILED` for an
+     *   address that cannot be requested.
      */
     data class Failed(val failure: RequestFailure) : PdfDownload()
 
@@ -169,3 +172,43 @@ internal fun InputStream.copyToCache(file: File) {
  * @return Its doi.org URL
  */
 fun doiLink(doi: String): String = "${Constants.DOI_URL_PREFIX}$doi"
+
+/**
+ * The first bytes of a body, enough to tell a PDF ([Constants.PDF_MAGIC_BYTES]),
+ * read without consuming it.
+ *
+ * A read that fails is the transport's and propagates: swallowed, it would
+ * leave an empty start, taken for a page that is not the PDF (#478).
+ *
+ * @param body The answer's body
+ * @return Up to [Constants.PDF_MAGIC_BYTES]'s length of its first bytes; fewer for a shorter body
+ * @throws IOException if the body could not be read
+ */
+internal fun peekStart(body: ResponseBody): ByteArray {
+    val source = body.source()
+    source.request(Constants.PDF_MAGIC_BYTES.size.toLong())
+    val available = minOf(source.buffer.size, Constants.PDF_MAGIC_BYTES.size.toLong())
+    return source.buffer.snapshot(available.toInt()).toByteArray()
+}
+
+/**
+ * Up to [limit] bytes of a body, read without consuming it, keeping what was
+ * read when the stream breaks: a challenge page is not lost to its own
+ * connection closing, as Python's `read_more_of_prefix` keeps it (#480).
+ *
+ * @param body The answer's body
+ * @param limit The most bytes to read
+ * @return The bytes read; fewer than [limit] for a short body or one that broke off
+ */
+internal fun peekPrefix(body: ResponseBody, limit: Int): ByteArray {
+    val peeked = body.source().peek()
+    val read = Buffer()
+    try {
+        while (read.size < limit && peeked.read(read, limit - read.size) >= 0) {
+            // read() appends to the buffer; the loop only bounds it
+        }
+    } catch (e: IOException) {
+        Log.d(TAG, "A page broke off after ${read.size} bytes: ${e.javaClass.simpleName}")
+    }
+    return read.readByteArray()
+}

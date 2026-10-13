@@ -162,7 +162,7 @@ final class OpenAccessShortfallContractTests: XCTestCase {
         let failures: [RequestFailure] = [
             .timeout, .connection, .serviceError, .malformedResponse, .incompleteResponse,
             .requestFailed, .httpStatus(429), .httpStatus(408), .redirectRefused(statusCode: 307),
-            .redirectRefused(statusCode: nil),
+            .redirectRefused(statusCode: nil), .challenged(statusCode: 403),
         ]
         for source in OpenAccessSource.allCases {
             for failure in failures {

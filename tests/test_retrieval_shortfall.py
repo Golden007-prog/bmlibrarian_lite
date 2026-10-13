@@ -82,6 +82,7 @@ class TestRequestFailureKind:
             "malformed_response",
             "incomplete_response",
             "request_failed",
+            "challenged",
         }
 
     @pytest.mark.parametrize("kind", list(RequestFailureKind))
@@ -117,11 +118,22 @@ class TestRequestFailureDescription:
                 "the response was incomplete",
             ),
             (RequestFailure(RequestFailureKind.REQUEST_FAILED), "the request failed"),
+            (RequestFailure(RequestFailureKind.CHALLENGED, 403), "the host asked for a robot check"),
         ],
     )
     def test_each_kind_has_its_own_reason(self, failure: RequestFailure, expected: str) -> None:
         """Two different failures must not read the same to the user."""
         assert failure.describe() == expected
+
+    def test_a_challenge_is_never_an_answer(self) -> None:
+        """A wall's page says nothing about the article, whatever its status."""
+        for status in (200, 403, 429, 503, None):
+            assert RequestFailure(RequestFailureKind.CHALLENGED, status).is_answer is False
+
+    def test_a_stored_challenge_keeps_its_status(self) -> None:
+        """The status travels, as an HTTP status's does."""
+        stored = RequestFailure(RequestFailureKind.CHALLENGED, 503).to_dict()
+        assert RequestFailure.from_dict(stored) == RequestFailure(RequestFailureKind.CHALLENGED, 503)
 
     @pytest.mark.parametrize(
         "status, expected",

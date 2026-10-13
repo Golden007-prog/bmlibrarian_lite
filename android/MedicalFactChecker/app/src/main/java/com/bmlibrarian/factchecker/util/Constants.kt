@@ -622,6 +622,23 @@ object Constants {
      */
     val PDF_MAGIC_BYTES: ByteArray = "%PDF".toByteArray(Charsets.US_ASCII)
 
+    /**
+     * Bot walls (#480): how much of a non-PDF answer is read to recognise a
+     * challenge page, the statuses that say the file is gone whatever the page
+     * shows, and the statuses Cloudflare answers a challenge with. Contract:
+     * `doc/cross_platform/fulltext_parity/challenge_detection.json`.
+     */
+    const val CHALLENGE_BODY_PREFIX_BYTES = 64 * 1024
+    val CHALLENGE_GONE_STATUSES = setOf(404, 410)
+    val CLOUDFLARE_REFUSAL_STATUSES = setOf(403, 503)
+    const val CLOUDFLARE_SERVER = "cloudflare"
+
+    /**
+     * The whitespace HTTP allows around a header's value (RFC 9110's OWS): a
+     * space or a tab, and nothing else, so every platform trims a value alike.
+     */
+    const val HTTP_HEADER_WHITESPACE = " \t"
+
     /** PubMed article URL prefix. */
     const val PUBMED_URL_PREFIX = "https://pubmed.ncbi.nlm.nih.gov/"
 

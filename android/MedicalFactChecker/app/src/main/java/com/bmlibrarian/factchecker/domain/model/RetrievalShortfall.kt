@@ -58,12 +58,19 @@ enum class RequestFailureKind(val persistedValue: String) {
     /** The answer was readable but held less than it counted. */
     INCOMPLETE_RESPONSE("incomplete_response"),
 
+    /**
+     * A bot wall's challenge page in place of the answer (#480): a defence
+     * against programs, not the source's answer about the article. Carries the
+     * status the challenge came with.
+     */
+    CHALLENGED("challenged"),
+
     /** Anything else. */
     REQUEST_FAILED("request_failed");
 
     /** Whether a failure of this kind is an HTTP answer, and so can name its status. */
     val carriesStatusCode: Boolean
-        get() = this == HTTP_STATUS || this == REDIRECT_REFUSED
+        get() = this == HTTP_STATUS || this == REDIRECT_REFUSED || this == CHALLENGED
 
     companion object {
         /**
@@ -94,6 +101,7 @@ private val REQUEST_FAILURE_REASONS = mapOf(
     RequestFailureKind.MALFORMED_RESPONSE to "the response could not be read",
     RequestFailureKind.INCOMPLETE_RESPONSE to "the response was incomplete",
     RequestFailureKind.REQUEST_FAILED to "the request failed",
+    RequestFailureKind.CHALLENGED to "the host asked for a robot check",
 )
 
 /**
@@ -125,7 +133,7 @@ private val HTTP_REASON_PHRASES = mapOf(
  *
  * @property kind What went wrong
  * @property statusCode The HTTP status, for [RequestFailureKind.HTTP_STATUS] and
- *   [RequestFailureKind.REDIRECT_REFUSED]; null otherwise or when unknown
+ *   [RequestFailureKind.REDIRECT_REFUSED] and [RequestFailureKind.CHALLENGED]; null otherwise or when unknown
  * @throws IllegalArgumentException if a status is given for another kind, or is
  *   not a three-digit HTTP status
  */

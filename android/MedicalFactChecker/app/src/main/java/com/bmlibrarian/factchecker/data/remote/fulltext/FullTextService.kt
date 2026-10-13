@@ -1002,20 +1002,22 @@ class FullTextService @Inject constructor(
     /**
      * Download a PDF to local cache.
      *
-     * The body is written to `<id>.pdf.part` and renamed into place only once
-     * it has arrived whole and begins with `%PDF` ([looksLikePdf]), so a page
-     * served in the PDF's place, or a download that broke off, is never
-     * returned as cached (#478). The partial file is removed on every other
-     * outcome. A cached file that is not a PDF, written by an earlier build, is
+     * A body that does not begin with `%PDF` ([looksLikePdf]) is refused
+     * before anything is written, as a challenge page or a malformed one. A
+     * PDF is written to `<id>.pdf.part` and renamed into place only once it
+     * has arrived whole, so a page served in the PDF's place, or a download
+     * that broke off, is never returned as cached (#478). The partial file is
+     * removed on every other outcome. A cached file that is not a PDF, written by an earlier build, is
      * quarantined and fetched again (fulltext_retrieval.md, "Cache Read
      * Validation").
      *
      * @param pdfUrl URL of the PDF to download.
      * @param documentId Document ID for file naming.
      * @return The cached file; why the source did not serve the PDF (the status,
-     *   the transport failure, `MALFORMED_RESPONSE` for a body that is not a
-     *   PDF, or `REQUEST_FAILED` for an address that cannot be requested); or
-     *   [PdfDownload.NotSaved] when the cache could not be written.
+     *   the transport failure, `CHALLENGED` with its status for a bot wall's
+     *   challenge page (#480), `MALFORMED_RESPONSE` for any other body that is
+     *   not a PDF, or `REQUEST_FAILED` for an address that cannot be requested);
+     *   or [PdfDownload.NotSaved] when the cache could not be written.
      * @throws CancellationException if the caller cancelled.
      */
     suspend fun downloadPdf(pdfUrl: String, documentId: String): PdfDownload = withContext(Dispatchers.IO) {
@@ -1047,20 +1049,40 @@ class FullTextService @Inject constructor(
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
                     Log.w(TAG, "PDF download failed: HTTP ${response.code}")
-                    return@withContext PdfDownload.Failed(RequestFailure.forHttpStatus(response.code))
+                    // A bot wall's challenge page is no answer about the article (#480). A
+                    // gone answer is discarded whatever its page says, so it is not read; a
+                    // page that breaks off is judged by what arrived and its headers, and
+                    // with no marker there the status stands.
+                    val page = if (response.code in Constants.CHALLENGE_GONE_STATUSES) {
+                        ByteArray(0)
+                    } else {
+                        response.body?.let { peekPrefix(it, Constants.CHALLENGE_BODY_PREFIX_BYTES) } ?: ByteArray(0)
+                    }
+                    return@withContext PdfDownload.Failed(
+                        challengeFailure(pdfUrl, response, page) ?: RequestFailure.forHttpStatus(response.code)
+                    )
                 }
                 val body = response.body ?: return@withContext PdfDownload.Failed(
                     RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
                 )
 
+                // Told apart before anything is written, as Python and BioMedLit do: a
+                // page is never written to the cache, and a cache that cannot be written
+                // never turns a page into a served copy.
+                if (!looksLikePdf(peekStart(body))) {
+                    Log.w(TAG, "PDF download from $pdfUrl is not a PDF")
+                    val page = peekPrefix(body, Constants.CHALLENGE_BODY_PREFIX_BYTES)
+                    return@withContext PdfDownload.Failed(
+                        challengeFailure(pdfUrl, response, page)
+                            ?: RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
+                    )
+                }
+
                 val partial = File(cacheDir, "$fileName$PDF_PARTIAL_SUFFIX")
                 try {
                     body.byteStream().use { input -> input.copyToCache(partial) }
-                    if (!isCachedPdf(partial)) {
-                        Log.w(TAG, "PDF download from $pdfUrl is not a PDF")
-                        return@withContext PdfDownload.Failed(RequestFailure(RequestFailureKind.MALFORMED_RESPONSE))
-                    }
-                    if (!partial.renameTo(localFile)) {
+                    if (!isCachedPdf(partial) || !partial.renameTo(localFile)) {
+                        // The body began as a PDF, so a file that does not is the cache's fault
                         Log.e(TAG, "Could not cache the PDF at ${localFile.absolutePath}")
                         return@withContext PdfDownload.NotSaved
                     }
@@ -1080,6 +1102,22 @@ class FullTextService @Inject constructor(
             Log.w(TAG, "PDF download error: ${e.javaClass.simpleName}")
             PdfDownload.Failed(RequestFailure.fromException(e))
         }
+    }
+
+    /**
+     * The failure to record when an answer is a bot wall's challenge page, logged
+     * with the defences it names; null for any other answer (#480).
+     *
+     * @param pdfUrl The address asked for, for the log
+     * @param response The answer
+     * @param page The start of its body, as far as it could be read
+     */
+    private fun challengeFailure(pdfUrl: String, response: Response, page: ByteArray): RequestFailure? {
+        val headers = response.headers.toList()
+        val failure = BotWalls.challengeFailure(response.code, headers, page) ?: return null
+        val markers = BotWalls.challengeMarkers(response.code, headers, page)
+        Log.w(TAG, "A bot wall's challenge answered $pdfUrl (HTTP ${response.code}): ${markers.joinToString()}")
+        return failure
     }
 
     /**
