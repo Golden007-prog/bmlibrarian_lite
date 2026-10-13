@@ -114,7 +114,6 @@ def _discover(
     """Run discovery over ``sources``; the other lookups left ``looked_up``."""
     discoverer = PDFDiscoverer(
         unpaywall_email="test@example.com",
-        use_browser_fallback=False,
         openalex=openalex,  # type: ignore[arg-type]
     )
     discoverer._discover_sources = lambda d, p, c: (list(sources), looked_up or LookupRecord())  # type: ignore[method-assign]
@@ -219,7 +218,7 @@ def test_a_cancel_before_openalex_asks_nothing(tmp_path: Path) -> None:
     """A cancel during the last open-access download leaves OpenAlex unasked."""
     openalex = _OpenAlex(OpenAlexWorkFetch.served([OPENALEX_PDF]))
     holder: dict[str, PDFDiscoverer] = {}
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False, openalex=openalex)  # type: ignore[arg-type]
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", openalex=openalex)  # type: ignore[arg-type]
     discoverer._discover_sources = lambda d, p, c: ([_unpaywall()], LookupRecord())  # type: ignore[method-assign]
     holder["d"] = discoverer
     discoverer._session = _Session({UNPAYWALL_PDF: 403}, on_get=lambda: holder["d"].cancel())  # type: ignore[assignment]
@@ -401,7 +400,6 @@ def test_a_doi_that_cleans_to_nothing_is_no_doi(tmp_path: Path, doi: str) -> Non
     openalex = _OpenAlex(OpenAlexWorkFetch.served([OPENALEX_PDF]))
     discoverer = PDFDiscoverer(
         unpaywall_email="test@example.com",
-        use_browser_fallback=False,
         openalex=openalex,  # type: ignore[arg-type]
     )
     session = _Session({})

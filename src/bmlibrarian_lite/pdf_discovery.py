@@ -23,7 +23,6 @@ Provides multiple methods for discovering and downloading PDF files:
 - OpenAlex's locations, for open access PDFs Unpaywall did not name
 - PubMed Central (PMC) for free full text
 - Direct DOI resolution via CrossRef/content negotiation
-- Browser-based download (Playwright) for bot-protected sites
 
 Usage:
     from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
@@ -39,15 +38,13 @@ Usage:
 
 import logging
 import re
-import time
-import threading
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urljoin, urlparse
+from typing import Any, Callable, List, Optional, Tuple
+from urllib.parse import quote, urlparse
 
 import requests
 from urllib3.util.retry import Retry
@@ -115,8 +112,7 @@ from .pdf_download import (
     partial_download_path,
     read_body_prefix,
 )
-from .polite_session import is_loopback_host, mount_politely
-from .rate_limit import limiter_for
+from .polite_session import mount_politely
 from .search_failures import request_failure_from_exception
 
 logger = logging.getLogger(__name__)
@@ -133,7 +129,7 @@ _ID_CONVERTER_ERROR_STATUS = "error"
 # ``requests`` exception embeds the request URL, and the Unpaywall URL carries
 # ``email=<the user's address>`` (the same leak as #196/#330).
 #
-# The download paths (``_try_download``, ``_try_browser_download``) do NOT yet
+# The download path (``_try_download``) does NOT yet
 # follow it -- they still put ``str(e)`` into the reader-facing ``error`` and
 # ``verification_warning`` fields. Those URLs are publisher and PMC ones
 # rather than the credential-bearing lookups, so no secret leaks today, but
@@ -227,214 +223,6 @@ def doi_resolution_failure(status_code: int, url: str) -> SourceLookupFailure | 
         service, RequestFailure(RequestFailureKind.HTTP_STATUS, status_code)
     )
 
-
-# Global browser session manager (singleton, persists across downloads)
-_browser_session: Optional["BrowserSession"] = None
-_browser_lock = threading.Lock()
-
-
-class BrowserSession:
-    """
-    Manages a persistent browser session for PDF downloads.
-
-    Uses Playwright with Chromium to bypass bot protection.
-    The browser window can be visible to allow user interaction
-    (e.g., CAPTCHA solving, cookie consent).
-    """
-
-    def __init__(self, headless: bool = False) -> None:
-        """
-        Initialize browser session.
-
-        Args:
-            headless: If True, run browser without visible window.
-                     Default False to allow user interaction.
-        """
-        self.headless = headless
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
-        self._initialized = False
-
-    def _ensure_initialized(self) -> bool:
-        """Lazily initialize the browser on first use."""
-        if self._initialized:
-            return True
-
-        try:
-            from playwright.sync_api import sync_playwright
-
-            logger.info("Starting browser session for PDF downloads...")
-            self._playwright = sync_playwright().start()
-            self._browser = self._playwright.chromium.launch(
-                headless=self.headless,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                ]
-            )
-            self._context = self._browser.new_context(
-                accept_downloads=True,
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-            )
-            self._page = self._context.new_page()
-            self._initialized = True
-            logger.info("Browser session started successfully")
-            return True
-
-        except Exception as e:
-            logger.warning(f"Failed to initialize browser session: {e}")
-            return False
-
-    def download_pdf(
-        self,
-        url: str,
-        output_path: Path,
-        timeout: int = 60000,
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Download a PDF using the browser.
-
-        Args:
-            url: URL to download from
-            output_path: Path to save the PDF
-            timeout: Download timeout in milliseconds
-
-        Returns:
-            Tuple of (success, error_message)
-        """
-        if not self._ensure_initialized():
-            return False, "Browser session not available"
-
-        try:
-            logger.info(f"Browser downloading: {url}")
-
-            # Set up download handling
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-
-            # The browser fallback reaches the same publisher hosts as the
-            # requests path, so it shares their budget rather than opening a
-            # second one beside it. It is invoked precisely when a host has
-            # already refused us, which is the worst moment to stop being
-            # polite. No mounted adapter can do this for us: Playwright does
-            # not go through requests.
-            browser_host = urlparse(url).hostname or ""
-            if browser_host and not is_loopback_host(browser_host):
-                limiter_for(browser_host).acquire()
-
-            # Navigate and wait for potential download
-            with self._page.expect_download(timeout=timeout) as download_info:
-                self._page.goto(url, wait_until="domcontentloaded", timeout=timeout)
-
-            download = download_info.value
-            download.save_as(output_path)
-
-            # Verify it's a PDF
-            if output_path.exists():
-                with open(output_path, 'rb') as f:
-                    header = f.read(4)
-                    if header == b'%PDF':
-                        logger.info(f"Browser download successful: {output_path}")
-                        return True, None
-                    else:
-                        output_path.unlink(missing_ok=True)
-                        return False, "Downloaded file is not a PDF"
-
-            return False, "Download failed - no file created"
-
-        except Exception as e:
-            error_msg = str(e)
-            # Check if it's a timeout waiting for download (might be HTML page)
-            if "Timeout" in error_msg:
-                # Try to get the page content directly if no download started
-                return self._try_direct_content(url, output_path)
-            logger.warning(f"Browser download failed: {e}")
-            return False, error_msg
-
-    def _try_direct_content(
-        self,
-        url: str,
-        output_path: Path,
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Try to get PDF content directly from page response.
-
-        Some sites serve PDF inline rather than as a download.
-        """
-        try:
-            # Check if current page has PDF content
-            content_type = self._page.evaluate(
-                "() => document.contentType"
-            )
-
-            if content_type and 'pdf' in content_type.lower():
-                # Page itself is a PDF, save it
-                response = self._context.request.get(url)
-                if response.ok:
-                    output_path.write_bytes(response.body())
-                    return True, None
-
-            return False, "Page did not serve PDF content"
-
-        except Exception as e:
-            return False, f"Failed to get direct content: {e}"
-
-    def close(self) -> None:
-        """Close the browser session."""
-        if self._page:
-            try:
-                self._page.close()
-            except Exception:
-                pass
-        if self._context:
-            try:
-                self._context.close()
-            except Exception:
-                pass
-        if self._browser:
-            try:
-                self._browser.close()
-            except Exception:
-                pass
-        if self._playwright:
-            try:
-                self._playwright.stop()
-            except Exception:
-                pass
-        self._initialized = False
-        logger.info("Browser session closed")
-
-
-def get_browser_session(headless: bool = False) -> Optional[BrowserSession]:
-    """
-    Get the global browser session, creating it if needed.
-
-    Args:
-        headless: If True, run browser without visible window
-
-    Returns:
-        BrowserSession instance or None if unavailable
-    """
-    global _browser_session
-
-    with _browser_lock:
-        if _browser_session is None:
-            _browser_session = BrowserSession(headless=headless)
-        return _browser_session
-
-
-def close_browser_session() -> None:
-    """Close the global browser session."""
-    global _browser_session
-
-    with _browser_lock:
-        if _browser_session is not None:
-            _browser_session.close()
-            _browser_session = None
 
 # User agent for HTTP requests
 USER_AGENT = "BMLibrarian/1.0 (https://github.com/hherb/bmlibrarian-lite; mailto:support@bmlibrarian.org)"
@@ -760,7 +548,6 @@ class PDFDiscoverer:
     - Unpaywall API for open access discovery
     - PubMed Central for free full text
     - Direct DOI resolution
-    - Browser-based download for bot-protected sites
     - Content verification
     """
 
@@ -769,8 +556,6 @@ class PDFDiscoverer:
         unpaywall_email: Optional[str] = None,
         openathens_url: Optional[str] = None,
         progress_callback: Optional[Callable[[str, str], None]] = None,
-        use_browser_fallback: bool = True,
-        browser_headless: bool = False,
         openalex_email: str | None = None,
         openalex: OpenAlexLocationsClient | None = None,
         elsevier: ElsevierArticleClient | None = None,
@@ -783,8 +568,6 @@ class PDFDiscoverer:
                 the application's placeholder counts as none)
             openathens_url: OpenAthens institution URL for authenticated access
             progress_callback: Callback for progress updates (stage, status)
-            use_browser_fallback: If True, use browser for bot-protected downloads
-            browser_headless: If True, run browser without visible window
             openalex_email: The contact email sent to OpenAlex, the one the
                 transparency analysis already sends it; the application's
                 placeholder counts as none, and OpenAlex is then asked
@@ -805,8 +588,6 @@ class PDFDiscoverer:
         self._elsevier = elsevier
         self.openathens_url = openathens_url
         self.progress_callback = progress_callback
-        self.use_browser_fallback = use_browser_fallback
-        self.browser_headless = browser_headless
         self._session = self._create_session()
         self._cancelled = False
 
@@ -970,7 +751,6 @@ class PDFDiscoverer:
 
         # Try to download from each source
         last_paywall_result: Optional[DiscoveryResult] = None
-        blocked_oa_sources: List[PDFSource] = []  # Track sources blocked by bot protection
         # Elsevier's copy first, before every copy tried below (rank -1)
         unobtained: list[tuple[int, LookupRecord]] = (
             [(-1, elsevier_copy)] if elsevier_copy.anything_unsettled else []
@@ -1037,11 +817,10 @@ class PDFDiscoverer:
                 unobtained.append((rank, record))
 
             if result.is_paywall:
-                # For open access sources, a 403 might be bot protection, not paywall
-                # Keep trying other sources first
                 if source.is_open_access:
-                    logger.info(f"Source {source.url} blocked (may be bot protection), trying next source")
-                    blocked_oa_sources.append(source)
+                    # A refusal of an open-access copy is held, and the other
+                    # sources are tried first
+                    logger.info(f"Source {source.url} refused us; trying the next source")
                     last_paywall_result = result
                     continue
                 else:
@@ -1067,23 +846,6 @@ class PDFDiscoverer:
                             result.error or "", told.merged(not_obtained)
                         ),
                     )
-
-        # If we have blocked OA sources and browser fallback is enabled, try browser
-        if blocked_oa_sources and self.use_browser_fallback:
-            self._emit_progress("download", "browser_fallback")
-            logger.info("Trying browser-based download for bot-protected sources...")
-
-            for source in blocked_oa_sources:
-                if self._cancelled:
-                    return DiscoveryResult(
-                        success=False,
-                        error="Cancelled",
-                        lookups=lookups,
-                    )
-
-                result = self._try_browser_download(source, output_path, expected_title or title)
-                if result.success:
-                    return result.with_lookups(lookups)
 
         not_obtained = self._ranked(unobtained)
         # CORE last, after every copy tried: its text settles the question
@@ -2252,57 +2014,6 @@ class PDFDiscoverer:
                 error=str(e),
                 failure=RequestFailure(RequestFailureKind.REQUEST_FAILED),
             )
-
-    def _try_browser_download(
-        self,
-        source: PDFSource,
-        output_path: Path,
-        expected_title: Optional[str],
-    ) -> DiscoveryResult:
-        """
-        Try to download PDF using browser session.
-
-        Used as fallback when regular HTTP requests are blocked by bot protection.
-
-        Args:
-            source: PDF source to download from
-            output_path: Path to save the PDF
-            expected_title: Expected document title for verification
-
-        Returns:
-            DiscoveryResult with success status
-        """
-        logger.info(f"Browser download attempt: {source.url}")
-        self._emit_progress("download", "browser")
-
-        try:
-            browser = get_browser_session(headless=self.browser_headless)
-            if browser is None:
-                return DiscoveryResult(
-                    success=False,
-                    error="Browser session not available",
-                )
-
-            success, error = browser.download_pdf(source.url, output_path)
-
-            if not success:
-                logger.warning(f"Browser download failed: {error}")
-                return DiscoveryResult(success=False, error=error)
-
-            self._emit_progress("download", "success")
-
-            return DiscoveryResult(
-                success=True,
-                file_path=output_path,
-                source=source,
-                verification_warning=self._verification_warning(
-                    output_path, expected_title
-                ),
-            )
-
-        except Exception as e:
-            logger.exception(f"Browser download error for {source.url}")
-            return DiscoveryResult(success=False, error=str(e))
 
     def _is_paywall_response(
         self,

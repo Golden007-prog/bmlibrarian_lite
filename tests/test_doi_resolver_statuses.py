@@ -186,9 +186,7 @@ def discoverer() -> PDFDiscoverer:
     Returns:
         The discoverer.
     """
-    return PDFDiscoverer(
-        unpaywall_email="test@example.com", use_browser_fallback=False
-    )
+    return PDFDiscoverer(unpaywall_email="test@example.com")
 
 
 def _script(discoverer: PDFDiscoverer, **by_host: Any) -> ScriptedHosts:

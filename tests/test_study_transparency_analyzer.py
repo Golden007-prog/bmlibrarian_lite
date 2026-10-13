@@ -42,7 +42,6 @@ def analyzer() -> StudyTransparencyAnalyzer:
     """Create an analyzer without browser fallback (no network in __init__)."""
     return StudyTransparencyAnalyzer(
         email="test@example.com",
-        use_browser_fallback=False,
         auto_discover_fulltext=False,
     )
 

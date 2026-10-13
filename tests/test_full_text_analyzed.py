@@ -39,7 +39,6 @@ def _analyzer(discovered: str | None = None) -> StudyTransparencyAnalyzer:
     """
     analyzer = StudyTransparencyAnalyzer(
         email="test@example.com",
-        use_browser_fallback=False,
         auto_discover_fulltext=discovered is not None,
     )
     analyzer._fetch_basic_metadata = lambda report: None

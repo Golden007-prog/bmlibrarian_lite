@@ -136,9 +136,7 @@ class _Session:
 @pytest.fixture
 def discoverer() -> PDFDiscoverer:
     """A discoverer with no browser fallback and an Unpaywall address."""
-    return PDFDiscoverer(
-        unpaywall_email="test@example.com", use_browser_fallback=False
-    )
+    return PDFDiscoverer(unpaywall_email="test@example.com")
 
 
 def _discover(

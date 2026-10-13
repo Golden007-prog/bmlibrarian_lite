@@ -86,7 +86,6 @@ def analyzer() -> StudyTransparencyAnalyzer:
     """An analyzer that makes no network call on construction."""
     return StudyTransparencyAnalyzer(
         email="test@example.com",
-        use_browser_fallback=False,
         auto_discover_fulltext=False,
     )
 

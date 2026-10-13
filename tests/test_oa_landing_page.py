@@ -180,7 +180,7 @@ def test_the_desktop_discovers_the_same_pdfs(row: dict[str, Any]) -> None:
         def get(self, url: str, **kwargs: Any) -> _Answer:
             return _Answer()
 
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     discoverer._session = _Session()  # type: ignore[assignment]
     sources, failure = discoverer._discover_unpaywall("10.1/x")
 

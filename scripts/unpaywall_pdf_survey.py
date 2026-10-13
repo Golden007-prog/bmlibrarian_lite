@@ -642,7 +642,7 @@ def _desktop_headers() -> dict[str, str | None]:
     """The desktop app's download headers, read from the shipped session."""
     from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
 
-    session = PDFDiscoverer(unpaywall_email=None, use_browser_fallback=False)._session
+    session = PDFDiscoverer(unpaywall_email=None)._session
     return {
         "User-Agent": session.headers["User-Agent"],
         "Accept": session.headers["Accept"],

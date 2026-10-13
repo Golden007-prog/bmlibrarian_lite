@@ -12,7 +12,6 @@ Automated detection of industry sponsorship, data disclosure practices, and conf
 - **Multi-pass COI analysis** - 4-pass approach: pharma names > intermediary patterns > industry keywords > blanket denials
 - **Transparency scoring** - 0-100 score with compound penalties for industry ties + restricted data
 - **Risk indicators** - Automatically identifies risk of bias signals
-- **Mobile/CI safe mode** - `use_browser_fallback=False` disables Playwright for headless environments
 - **Batch processing** - Analyze multiple studies from CSV or text files
 - **CLI and Python API** - Use from command line or integrate into your own code
 
@@ -25,13 +24,6 @@ from study_transparency_analyzer import StudyTransparencyAnalyzer
 
 # Full analysis — auto-discovers full text from all sources
 analyzer = StudyTransparencyAnalyzer(email="your@email.com")
-report = analyzer.analyze(doi="10.1056/NEJMoa2034577")
-
-# Mobile/CI safe — no browser, but still tries API-based full-text sources
-analyzer = StudyTransparencyAnalyzer(
-    email="your@email.com",
-    use_browser_fallback=False,
-)
 report = analyzer.analyze(doi="10.1056/NEJMoa2034577")
 
 # Manual full-text override (skips auto-discovery)
@@ -50,10 +42,6 @@ print(f"Risk indicators: {report.risk_of_bias_indicators}")
 ```bash
 # Full analysis with automatic full-text discovery
 python study_transparency_analyzer.py --pmid 33301246 --email your@email.com
-
-# Without browser fallback (safe for CI/mobile/headless)
-python study_transparency_analyzer.py --pmid 33301246 --email your@email.com \
-    --no-browser
 
 # With manual full-text file (skips auto-discovery)
 python study_transparency_analyzer.py --doi "10.1016/S0140-6736(25)01578-8" \
@@ -74,7 +62,6 @@ python study_transparency_analyzer.py --pmid 33301246 --email your@email.com \
 | `--api-key` | No | NCBI API key for higher rate limits |
 | `--fulltext` | No | Path to full-text file (skips auto-discovery) |
 | `--unpaywall-email` | No | Email for Unpaywall API (defaults to `--email`) |
-| `--no-browser` | No | Disable Playwright browser fallback |
 | `--no-fulltext-discovery` | No | Skip auto full-text discovery entirely |
 | `--output` | No | `summary` (default), `text`, or `json` |
 | `--output-file` | No | Write output to file |
@@ -83,16 +70,15 @@ python study_transparency_analyzer.py --pmid 33301246 --email your@email.com \
 
 When no `fulltext` is provided, the analyzer automatically tries these sources (in order):
 
-| Priority | Source | Requires Browser |
-|----------|--------|:---:|
-| 1 | Cached markdown | No |
-| 2 | Europe PMC XML (JATS → markdown) | No |
-| 3 | Europe PMC PDF render | No |
-| 4 | Cached PDF | No |
-| 5 | Unpaywall / PMC / publisher HTTP | No |
-| 6 | Playwright browser fallback | **Yes** |
+| Priority | Source |
+|----------|--------|
+| 1 | Cached markdown |
+| 2 | Europe PMC XML (JATS → markdown) |
+| 3 | Europe PMC PDF render |
+| 4 | Cached PDF |
+| 5 | Unpaywall / PMC / publisher HTTP |
 
-Set `use_browser_fallback=False` (or `--no-browser`) to skip step 6 — all other sources still work. This is the recommended setting for mobile apps, CI pipelines, and headless servers.
+A walled open-access PDF is queued for the desktop's embedded browser (see `doc/developer/browser_rescue.md`).
 
 ## How It Works
 

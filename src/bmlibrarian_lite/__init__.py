@@ -53,7 +53,7 @@ from .exceptions import (
     EmbeddingError,
     LLMError,
 )
-from .pdf_discovery import PDFDiscoverer, PDFSource, DiscoveryResult, close_browser_session
+from .pdf_discovery import PDFDiscoverer, PDFSource, DiscoveryResult
 from .search_service import SearchService, UnifiedSearchResult
 from .query_translator import QueryTranslator
 from .search_merger import SearchResultMerger, MergedArticle
@@ -102,7 +102,6 @@ __all__ = [
     "PDFDiscoverer",
     "PDFSource",
     "DiscoveryResult",
-    "close_browser_session",
     # Exceptions
     "LiteError",
     "ConfigurationError",

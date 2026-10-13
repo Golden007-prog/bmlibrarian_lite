@@ -74,7 +74,6 @@ def analyzer() -> StudyTransparencyAnalyzer:
     """An analyzer that makes no network call on construction."""
     return StudyTransparencyAnalyzer(
         email="test@example.com",
-        use_browser_fallback=False,
         auto_discover_fulltext=False,
     )
 
@@ -287,7 +286,6 @@ def discoverer():
 
     return PDFDiscoverer(
         unpaywall_email="test@example.com",
-        use_browser_fallback=False,
     )
 
 
@@ -504,9 +502,7 @@ class TestDiscoveryResultSaysWhyItFoundNothing:
         """
         from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
 
-        sources, record = PDFDiscoverer(
-            unpaywall_email="test@example.com", use_browser_fallback=False
-        )._discover_sources(doi=None, pmid=None, pmcid="PMC1")
+        sources, record = PDFDiscoverer(unpaywall_email="test@example.com")._discover_sources(doi=None, pmid=None, pmcid="PMC1")
 
         assert sources
         assert record == LookupRecord()

@@ -127,7 +127,7 @@ def _discover(
     sources: list[PDFSource], tmp_path: Path, session: Any = None
 ) -> DiscoveryResult:
     """Run the download loop over ``sources``, every lookup answered."""
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     discoverer._discover_sources = lambda doi, pmid, pmcid: (list(sources), LookupRecord())  # type: ignore[method-assign]
     if session is not None:
         discoverer._session = session  # type: ignore[assignment]
@@ -212,7 +212,7 @@ def test_control_without_a_tried_pdf_the_claim_is_qualified(tmp_path: Path) -> N
     The tried-sources statement replaces the claim only when it is said; a
     lookup-only record keeps today's wording.
     """
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     unasked = LookupRecord(failures=(
         SourceLookupFailure(SERVICE_UNPAYWALL, RequestFailure(RequestFailureKind.TIMEOUT)),
     ))
@@ -426,7 +426,7 @@ def test_a_pdf_that_could_not_be_saved_is_a_caching_note_not_absent(tmp_path: Pa
     """
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the cache directory should be")
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     discoverer._discover_sources = lambda doi, pmid, pmcid: ([_unpaywall(), _unpaywall(PUBLISHER_PDF)], LookupRecord())  # type: ignore[method-assign]
     session = _Session({UNPAYWALL_PDF: _response(200, PDF_BYTES, "application/pdf", UNPAYWALL_PDF)})
     discoverer._session = session  # type: ignore[assignment]
@@ -447,7 +447,7 @@ def _discover_unsaveable(
     """Run the download loop where the PDF is served but cannot be written."""
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the cache directory should be")
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     discoverer._discover_sources = lambda doi, pmid, pmcid: (list(sources), looked_up or LookupRecord())  # type: ignore[method-assign]
     discoverer._session = session  # type: ignore[assignment]
     return discoverer.discover_and_download(blocker / "a.pdf", doi="10.1/x")

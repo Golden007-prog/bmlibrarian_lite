@@ -2829,8 +2829,6 @@ class StudyTransparencyAnalyzer:
         email: str,
         pubmed_api_key: Optional[str] = None,
         unpaywall_email: Optional[str] = None,
-        use_browser_fallback: bool = True,
-        browser_headless: bool = False,
         auto_discover_fulltext: bool = True,
         core_api_key: str | None = None,
         elsevier_credentials: ElsevierCredentials | None = None,
@@ -2842,15 +2840,11 @@ class StudyTransparencyAnalyzer:
             email: Contact email (required by APIs)
             pubmed_api_key: Optional NCBI API key for higher rate limits
             unpaywall_email: Email for Unpaywall API (defaults to email)
-            use_browser_fallback: If True, use Playwright browser for
-                bot-protected downloads. Set to False for mobile/CI
-                environments where a browser is unavailable.
-            browser_headless: If True, run browser without visible window
             auto_discover_fulltext: If True, automatically attempt full-text
                 discovery when no fulltext is provided to analyze().
                 Tries cached markdown, Europe PMC XML, PMC's open-data
-                bucket, Europe PMC PDF, cached PDF, PDF download (with
-                optional browser fallback), and CORE's extracted text.
+                bucket, Europe PMC PDF, cached PDF, PDF download,
+                and CORE's extracted text.
             core_api_key: The configured CORE key (#480, stage C), asked
                 for CORE's extracted text when no PDF is obtained or the
                 PDF yields no text; the ``CORE_API_KEY`` environment
@@ -2867,8 +2861,6 @@ class StudyTransparencyAnalyzer:
         self.openalex = OpenAlexClient(email)
 
         self._unpaywall_email = unpaywall_email or email
-        self._use_browser_fallback = use_browser_fallback
-        self._browser_headless = browser_headless
         self._auto_discover_fulltext = auto_discover_fulltext
         self._core_api_key = core_api_key
         self._elsevier_credentials = elsevier_credentials
@@ -2889,8 +2881,7 @@ class StudyTransparencyAnalyzer:
         2. Europe PMC XML (converted to markdown)
         3. Europe PMC PDF render
         4. Cached PDF (text extracted)
-        5. PDF download via Unpaywall/PMC/publisher (optionally with
-           browser fallback, controlled by ``use_browser_fallback``)
+        5. PDF download via Unpaywall/PMC/publisher
 
         Args:
             doi: Digital Object Identifier
@@ -2962,8 +2953,7 @@ class StudyTransparencyAnalyzer:
         """The discoverer an analysis asks for the article's full text.
 
         Returns:
-            A discoverer with this analyser's emails, browser settings and
-            CORE key.
+            A discoverer with this analyser's emails and CORE key.
 
         Raises:
             ImportError: If the full-text discovery module is unavailable.
@@ -2972,8 +2962,6 @@ class StudyTransparencyAnalyzer:
 
         return FulltextDiscoverer(
             unpaywall_email=self._unpaywall_email,
-            use_browser_fallback=self._use_browser_fallback,
-            browser_headless=self._browser_headless,
             openalex_email=self.email,
             core_api_key=self._core_api_key,
             elsevier_credentials=self._elsevier_credentials,
@@ -2984,7 +2972,7 @@ class StudyTransparencyAnalyzer:
 
         Uses the project's FulltextDiscoverer to try multiple sources
         (cached markdown, Europe PMC XML/PDF, cached PDF, Unpaywall,
-        PMC, publisher HTTP, and optionally browser fallback).
+        PMC, and publisher HTTP).
 
         Args:
             report: TransparencyReport with resolved identifiers
@@ -3802,12 +3790,6 @@ def main():
         help='Email for Unpaywall API (defaults to --email)'
     )
     parser.add_argument(
-        '--no-browser',
-        action='store_true',
-        help='Disable Playwright browser fallback for PDF downloads. '
-             'Use this in headless/CI/mobile environments.'
-    )
-    parser.add_argument(
         '--no-fulltext-discovery',
         action='store_true',
         help='Skip automatic full-text discovery entirely. '
@@ -3833,7 +3815,6 @@ def main():
         email=args.email,
         pubmed_api_key=args.api_key,
         unpaywall_email=args.unpaywall_email,
-        use_browser_fallback=not args.no_browser,
         auto_discover_fulltext=auto_discover,
     )
     report = analyzer.analyze(doi=args.doi, pmid=args.pmid, fulltext=fulltext)

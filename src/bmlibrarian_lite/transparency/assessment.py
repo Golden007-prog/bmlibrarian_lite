@@ -89,8 +89,8 @@ def create_background_analyzer(
 ) -> StudyTransparencyAnalyzer:
     """Build the analyser a background analysis runs.
 
-    Browser fallback is disabled, so no worker thread blocks on Playwright;
-    the API-based sources are enough for a transparency assessment.
+    No worker thread waits on a browser: a walled PDF is queued for the GUI's
+    embedded browser instead (#480).
 
     Args:
         email: Contact email for the literature sources.
@@ -108,7 +108,6 @@ def create_background_analyzer(
         email=email,
         pubmed_api_key=pubmed_api_key,
         unpaywall_email=unpaywall_email or email,
-        use_browser_fallback=False,
         auto_discover_fulltext=True,
         core_api_key=core_api_key,
         elsevier_credentials=elsevier_credentials,

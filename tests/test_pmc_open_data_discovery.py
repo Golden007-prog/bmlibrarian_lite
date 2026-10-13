@@ -65,7 +65,7 @@ def _discoverer(
         "bmlibrarian_lite.fulltext_discovery.save_fulltext_markdown",
         lambda _d, _m: tmp_path / "cached.md",
     )
-    discoverer = FulltextDiscoverer(use_browser_fallback=False, pmc_open_data=bucket)  # type: ignore[arg-type]
+    discoverer = FulltextDiscoverer(pmc_open_data=bucket)  # type: ignore[arg-type]
     discoverer._try_europepmc_xml = lambda *_a, **_k: _europepmc_absent()  # type: ignore[method-assign]
     return discoverer
 

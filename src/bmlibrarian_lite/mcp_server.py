@@ -834,7 +834,6 @@ def _make_server(config: LiteConfig) -> tuple[Server, _AgentsContext]:
             # it (#435): it is the one the configuration advice names.
             unpaywall_email=config.discovery.unpaywall_email or config.pubmed.email,
             openalex_email=config.pubmed.email,
-            use_browser_fallback=False,
             core_api_key=config.discovery.core_api_key,
             elsevier_credentials=ElsevierCredentials.from_config(config.discovery),
         ),

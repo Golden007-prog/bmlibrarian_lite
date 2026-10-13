@@ -141,7 +141,7 @@ def _discover_with(
 
 def _discover(core: Any, tmp_path: Path, **kwargs: Any) -> FulltextResult:
     """:func:`_discover_with`, with this CORE."""
-    return _discover_with(FulltextDiscoverer(use_browser_fallback=False, core=core), tmp_path, **kwargs)
+    return _discover_with(FulltextDiscoverer(core=core), tmp_path, **kwargs)
 
 
 def test_cores_text_is_the_full_text_when_nothing_else_has_it(tmp_path: Path) -> None:
@@ -210,7 +210,7 @@ def test_a_scripted_401_reaches_the_reader_as_a_refused_key(tmp_path: Path) -> N
 
 def test_without_a_key_core_is_not_asked_and_nothing_is_recorded(tmp_path: Path) -> None:
     """Spec decision 4: silent, and blocks nothing."""
-    discoverer = FulltextDiscoverer(use_browser_fallback=False)  # conftest: no client
+    discoverer = FulltextDiscoverer()  # conftest: no client
     assert discoverer._core is None
     result = _discover_with(discoverer, tmp_path)
     assert SERVICE_CORE not in {f.service for f in result.lookups.failures}
@@ -230,7 +230,7 @@ def test_a_downloaded_pdf_means_core_is_never_asked(tmp_path: Path) -> None:
 
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([source], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", return_value=downloaded):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "a.pdf", doi=DOI, core_text=core
         )
     assert asked == []
@@ -245,7 +245,7 @@ def test_a_copy_served_but_not_saved_means_core_is_never_asked(tmp_path: Path) -
     source = _open_access_source("https://repo.example.org/a.pdf")
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([source], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", return_value=not_saved):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI, core_text=core.fetch_full_text
         )
     assert core.asked == []
@@ -255,7 +255,7 @@ def test_a_copy_served_but_not_saved_means_core_is_never_asked(tmp_path: Path) -
 def test_a_cancel_means_core_is_never_asked(tmp_path: Path) -> None:
     """We stopped asking: CORE is not asked after a cancel."""
     core = _Core(CoreFetch.served(TEXT))
-    discoverer = PDFDiscoverer(use_browser_fallback=False)
+    discoverer = PDFDiscoverer()
     source = _open_access_source("https://repo.example.org/a.pdf")
 
     def cancelled(self: PDFDiscoverer, *_a: Any) -> DiscoveryResult:
@@ -296,7 +296,7 @@ def test_core_is_asked_after_every_refused_copy_and_openalex(tmp_path: Path) -> 
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([source], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", try_download), \
          patch.object(PDFDiscoverer, "_discover_openalex", openalex):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI, core_text=core
         )
     assert order == ["pdf", "openalex", "core"]
@@ -314,7 +314,7 @@ def test_core_serving_drops_the_refused_copies(tmp_path: Path) -> None:
     source = _open_access_source("https://walled.example.org/a.pdf")
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([source], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", return_value=refused):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI, core_text=lambda doi: CoreFetch.served(TEXT)
         )
     assert result.success and result.text == TEXT and result.file_path is None
@@ -328,7 +328,7 @@ def test_core_serving_at_a_paywall_is_the_result(tmp_path: Path) -> None:
     source = _publisher_source("https://publisher.example.org/a.pdf")
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([source], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", return_value=paywalled):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI, core_text=lambda doi: CoreFetch.served(TEXT)
         )
     assert result.success and result.text == TEXT and not result.is_paywall
@@ -347,7 +347,7 @@ def test_core_is_asked_once_whatever_the_exit(tmp_path: Path) -> None:
 
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([source], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", return_value=paywalled):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI, core_text=core,
         )
     assert asked == [DOI]
@@ -363,7 +363,7 @@ def test_no_doi_no_core(tmp_path: Path) -> None:
         return CoreFetch.absent()
 
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([], LookupRecord())):
-        PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", pmid="123", core_text=core,
         )
     assert asked == []
@@ -378,7 +378,7 @@ def test_core_is_asked_by_the_cleaned_doi(tmp_path: Path) -> None:
         return CoreFetch.absent()
 
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([], LookupRecord())):
-        PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=f"https://doi.org/{DOI}", core_text=core,
         )
     assert asked == [DOI]
@@ -443,7 +443,7 @@ def test_a_cached_text_is_served_only_for_its_own_doi(tmp_path: Path) -> None:
     assert read_cached_core_text(path, f"https://doi.org/{DOI.upper()}") == CACHED_TEXT
     core = _Core(CoreFetch.absent())
     with patch("bmlibrarian_lite.pdf_utils.get_fulltext_base_dir", return_value=tmp_path):
-        fetch = FulltextDiscoverer(use_browser_fallback=False, core=core)._core_text(
+        fetch = FulltextDiscoverer(core=core)._core_text(
             doc, "10.1159/999999"
         )
     assert fetch.text is None
@@ -470,7 +470,7 @@ def test_an_unreadable_core_cache_keeps_the_absence_open(tmp_path: Path) -> None
         read_cached_core_text(path, DOI)
     core = _Core(CoreFetch.absent())
     with patch("bmlibrarian_lite.pdf_utils.get_fulltext_base_dir", return_value=tmp_path):
-        fetch = FulltextDiscoverer(use_browser_fallback=False, core=core)._core_text(doc, DOI)
+        fetch = FulltextDiscoverer(core=core)._core_text(doc, DOI)
     assert fetch.text is None
     assert core.asked == [DOI]
     assert fetch.lookups().anything_unsettled
@@ -485,7 +485,7 @@ def test_an_unreadable_core_cache_is_replaced_by_cores_text(tmp_path: Path) -> N
     path.write_bytes(b"\xff\xfe not UTF-8")
     core = _Core(CoreFetch.served(CACHED_TEXT))
     with patch("bmlibrarian_lite.pdf_utils.get_fulltext_base_dir", return_value=tmp_path):
-        fetch = FulltextDiscoverer(use_browser_fallback=False, core=core)._core_text(doc, DOI)
+        fetch = FulltextDiscoverer(core=core)._core_text(doc, DOI)
     assert fetch.text == CACHED_TEXT
     assert not fetch.lookups().anything_unsettled
     assert read_cached_core_text(path, DOI) == CACHED_TEXT
@@ -501,7 +501,7 @@ def test_a_text_that_cannot_be_cached_is_still_served(tmp_path: Path) -> None:
     assert not path.with_name(f"{path.name}.partial").exists()
     core = _Core(CoreFetch.served(unencodable))
     with patch("bmlibrarian_lite.pdf_utils.get_fulltext_base_dir", return_value=tmp_path):
-        fetch = FulltextDiscoverer(use_browser_fallback=False, core=core)._core_text(doc, DOI)
+        fetch = FulltextDiscoverer(core=core)._core_text(doc, DOI)
     assert fetch.text == unencodable
     assert not path.exists()
     assert not path.with_name(f"{path.name}.partial").exists()
@@ -537,7 +537,7 @@ def test_with_no_pdf_found_core_is_told_after_openalex(tmp_path: Path) -> None:
 
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([], LookupRecord())), \
          patch.object(PDFDiscoverer, "_discover_openalex", openalex):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI,
             core_text=lambda doi: CoreFetch.unreachable(RequestFailure(RequestFailureKind.HTTP_STATUS, 503)),
         )
@@ -664,7 +664,7 @@ def test_an_unreachable_core_at_a_paywall_is_recorded_and_told(tmp_path: Path) -
     source = _publisher_source("https://publisher.example.org/a.pdf")
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([source], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", return_value=paywalled):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI, core_text=lambda doi: CoreFetch.unreachable(failure)
         )
     assert result.is_paywall
@@ -675,7 +675,7 @@ def test_an_unreachable_core_at_a_paywall_is_recorded_and_told(tmp_path: Path) -
 def test_a_cancel_during_the_last_download_means_core_is_never_asked(tmp_path: Path) -> None:
     """A cancel that lands after the last copy was tried stops CORE too."""
     core = _Core(CoreFetch.served(TEXT))
-    discoverer = PDFDiscoverer(use_browser_fallback=False)
+    discoverer = PDFDiscoverer()
     source = _publisher_source("https://publisher.example.org/a.pdf")
 
     def cancelled(self: PDFDiscoverer, *_a: Any) -> DiscoveryResult:
@@ -727,7 +727,7 @@ def _try_with_downloaded_pdf(
         file_path=pdf,
         source=_open_access_source("https://repo.example.org/a.pdf"),
     )
-    discoverer = FulltextDiscoverer(use_browser_fallback=False, core=core)
+    discoverer = FulltextDiscoverer(core=core)
     extractor: dict[str, Any] = (
         {"side_effect": extracted}
         if isinstance(extracted, Exception)
@@ -839,7 +839,7 @@ def test_a_cancelled_discovery_never_reads_as_cores_absence(tmp_path: Path) -> N
 
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([], LookupRecord())), \
          patch.object(PDFDiscoverer, "_discover_openalex", cancel_during_openalex):
-        result = PDFDiscoverer(use_browser_fallback=False).discover_and_download(
+        result = PDFDiscoverer().discover_and_download(
             tmp_path / "x.pdf", doi=DOI, core_text=core
         )
     assert result.error == "Cancelled"

@@ -557,9 +557,7 @@ class TestThePlaceholderEmailIsNotConfiguration:
         from bmlibrarian_lite.constants import FALLBACK_CONTACT_EMAIL
         from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
 
-        discoverer = PDFDiscoverer(
-            unpaywall_email=FALLBACK_CONTACT_EMAIL, use_browser_fallback=False
-        )
+        discoverer = PDFDiscoverer(unpaywall_email=FALLBACK_CONTACT_EMAIL)
 
         def refuse(*_args: object, **_kwargs: object) -> None:
             raise AssertionError("Unpaywall was asked with the placeholder")
