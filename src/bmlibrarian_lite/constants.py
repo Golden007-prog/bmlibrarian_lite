@@ -1240,6 +1240,12 @@ ELSEVIER_INSTTOKEN_EXPLANATION = (
     "Optional. An institutional token from Elsevier lets the key use your "
     "institution's subscriptions away from its network."
 )
+BROWSER_RESCUE_EXPLANATION = (
+    "Some open-access PDFs sit behind a robot check that blocks the app's "
+    "downloads. With this on, the app later opens each such PDF in a hidden "
+    "built-in browser, saves it if it arrives, and re-checks that article's "
+    "transparency. Nothing is sent but the page request itself."
+)
 # The fields' placeholders when the value comes from the environment.
 ELSEVIER_API_KEY_FROM_ENVIRONMENT = (
     "Set by the ELSEVIER_API_KEY environment variable; a key here replaces it"

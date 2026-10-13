@@ -23,6 +23,14 @@ Provides shared fixtures for testing:
 - Sample document metadata
 """
 
+# QtWebEngine must be prepared before any QApplication exists (#480, stage
+# 2): gui/app.py imports the browser rescue, and a test that builds the
+# window would otherwise get a broken engine.
+from bmlibrarian_lite.gui.web_engine import prepare_web_engine
+
+prepare_web_engine()
+
+# ruff: noqa: E402  (the imports below must follow the call above)
 import gc
 import importlib.util
 import json

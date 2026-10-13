@@ -59,6 +59,7 @@ from ..config import LiteConfig
 from ..constants import STATUS_MESSAGE_TIMEOUT_MS
 from ..exceptions import SQLiteError
 from ..storage import LiteStorage
+from .web_engine import prepare_web_engine
 from ..analysis_failures import (
     unreadable_assessment_caveat,
     unreadable_assessments_clause,
@@ -789,6 +790,7 @@ def run_lite_app() -> int:
     Returns:
         Application exit code
     """
+    prepare_web_engine()
     app = QApplication(sys.argv)
     app.setApplicationName("BMLibrarian Lite")
     app.setOrganizationName("BMLibrarian")
