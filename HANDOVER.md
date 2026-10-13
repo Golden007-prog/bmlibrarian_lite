@@ -38,9 +38,10 @@ sub-projects 2 and 3; replaces #483). Branch `feat/browser-rescue-480`.
   Python, Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
   `challenge_detection.json`, contract "A challenged PDF (#480)"). Refs #480.
 - **Next, stage 2 (Python):** queue table, hidden QtWebEngine service,
-  rescue -> re-analysis, #483 removal, live acceptance. Plan:
-  `docs/superpowers/plans/2026-10-13-browser-rescue-stage-2.md`. Stage 3: the
-  review queue window + interrogation priority path.
+  rescue -> re-analysis, #483 removal, live acceptance. Write the stage 2
+  plan first (`superpowers:writing-plans`); the user reviews it before
+  implementation. Stage 3: the review queue window + interrogation priority
+  path.
 
 ## Recently landed (context)
 
