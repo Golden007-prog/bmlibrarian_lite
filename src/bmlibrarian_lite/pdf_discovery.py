@@ -42,7 +42,7 @@ import re
 import time
 import threading
 from collections import deque
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -53,6 +53,7 @@ import requests
 from urllib3.util.retry import Retry
 
 from .constants import (
+    CHALLENGE_BODY_PREFIX_BYTES,
     DOI_RESOLVER_ABSENCE_STATUSES,
     DOI_RESOLVER_HOSTS,
     FALLBACK_CONTACT_EMAIL,
@@ -87,6 +88,7 @@ from .analysis_failures import (
     unestablished_access_clause,
     with_unestablished_access,
 )
+from .bot_walls import challenge_failure
 from .core_api import CoreFetch
 from .data_models import (
     LookupRecord,
@@ -605,6 +607,33 @@ def refused_download_failure(status_code: int) -> RequestFailure:
     if status_code >= HTTP_ERROR_STATUS_MIN:
         return RequestFailure(RequestFailureKind.HTTP_STATUS, status_code)
     return RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
+
+
+def read_more_of_prefix(chunks: Iterator[bytes], prefix: bytes, up_to: int) -> bytes:
+    """Read on from an answer's prefix, as far as ``up_to`` bytes in all.
+
+    For a non-PDF answer, whose page is read to recognise a challenge
+    (#480). A stream that breaks here ends the read: what was already
+    read still decides, so a challenge page is not lost to its own
+    connection closing.
+
+    Args:
+        chunks: The rest of the body.
+        prefix: What was read already.
+        up_to: The most bytes to hold in all.
+
+    Returns:
+        ``prefix`` and what followed it, up to ``up_to`` bytes.
+    """
+    more = bytearray(prefix)
+    try:
+        for chunk in chunks:
+            more += chunk
+            if len(more) >= up_to:
+                break
+    except requests.exceptions.RequestException:
+        logger.debug("The answer's stream broke while its page was read")
+    return bytes(more[:up_to])
 
 
 #: Whose PDF an unobtained open-access copy is recorded against (#478, #480).
@@ -2048,6 +2077,21 @@ class PDFDiscoverer:
             content_iter = response.iter_content(chunk_size=8192)
             body_prefix = read_body_prefix(content_iter, len(PDF_MAGIC_BYTES))
 
+            # An open-access copy whose answer is not a PDF is read further,
+            # to recognise a bot wall's challenge page: that is no answer
+            # about the article, and is recorded as its own kind (#480).
+            challenge = None
+            if (
+                source.source_type in _UNOBTAINED_PDF_SERVICE
+                and not self._looks_like_pdf(body_prefix)
+            ):
+                body_prefix = read_more_of_prefix(
+                    content_iter, body_prefix, CHALLENGE_BODY_PREFIX_BYTES
+                )
+                challenge = challenge_failure(
+                    response.status_code, response.headers, body_prefix
+                )
+
             # A broken server is not a paywall. The paywall sniff below
             # treats any text/html body whose URL contains "access" as a
             # paywall, which matches every ".../openaccess/..." URL, so a
@@ -2061,6 +2105,12 @@ class PDFDiscoverer:
                 response.status_code >= HTTP_ERROR_STATUS_MIN
                 and response.status_code not in PAYWALL_HTTP_STATUSES
             ):
+                if challenge is not None:
+                    return DiscoveryResult(
+                        success=False,
+                        error=challenge.describe(),
+                        failure=challenge,
+                    )
                 response.raise_for_status()
 
             # Check for paywall indicators
@@ -2071,7 +2121,7 @@ class PDFDiscoverer:
                     is_paywall=True,
                     paywall_url=source.url,
                     error="Access requires institutional subscription or purchase.",
-                    failure=refused_download_failure(response.status_code),
+                    failure=challenge or refused_download_failure(response.status_code),
                 )
 
             response.raise_for_status()
@@ -2085,7 +2135,7 @@ class PDFDiscoverer:
                 return DiscoveryResult(
                     success=False,
                     error=f"Server returned non-PDF content: {content_type}",
-                    failure=RequestFailure(RequestFailureKind.MALFORMED_RESPONSE),
+                    failure=challenge or RequestFailure(RequestFailureKind.MALFORMED_RESPONSE),
                 )
 
             # Check file size

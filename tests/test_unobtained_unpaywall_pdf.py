@@ -166,6 +166,10 @@ def test_an_address_requests_will_not_send_is_recorded_unasked(
         ),
         (
             _response(200, b"<html>Just a moment...</html>", "text/html", UNPAYWALL_PDF),
+            RequestFailure(RequestFailureKind.CHALLENGED, 200),
+        ),
+        (
+            _response(200, b"<html>A landing page</html>", "text/html", UNPAYWALL_PDF),
             RequestFailure(RequestFailureKind.MALFORMED_RESPONSE),
         ),
         (
@@ -177,7 +181,7 @@ def test_an_address_requests_will_not_send_is_recorded_unasked(
             RequestFailure(RequestFailureKind.CONNECTION),
         ),
     ],
-    ids=["404", "403", "not-a-pdf", "timeout", "connection"],
+    ids=["404", "403", "challenge-page", "not-a-pdf", "timeout", "connection"],
 )
 def test_a_failed_download_is_recorded_with_its_cause(
     answer: Any, failure: RequestFailure, tmp_path: Path
@@ -385,7 +389,7 @@ def test_a_page_labelled_as_a_pdf_is_not_the_pdf(tmp_path: Path) -> None:
     result = _discover([_unpaywall()], tmp_path, _Session({UNPAYWALL_PDF: page}))
 
     assert not result.success
-    assert result.lookups == _pdf_failure(RequestFailure(RequestFailureKind.MALFORMED_RESPONSE))
+    assert result.lookups == _pdf_failure(RequestFailure(RequestFailureKind.CHALLENGED, 200))
     assert list(tmp_path.iterdir()) == []
 
 
