@@ -12,8 +12,10 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.util.Base64
 
 class BotWallsContractTest {
 
@@ -33,9 +35,12 @@ class BotWallsContractTest {
         error("could not locate $relative above ${File("").absolutePath}")
     }
 
+    /** The row's body, after its padding: `body_base64`'s bytes, else `body`. */
     private fun body(row: JsonObject): ByteArray {
         val padding = row["body_padding_bytes"]?.jsonPrimitive?.intOrNull ?: 0
-        return ByteArray(padding) { ' '.code.toByte() } + row["body"]!!.jsonPrimitive.content.toByteArray(Charsets.UTF_8)
+        val content = row["body_base64"]?.let { Base64.getDecoder().decode(it.jsonPrimitive.content) }
+            ?: row["body"]!!.jsonPrimitive.content.toByteArray(Charsets.UTF_8)
+        return ByteArray(padding) { ' '.code.toByte() } + content
     }
 
     private fun headers(row: JsonObject): List<Pair<String, String>> =
@@ -48,6 +53,12 @@ class BotWallsContractTest {
     }
 
     @Test
+    fun `the header table is the contract's`() {
+        val markers = contract["header_markers"]!!.jsonObject.mapValues { (_, v) -> v.jsonArray.map { it.jsonPrimitive.content } }
+        assertEquals(markers, BotWalls.WALL_HEADER_MARKERS)
+    }
+
+    @Test
     fun `the bounds are the contract's`() {
         assertEquals(contract["body_prefix_bytes"]!!.jsonPrimitive.int, Constants.CHALLENGE_BODY_PREFIX_BYTES)
         assertEquals(contract["gone_statuses"]!!.jsonArray.map { it.jsonPrimitive.int }.toSet(), Constants.CHALLENGE_GONE_STATUSES)
@@ -56,7 +67,9 @@ class BotWallsContractTest {
 
     @Test
     fun `each case`() {
-        for (element in contract["cases"]!!.jsonArray) {
+        val cases = contract["cases"]!!.jsonArray
+        assertTrue("the contract has no cases", cases.isNotEmpty())
+        for (element in cases) {
             val row = element.jsonObject
             val status = row["status"]!!.jsonPrimitive.int
             val expected = row["expected"]!!.jsonArray.map { it.jsonPrimitive.content }
@@ -76,6 +89,7 @@ class BotWallsContractTest {
 
     @Test
     fun `lowercasing is ASCII only`() {
-        assertEquals(emptyList<String>(), BotWalls.challengeMarkers(200, emptyList(), "A\u212AAMAIGHOST".toByteArray()))
+        assertEquals(emptyList<String>(), BotWalls.challengeMarkers(200, emptyList(), "CHEC\u212AING YOUR BROWSER".toByteArray()))
+        assertEquals(listOf("proof-of-work"), BotWalls.challengeMarkers(200, emptyList(), "CHECKING YOUR BROWSER".toByteArray()))
     }
 }

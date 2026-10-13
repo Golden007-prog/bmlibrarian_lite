@@ -4,16 +4,20 @@
 
 """An open-access PDF met by a bot wall is recorded as challenged (#480).
 
-Only the recorded kind changes: which branch of ``_try_download`` answers,
-and whether it is a paywall, stay as they were.
+The recorded kind changes. Which branch of ``_try_download`` answers, and
+whether it is a paywall, stay as they were, except that a challenged error
+status that is no paywall's (429, 5xx) answers with its challenge in place of
+the HTTP error.
 """
 
+import logging
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 import requests
 
+from bmlibrarian_lite.constants import CHALLENGE_BODY_PREFIX_BYTES
 from bmlibrarian_lite.data_models import RequestFailure, RequestFailureKind
 from bmlibrarian_lite.pdf_discovery import PDFDiscoverer, PDFSource, PDFSourceType
 
@@ -96,10 +100,16 @@ def _download(
     return discovery._try_download(source, tmp_path / "out.pdf", None)
 
 
-def test_a_cloudflare_403_is_challenged(discovery: PDFDiscoverer, tmp_path: Path) -> None:
-    """ScienceDirect's wall: its markup lies past what is read."""
+@pytest.mark.parametrize("source_type", [PDFSourceType.UNPAYWALL_OA, PDFSourceType.OPENALEX_OA])
+def test_a_cloudflare_403_is_challenged(
+    discovery: PDFDiscoverer, tmp_path: Path, source_type: PDFSourceType
+) -> None:
+    """ScienceDirect's wall, for either service's copy: its markup lies past what is read."""
     result = _download(
-        discovery, tmp_path, _Response(403, {"Server": "cloudflare"}, [b"<html><style>"])
+        discovery,
+        tmp_path,
+        _Response(403, {"Server": "cloudflare"}, [b"<html><style>"]),
+        source_type=source_type,
     )
     assert result.failure == RequestFailure(RequestFailureKind.CHALLENGED, 403)
     assert result.is_paywall is True  # the branch it took is unchanged
@@ -114,7 +124,7 @@ def test_a_cloudflare_503_is_challenged(discovery: PDFDiscoverer, tmp_path: Path
 
 
 def test_a_challenge_served_as_a_pdf_is_challenged(discovery: PDFDiscoverer, tmp_path: Path) -> None:
-    """Review Focus 1: a 200 labelled application/pdf whose body is a challenge."""
+    """A 200 labelled application/pdf whose body is a challenge."""
     result = _download(
         discovery,
         tmp_path,
@@ -134,12 +144,40 @@ def test_a_marker_past_the_first_chunk_is_read(discovery: PDFDiscoverer, tmp_pat
 def test_a_stream_breaking_in_the_longer_read_keeps_what_was_read(
     discovery: PDFDiscoverer, tmp_path: Path
 ) -> None:
-    """Review Focus 2: the challenge already seen is not lost to a broken stream."""
+    """The challenge already seen is not lost to a broken stream."""
     chunks = [b"<htm", b"l>Just a moment...", b"never read"]
     result = _download(
         discovery, tmp_path, _Response(403, {"Server": "nginx"}, chunks, break_after=2)
     )
     assert result.failure == RequestFailure(RequestFailureKind.CHALLENGED, 403)
+
+
+def test_the_page_is_read_no_further_than_the_bound(discovery: PDFDiscoverer, tmp_path: Path) -> None:
+    """A large non-PDF answer is read only as far as the challenge check needs."""
+    chunk_size = 8192
+    response = _Response(200, {}, [b"<html>" + b" " * (chunk_size - 6)] + [b" " * chunk_size] * 40)
+    _download(discovery, tmp_path, response)
+    assert response.chunks_read == CHALLENGE_BODY_PREFIX_BYTES // chunk_size
+
+
+def test_a_challenged_error_status_is_logged(
+    discovery: PDFDiscoverer, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A challenged 429 answers before the HTTP error's handler, so it logs its own line."""
+    with caplog.at_level(logging.WARNING, logger="bmlibrarian_lite.pdf_discovery"):
+        result = _download(discovery, tmp_path, _Response(429, {}, [b"<p>Verify you are human</p>"]))
+    assert result.failure == RequestFailure(RequestFailureKind.CHALLENGED, 429)
+    assert any(
+        URL in record.getMessage() and "HTTP 429" in record.getMessage() and "robot-text" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_control_apaches_stock_403_keeps_its_status(discovery: PDFDiscoverer, tmp_path: Path) -> None:
+    """Apache's own refusal text once named Akamai; it is the host's answer."""
+    page = b"<title>403 Forbidden</title><p>You don't have permission to access this resource.</p>"
+    result = _download(discovery, tmp_path, _Response(403, {"Server": "Apache"}, [page]))
+    assert result.failure == RequestFailure(RequestFailureKind.HTTP_STATUS, 403)
 
 
 def test_control_an_ordinary_403_keeps_its_status(discovery: PDFDiscoverer, tmp_path: Path) -> None:
@@ -176,7 +214,7 @@ def test_control_a_200_pdf_labelled_page_without_markers_is_malformed(
 
 
 def test_control_a_non_pdf_without_markers_is_malformed(discovery: PDFDiscoverer, tmp_path: Path) -> None:
-    """Review Focus 3: a JPEG listed as a PDF."""
+    """A JPEG listed as a PDF."""
     result = _download(discovery, tmp_path, _Response(200, {}, [b"\xff\xd8\xff\xe0" + bytes(range(128, 256))]))
     assert result.failure == RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
 

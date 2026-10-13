@@ -2637,6 +2637,14 @@ public actor FullTextService {
     /// - Parameters:
     ///   - url: URL to download the PDF from, on a cache miss.
     ///   - key: Names the article the bytes belong to.
+    /// An answer that is not a PDF and that ``BotWalls`` recognises as a bot
+    /// wall's challenge page throws `.pdfDownloadFailed(.challenged(...))`
+    /// (#480). Every caller shares the check; Europe PMC's render tier records
+    /// no shortfall from it, so only Unpaywall's and OpenAlex's copies are
+    /// told as challenged, as Python checks those copies alone. The body is
+    /// read whole, so a page that breaks off is the transport's failure here,
+    /// where Python and Android judge what arrived of it.
+    ///
     /// - Returns: Local file path to the cached PDF.
     /// - Throws: `FullTextError` on failure.
     public func downloadAndCachePDF(from url: URL, for key: ArticleCacheKey) async throws -> String {
@@ -2680,16 +2688,22 @@ public actor FullTextService {
         let pdfMagic = Data(BioMedLitConstants.pdfMagicBytes)
         let isPDF = data.count > pdfMagic.count && data.prefix(pdfMagic.count) == pdfMagic
         // A bot wall's challenge page in place of the PDF is no answer about
-        // the article (#480), whatever status it came with.
+        // the article (#480), whatever status it came with but a gone 404 or 410.
         if !isPDF, let challenge = BotWalls.challengeFailure(
             status: httpResponse.statusCode, headers: headers, body: data
         ) {
+            let defences = BotWalls.challengeMarkers(status: httpResponse.statusCode, headers: headers, body: data)
+            BioMedLitLib.logger?.warning(
+                "A bot wall's challenge answered \(url.absoluteString) (HTTP \(httpResponse.statusCode)): "
+                    + defences.joined(separator: ", "),
+                category: .fullText
+            )
             throw FullTextError.pdfDownloadFailed(challenge)
         }
         guard httpResponse.statusCode == BioMedLitConstants.httpStatusOK else {
             throw FullTextError.pdfDownloadFailed(.httpStatus(httpResponse.statusCode))
         }
-        // A login page served with a 200 stops here (#480).
+        // A login page served with a 200 stops here (#478).
         guard isPDF else {
             throw FullTextError.pdfDownloadFailed(.malformedResponse)
         }
@@ -2715,8 +2729,9 @@ public actor FullTextService {
         case notAttempted
 
         /// The source did not serve the PDF, and why (#478): the status, the
-        /// transport failure, or `malformedResponse` for a body that is not a
-        /// PDF.
+        /// transport failure, `challenged` (with its status) for a bot wall's
+        /// challenge page (#480), or `malformedResponse` for any other body
+        /// that is not a PDF.
         case downloadFailed(RequestFailure)
 
         /// The source served the PDF, and it could not be cached. A fault of

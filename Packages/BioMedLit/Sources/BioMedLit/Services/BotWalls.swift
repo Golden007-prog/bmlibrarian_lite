@@ -10,13 +10,21 @@ import Foundation
 /// `doc/cross_platform/fulltext_parity/challenge_detection.json`.
 public enum BotWalls {
     /// The defences against programs, by name, and the lowercase needles each
-    /// is recognised by. Equal to the contract's `markers` table.
+    /// is recognised by in the start of a page. Equal to the contract's
+    /// `markers` table. Header lines are not searched for these: a defence's
+    /// cookie, its CDN's `Server` value or a CSP naming a captcha comes with
+    /// ordinary answers too.
     public static let wallMarkers: [String: [String]] = [
-        "akamai": ["akamaighost", "errors.edgesuite.net", "you don't have permission to access"],
+        // Akamai's refusal carries no Server header, and escapes its reference
+        // URL as entities; "you don't have permission to access" is also
+        // Apache's stock 403 text, so it is no needle.
+        "akamai": ["errors.edgesuite.net", "errors&#46;edgesuite&#46;net"],
         "anubis": ["anubis", "making sure you're not a bot"],
-        "aws-waf": ["awswaf", "aws-waf-token", "x-amzn-waf-action"],
+        "aws-waf": ["awswaf", "aws-waf-token"],
         "captcha": ["g-recaptcha", "hcaptcha", "turnstile", "captcha"],
-        "cloudflare": ["just a moment", "cf-chl", "challenge-platform", "cf-mitigated", "attention required! | cloudflare"],
+        // "_cf_chl_opt" is the challenge's own script; "challenge-platform"
+        // also names the bot-management script Cloudflare adds to ordinary pages.
+        "cloudflare": ["just a moment", "cf-chl", "_cf_chl_opt", "attention required! | cloudflare"],
         "datadome": ["datadome", "captcha-delivery.com"],
         "imperva": ["incapsula", "_incapsula_resource", "visid_incap"],
         "perimeterx": ["px-captcha", "perimeterx", "_pxhd"],
@@ -25,23 +33,43 @@ public enum BotWalls {
                        "automated access", "bot detection", "ai crawlers", "hostile web agent"],
     ]
 
-    /// Lowercase ASCII letters only: `lowercased()` also folds other letters.
+    /// The header names, lowercase, that a defence sends only with a
+    /// challenge. Matched as whole names; values are not read. Equal to the
+    /// contract's `header_markers` table.
+    public static let wallHeaderMarkers: [String: [String]] = [
+        "aws-waf": ["x-amzn-waf-action"],
+        "cloudflare": ["cf-mitigated"],
+    ]
+
+    /// The defence named by Cloudflare's own refusal (a key of both tables).
+    public static let cloudflareDefence = "cloudflare"
+
+    /// The scalar values of A-Z, the only letters lowercased.
+    private static let asciiUppercase = UInt32(UInt8(ascii: "A"))...UInt32(UInt8(ascii: "Z"))
+    /// What adding to an A-Z scalar value makes it a-z.
+    private static let asciiCaseOffset = UInt32(UInt8(ascii: "a") - UInt8(ascii: "A"))
+
+    /// Lowercase ASCII letters only: `lowercased()` also folds other letters
+    /// (the Kelvin sign to "k"), which Python's and Kotlin's do not.
     static func asciiLowercased(_ text: String) -> String {
         String(String.UnicodeScalarView(text.unicodeScalars.map { scalar in
-            (65...90).contains(scalar.value) ? Unicode.Scalar(scalar.value + 32)! : scalar
+            asciiUppercase.contains(scalar.value)
+                ? Unicode.Scalar(scalar.value + asciiCaseOffset) ?? scalar
+                : scalar
         }))
     }
 
-    /// The sorted defence names a page's text and header lines name.
+    /// The sorted defence names a page's text and its header names name.
     static func namedDefences(text: String, headers: [String: String]) -> [String] {
-        let haystacks = ([text] + headers.map { "\($0.key): \($0.value)" })
-            .map { Array(asciiLowercased($0).utf8) }
-        return wallMarkers.compactMap { name, needles in
-            needles.contains { needle in
-                let bytes = Array(needle.utf8)
-                return haystacks.contains { containsBytes($0, bytes) }
-            } ? name : nil
-        }.sorted()
+        let page = Array(asciiLowercased(text).utf8)
+        var found = Set(wallMarkers.compactMap { name, needles in
+            needles.contains { containsBytes(page, Array($0.utf8)) } ? name : nil
+        })
+        let names = Set(headers.keys.map { asciiLowercased($0) })
+        for (name, needles) in wallHeaderMarkers where needles.contains(where: names.contains) {
+            found.insert(name)
+        }
+        return found.sorted()
     }
 
     /// Whether `needle` occurs in `haystack` as a run of bytes.
@@ -65,9 +93,9 @@ public enum BotWalls {
         if prefix.starts(with: BioMedLitConstants.pdfMagicBytes) { return [] }
         var found = Set(namedDefences(text: String(decoding: prefix, as: UTF8.self), headers: headers))
         let server = headers.first { asciiLowercased($0.key) == "server" }
-            .map { asciiLowercased($0.value.trimmingCharacters(in: .whitespaces)) } ?? ""
+            .map { asciiLowercased($0.value.trimmingCharacters(in: BioMedLitConstants.httpHeaderWhitespace)) } ?? ""
         if BioMedLitConstants.cloudflareRefusalStatuses.contains(status), server == BioMedLitConstants.cloudflareServer {
-            found.insert("cloudflare")
+            found.insert(cloudflareDefence)
         }
         return found.sorted()
     }

@@ -553,13 +553,15 @@ answered. The failure is:
 
 - `request_failed` for an address that is not an absolute http(s) URL with a
   host, which is never requested (Python's `requests` refuses it as above);
-- the HTTP status of a download that answered with one (a 403 or 404 "did not
-  serve it"; a 429 or 5xx "could not be asked");
+- `challenged`, with its status, for an Unpaywall or OpenAlex copy whose
+  answer is a bot wall's challenge page (see "A challenged PDF (#480)");
+- otherwise, the HTTP status of a download that answered with one (a 403 or
+  404 "did not serve it"; a 429 or 5xx "could not be asked");
 - the transport failure of one that got no answer;
-- `malformed_response` for a body that is not a PDF, served with a success
-  status: it does not begin with `%PDF`, whatever its Content-Type says (a
-  login page, a bot wall's challenge, #480). Python's check was "a PDF
-  Content-Type *or* `%PDF`" until #478 and now matches the apps.
+- `malformed_response` for any other body that is not a PDF, served with a
+  success status: it does not begin with `%PDF`, whatever its Content-Type
+  says (a login page, #478). Python's check was "a PDF Content-Type *or*
+  `%PDF`" until #478 and now matches the apps.
 
 **Every platform tries every PDF Unpaywall names; then, only if no copy was
 served and kept, OpenAlex's** (#480, stage B; `unpaywall_pdf_urls` in
@@ -788,23 +790,38 @@ with, in place of `http_status` or `malformed_response`. It is not an answer
 about the article: the reader is told the copy went unobtained because the
 host asked for a robot check (through the tried-sources statement where the
 copy carries an address, through the "could not be asked" notice where it
-does not), and no absence is settled.
+does not), and no absence is settled. One exception remains on the desktop
+until stage 2: a challenged 401 or 403, or a challenged `text/html` 200 at an
+address the paywall sniff takes for a paywall's (one containing "access",
+"login", "pay" and the like), still takes the paywall branch, so the reader is
+first told a source refused access.
 
 A non-PDF answer is challenged when `challenge_markers` names a defence:
 
-- a needle of the shared marker table in the body's first 64 KiB, ASCII-
-  lowercased and decoded as UTF-8 with invalid bytes replaced, or in a header
-  line `name: value`;
-- or Cloudflare's own refusal: a 403 or 503 whose `Server` header is
-  `cloudflare` (ScienceDirect's markup lies past the bytes read).
+- a needle of the shared `markers` table in the body's first 64 KiB, decoded
+  as UTF-8 with invalid bytes replaced and ASCII-lowercased;
+- a header whose name, ASCII-lowercased, is one of `header_markers`
+  (`cf-mitigated`, `x-amzn-waf-action`): sent only with a challenge. Header
+  values are never searched, since a defence's cookie, a CDN's `Server` value
+  or a CSP naming a captcha comes with ordinary answers too;
+- or Cloudflare's own refusal: a 403 or 503 whose `Server` header, trimmed of
+  spaces and tabs and ASCII-lowercased, is `cloudflare` (ScienceDirect's
+  markup lies past the bytes read).
 
-Never for a 404 or 410, and never for a body beginning `%PDF`. The table, the
+Never for a 404 or 410, and never for a body beginning `%PDF`. The tables, the
 bounds and the cases are `fulltext_parity/challenge_detection.json`; every
-platform's table must equal it. Survey: 89% of challenged failures were walls,
-about 6% had no free PDF behind them
-(`doc/developer/unpaywall_pdf_survey/`). The desktop's embedded browser and
-review queue (stages 2 and 3 of
-`docs/superpowers/specs/2026-10-12-browser-rescue-design.md`) fetch these.
+platform's tables must equal them. Survey: 89% of challenged failures were
+walls, about 6% had no free PDF behind them
+(`doc/developer/unpaywall_pdf_survey/`).
+
+**A page that breaks off.** Python and Android judge what arrived of it: a
+marker already read still names the wall, and without one a refusal keeps its
+status. BioMedLit reads every body whole, so there such a page is the
+transport's failure ("could not be asked"). Neither settles an absence.
+
+Planned: the desktop's embedded browser and review queue (stages 2 and 3 of
+`docs/superpowers/specs/2026-10-12-browser-rescue-design.md`) are to fetch
+these copies. Nothing does yet.
 
 ### PDF Downloading and Caching
 

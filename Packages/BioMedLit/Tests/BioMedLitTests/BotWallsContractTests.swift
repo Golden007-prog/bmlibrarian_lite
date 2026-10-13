@@ -24,14 +24,26 @@ final class BotWallsContractTests: XCTestCase {
         return try XCTUnwrap(object as? [String: Any])
     }
 
-    private func body(_ row: [String: Any]) -> Data {
+    /// The row's body, after its padding: `body_base64`'s bytes, else `body`.
+    private func body(_ row: [String: Any]) throws -> Data {
         let padding = row["body_padding_bytes"] as? Int ?? 0
-        return Data(repeating: 0x20, count: padding) + Data((row["body"] as? String ?? "").utf8)
+        let content: Data
+        if let encoded = row["body_base64"] {
+            content = try XCTUnwrap(Data(base64Encoded: XCTUnwrap(encoded as? String)), "\(row["name"] ?? "")")
+        } else {
+            content = try Data(XCTUnwrap(row["body"] as? String, "\(row["name"] ?? "")").utf8)
+        }
+        return Data(repeating: 0x20, count: padding) + content
     }
 
     func testTheMarkerTableIsTheContracts() throws {
         let markers = try XCTUnwrap(contract()["markers"] as? [String: [String]])
         XCTAssertEqual(BotWalls.wallMarkers, markers)
+    }
+
+    func testTheHeaderTableIsTheContracts() throws {
+        let markers = try XCTUnwrap(contract()["header_markers"] as? [String: [String]])
+        XCTAssertEqual(BotWalls.wallHeaderMarkers, markers)
     }
 
     func testTheBoundsAreTheContracts() throws {
@@ -46,10 +58,11 @@ final class BotWallsContractTests: XCTestCase {
         XCTAssertFalse(cases.isEmpty)
         for row in cases {
             let status = try XCTUnwrap(row["status"] as? Int)
-            let headers = row["headers"] as? [String: String] ?? [:]
+            let headers = try XCTUnwrap(row["headers"] as? [String: String], "\(row["name"] ?? "")")
             let expected = try XCTUnwrap(row["expected"] as? [String])
-            XCTAssertEqual(BotWalls.challengeMarkers(status: status, headers: headers, body: body(row)), expected, "\(row["name"] ?? "")")
-            let failure = BotWalls.challengeFailure(status: status, headers: headers, body: body(row))
+            let bytes = try body(row)
+            XCTAssertEqual(BotWalls.challengeMarkers(status: status, headers: headers, body: bytes), expected, "\(row["name"] ?? "")")
+            let failure = BotWalls.challengeFailure(status: status, headers: headers, body: bytes)
             XCTAssertEqual(failure, expected.isEmpty ? nil : .challenged(statusCode: status), "\(row["name"] ?? "")")
         }
     }
@@ -60,6 +73,7 @@ final class BotWallsContractTests: XCTestCase {
     }
 
     func testLowercasingIsASCIIOnly() {
-        XCTAssertEqual(BotWalls.challengeMarkers(status: 200, headers: [:], body: Data("A\u{212A}AMAIGHOST".utf8)), [])
+        XCTAssertEqual(BotWalls.challengeMarkers(status: 200, headers: [:], body: Data("CHEC\u{212A}ING YOUR BROWSER".utf8)), [])
+        XCTAssertEqual(BotWalls.challengeMarkers(status: 200, headers: [:], body: Data("CHECKING YOUR BROWSER".utf8)), ["proof-of-work"])
     }
 }

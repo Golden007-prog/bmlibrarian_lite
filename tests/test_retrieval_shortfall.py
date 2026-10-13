@@ -127,7 +127,7 @@ class TestRequestFailureDescription:
 
     def test_a_challenge_is_never_an_answer(self) -> None:
         """A wall's page says nothing about the article, whatever its status."""
-        for status in (200, 403, 404, 503, None):
+        for status in (200, 403, 429, 503, None):
             assert RequestFailure(RequestFailureKind.CHALLENGED, status).is_answer is False
 
     def test_a_stored_challenge_keeps_its_status(self) -> None:

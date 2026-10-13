@@ -94,7 +94,7 @@ class FullTextServicePdfDownloadTest {
         assertEquals(listOf("d.pdf"), cachedFiles())
     }
 
-    /** A challenge page served with 200 is not the PDF, and nothing is cached (#480). */
+    /** A login page served with 200 is not the PDF, and nothing is cached (#478). */
     @Test
     fun `a page served in place of the PDF is not saved`() = runTest {
         server.enqueue(MockResponse().setHeader("Content-Type", "text/html").setBody("<html>Sign in to read</html>"))
@@ -145,6 +145,47 @@ class FullTextServicePdfDownloadTest {
         assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 403)), download())
     }
 
+    /**
+     * What arrived of a page that breaks off is still read: a marker in its
+     * first half names the wall, as Python's `read_more_of_prefix` keeps it.
+     */
+    @Test
+    fun `a refusal whose page names the wall and then breaks off is challenged`() = runTest {
+        server.enqueue(brokenBody(403, "<div id=\"px-captcha\"></div>").setHeader("Server", "nginx"))
+
+        assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 403)), download())
+    }
+
+    @Test
+    fun `a challenge served as a 200 that breaks off is challenged`() = runTest {
+        server.enqueue(brokenBody(200, "<title>Preparing to download"))
+
+        assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 200)), download())
+        assertEquals(emptyList<String>(), cachedFiles())
+    }
+
+    /** A 404's page is never read, so its markup cannot make it a challenge. */
+    @Test
+    fun `a 404 with challenge markup is gone`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(404).setHeader("Server", "cloudflare").setBody("<title>Just a moment...")
+        )
+
+        assertEquals(PdfDownload.Failed(RequestFailure.forHttpStatus(404)), download())
+    }
+
+    /**
+     * A page is told apart before the cache is written, so a cache that cannot
+     * be written does not turn a challenge into a served copy.
+     */
+    @Test
+    fun `a challenge is recognised when the cache cannot be written`() = runTest {
+        File(cache.root, "fulltext_pdfs").writeText("a file where the cache directory should be")
+        server.enqueue(MockResponse().setHeader("Content-Type", "application/pdf").setBody("<title>Just a moment..."))
+
+        assertEquals(PdfDownload.Failed(RequestFailure(RequestFailureKind.CHALLENGED, 200)), download())
+    }
+
     @Test
     fun `an ordinary 403 whose page breaks off keeps its status`() = runTest {
         server.enqueue(brokenBody(403).setHeader("Server", "nginx"))
@@ -159,10 +200,11 @@ class FullTextServicePdfDownloadTest {
         assertEquals(PdfDownload.Failed(RequestFailure.forHttpStatus(404)), download())
     }
 
-    private fun brokenBody(status: Int): MockResponse =
+    /** A page that begins with [start] and breaks off: MockWebServer sends half its body, then drops it. */
+    private fun brokenBody(status: Int, start: String = ""): MockResponse =
         MockResponse()
             .setResponseCode(status)
-            .setBody(Buffer().write(ByteArray(BROKEN_PAGE_BYTES)))
+            .setBody(Buffer().writeUtf8(start).write(ByteArray(BROKEN_PAGE_BYTES)))
             .setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY)
 
     @Test

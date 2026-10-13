@@ -215,8 +215,10 @@ def requestable(url: str) -> bool:
 def wall_markers(text: str, headers: Mapping[str, str] | None = None) -> list[str]:
     """The defences named in a page's start and its headers.
 
-    The table and the matching are the app's own (``bmlibrarian_lite.bot_walls``),
-    so the survey measures exactly what the app recognises.
+    The tables and the needle matching are the app's own
+    (``bmlibrarian_lite.bot_walls``), and the body is decoded as the app
+    decodes it. Cloudflare's own-refusal rule is the survey's copy in
+    :func:`probe_markers` (#520).
 
     Args:
         text: The start of a non-PDF body, any case.
@@ -278,7 +280,8 @@ def describe_body(prefix: bytes, headers: Mapping[str, str] | None) -> dict[str,
     """
     if prefix.startswith(PDF_MAGIC_BYTES):
         return {"pdf": True}
-    text = prefix.decode("utf-8", errors="ignore")
+    # As the app decodes it: an invalid byte inside a needle breaks the match.
+    text = prefix.decode("utf-8", errors="replace")
     return {
         "pdf": False,
         "title": page_title(text),

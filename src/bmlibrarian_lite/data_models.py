@@ -110,7 +110,9 @@ class RequestFailureKind(Enum):
     REQUEST_FAILED = "request_failed"
     # A bot wall's challenge page served in place of the answer: a defence
     # against programs, not the source's answer about the article (#480).
-    # Carries the status the challenge came with (200, 403, 503 ...).
+    # Carries the status the challenge came with (200, 403, 503 ...); never a
+    # gone 404 or 410, which detection leaves the host's answer. The type does
+    # not refuse one: nothing builds it, and a stored value is read as written.
     CHALLENGED = "challenged"
 
 
@@ -172,8 +174,9 @@ class RequestFailure:
         about the article: "not now", a server that failed, or a gateway
         that never heard from its origin (#445). That the 4xx refusals are
         answers is the maintainer's decision, not a law of HTTP. Every other
-        kind is not an answer: a refused redirect is our own refusal, and a
-        blank or garbled 200 says nothing about the article.
+        kind is not an answer: a refused redirect is our own refusal, a
+        blank or garbled 200 says nothing about the article, and nor does a
+        bot wall's challenge page, whatever its status (#480).
 
         Returns:
             ``True`` for ``HTTP_STATUS`` with a status other than

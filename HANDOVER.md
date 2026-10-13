@@ -43,12 +43,26 @@ sub-projects 2 and 3; replaces #483). Branch `feat/browser-rescue-480`.
   implementation. Stage 3: the review queue window + interrogation priority
   path.
 - **Carried from stage 1's review into stage 2:** a challenged 401/403 on an
-  open-access PDF still takes the paywall branch (`is_paywall=True`), so the
-  reader is first told "A source refused access…" and the interrogation tab
-  may offer OpenAthens; decide this when the queue takes those copies. With an
-  address the reader's sentence is the tried-sources statement ("… (the host
-  asked for a robot check)"), not "could not be asked". Lodged: **#520** (the
-  survey keeps its own Cloudflare rule).
+  open-access PDF still takes the paywall branch (`is_paywall=True`), and so
+  does a challenged `text/html` 200 at an address the paywall sniff matches
+  ("access", "login", "pay" …), so the reader is first told "A source refused
+  access…" and the interrogation tab may offer OpenAthens. Which copies reach
+  #483's fallback therefore turns on a URL substring, not on the kind; decide
+  this when the queue takes those copies. With an address the reader's
+  sentence is the tried-sources statement ("… (the host asked for a robot
+  check)"), not "could not be asked". Lodged: **#520** (the survey keeps its
+  own Cloudflare rule), **#522** (BioMedLit: a broken-off challenge page is a
+  transport failure), **#523** (iOS tells a challenged copy "Try again later.").
+- **Detection rules, from the second review** (all in
+  `challenge_detection.json`): header values are never searched, only the
+  `header_markers` names (`cf-mitigated`, `x-amzn-waf-action`). Cookies, a
+  CDN's `Server` value and a CSP naming a captcha come with ordinary answers.
+  Akamai is recognised by `errors&#46;edgesuite&#46;net`, as its live refusal
+  escapes it; "you don't have permission to access" is Apache's stock 403 too.
+  Cloudflare is recognised by `_cf_chl_opt`; `challenge-platform` also names
+  the bot-management script on ordinary pages, and the survey's four
+  "cloudflare" 200s were such pages. Change a needle only against live pages
+  and the survey, never to fit one case.
 
 ## Recently landed (context)
 

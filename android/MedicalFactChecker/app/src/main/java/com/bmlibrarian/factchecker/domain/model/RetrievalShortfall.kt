@@ -58,15 +58,15 @@ enum class RequestFailureKind(val persistedValue: String) {
     /** The answer was readable but held less than it counted. */
     INCOMPLETE_RESPONSE("incomplete_response"),
 
-    /** Anything else. */
-    REQUEST_FAILED("request_failed"),
-
     /**
      * A bot wall's challenge page in place of the answer (#480): a defence
      * against programs, not the source's answer about the article. Carries the
      * status the challenge came with.
      */
-    CHALLENGED("challenged");
+    CHALLENGED("challenged"),
+
+    /** Anything else. */
+    REQUEST_FAILED("request_failed");
 
     /** Whether a failure of this kind is an HTTP answer, and so can name its status. */
     val carriesStatusCode: Boolean

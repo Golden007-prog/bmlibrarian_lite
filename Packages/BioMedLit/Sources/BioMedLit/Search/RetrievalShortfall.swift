@@ -48,13 +48,13 @@ public enum RequestFailureKind: String, Sendable, Codable, CaseIterable {
     /// The answer was readable but held less than it counted.
     case incompleteResponse = "incomplete_response"
 
-    /// Anything else.
-    case requestFailed = "request_failed"
-
     /// A bot wall's challenge page in place of the answer (#480): a defence
     /// against programs, not the source's answer about the article. Carries
     /// the status the challenge came with.
-    case challenged
+    case challenged = "challenged"
+
+    /// Anything else.
+    case requestFailed = "request_failed"
 
     /// Whether a failure of this kind is an HTTP answer, and so can name its status.
     public var carriesStatusCode: Bool {

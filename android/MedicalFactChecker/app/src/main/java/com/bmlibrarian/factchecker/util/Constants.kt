@@ -633,6 +633,12 @@ object Constants {
     val CLOUDFLARE_REFUSAL_STATUSES = setOf(403, 503)
     const val CLOUDFLARE_SERVER = "cloudflare"
 
+    /**
+     * The whitespace HTTP allows around a header's value (RFC 9110's OWS): a
+     * space or a tab, and nothing else, so every platform trims a value alike.
+     */
+    const val HTTP_HEADER_WHITESPACE = " \t"
+
     /** PubMed article URL prefix. */
     const val PUBMED_URL_PREFIX = "https://pubmed.ncbi.nlm.nih.gov/"
 

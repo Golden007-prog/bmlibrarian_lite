@@ -486,6 +486,9 @@ public enum BioMedLitConstants {
     public static let challengeGoneStatuses: Set<Int> = [404, 410]
     public static let cloudflareRefusalStatuses: Set<Int> = [403, 503]
     public static let cloudflareServer = "cloudflare"
+    /// The whitespace HTTP allows around a header's value (RFC 9110's OWS): a
+    /// space or a tab, and nothing else, so every platform trims a value alike.
+    public static let httpHeaderWhitespace = CharacterSet(charactersIn: " \t")
 
     /// The URL scheme a report uses to point a reference at its document.
     ///

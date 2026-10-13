@@ -9,6 +9,7 @@ The rows are the shared contract,
 Android ports read the same rows.
 """
 
+import base64
 import json
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ from typing import Any
 import pytest
 
 from bmlibrarian_lite.bot_walls import (
+    WALL_HEADER_MARKERS,
     WALL_MARKERS,
     challenge_failure,
     challenge_markers,
@@ -39,13 +41,29 @@ CONTRACT: dict[str, Any] = json.loads(
 
 
 def _body(case: dict[str, Any]) -> bytes:
-    """The case's body, after its padding."""
-    return b" " * case.get("body_padding_bytes", 0) + case["body"].encode("utf-8")
+    """The case's body, after its padding: ``body_base64``'s bytes, else ``body``."""
+    if "body_base64" in case:
+        content = base64.b64decode(case["body_base64"])
+    else:
+        content = case["body"].encode("utf-8")
+    return b" " * case.get("body_padding_bytes", 0) + content
+
+
+def test_the_contract_has_cases() -> None:
+    """An empty case list would let every parametrized test pass unseen."""
+    assert len(CONTRACT["cases"]) > 0
 
 
 def test_the_marker_table_is_the_contracts() -> None:
     """One table on every platform."""
     assert {name: list(needles) for name, needles in WALL_MARKERS.items()} == CONTRACT["markers"]
+
+
+def test_the_header_table_is_the_contracts() -> None:
+    """One header table on every platform."""
+    assert {
+        name: list(needles) for name, needles in WALL_HEADER_MARKERS.items()
+    } == CONTRACT["header_markers"]
 
 
 def test_the_bounds_are_the_contracts() -> None:
@@ -72,11 +90,12 @@ def test_a_challenge_is_recorded_with_its_status(case: dict[str, Any]) -> None:
 
 
 def test_binary_that_is_not_a_pdf_is_no_challenge() -> None:
-    """A JPEG listed as a PDF, invalid UTF-8 throughout (Review Focus 3)."""
+    """A JPEG listed as a PDF, invalid UTF-8 throughout."""
     jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00" + bytes(range(128, 256)) * 8
     assert challenge_markers(200, {}, jpeg) == ()
 
 
 def test_lowercasing_is_ascii_only() -> None:
-    """str.lower() turns the Kelvin sign into 'k', which would match; no platform does."""
-    assert challenge_markers(200, {}, "AKAMAIGHOST".encode()) == ()
+    """str.lower() turns the Kelvin sign (U+212A) into 'k', which would match; no platform does."""
+    assert challenge_markers(200, {}, "CHEC\u212aING YOUR BROWSER".encode()) == ()
+    assert challenge_markers(200, {}, b"CHECKING YOUR BROWSER") == ("proof-of-work",)

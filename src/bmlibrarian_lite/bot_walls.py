@@ -5,8 +5,8 @@
 """Recognise a bot wall's challenge page from an answer alone (#480).
 
 A source that names an open-access PDF can be walled against programs: the
-answer is a challenge page (a 200, or a 403/503 from Cloudflare) in place of
-the PDF. That says nothing about the article, so it is recorded as its own
+answer is a challenge page in place of the PDF, served with any status but a
+gone 404 or 410 (a 403 or 503 from Cloudflare is one whatever its page says). That says nothing about the article, so it is recorded as its own
 kind, ``CHALLENGED``, never as the host's answer. The rules and the shared
 cases are ``doc/cross_platform/fulltext_parity/challenge_detection.json``;
 the survey that measured them is ``doc/developer/unpaywall_pdf_survey/``.
@@ -17,17 +17,21 @@ Pure functions only: no I/O.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from types import MappingProxyType
 
 from .constants import (
     CHALLENGE_BODY_PREFIX_BYTES,
     CHALLENGE_GONE_STATUSES,
     CLOUDFLARE_REFUSAL_STATUSES,
     CLOUDFLARE_SERVER,
+    HTTP_HEADER_WHITESPACE,
     PDF_MAGIC_BYTES,
 )
 from .data_models import RequestFailure, RequestFailureKind
 
 __all__ = [
+    "CLOUDFLARE_DEFENCE",
+    "WALL_HEADER_MARKERS",
     "WALL_MARKERS",
     "challenge_failure",
     "challenge_markers",
@@ -35,43 +39,60 @@ __all__ = [
 ]
 
 #: The defences against programs, by name, and the lowercase needles each is
-#: recognised by in a page's start or a header line. Equal to the contract's
-#: ``markers`` table on every platform.
-WALL_MARKERS: dict[str, tuple[str, ...]] = {
-    "akamai": ("akamaighost", "errors.edgesuite.net", "you don't have permission to access"),
-    "anubis": ("anubis", "making sure you're not a bot"),
-    "aws-waf": ("awswaf", "aws-waf-token", "x-amzn-waf-action"),
-    "captcha": ("g-recaptcha", "hcaptcha", "turnstile", "captcha"),
-    "cloudflare": (
-        "just a moment",
-        "cf-chl",
-        "challenge-platform",
-        "cf-mitigated",
-        "attention required! | cloudflare",
-    ),
-    "datadome": ("datadome", "captcha-delivery.com"),
-    "imperva": ("incapsula", "_incapsula_resource", "visid_incap"),
-    "perimeterx": ("px-captcha", "perimeterx", "_pxhd"),
-    "proof-of-work": (
-        "proof of work",
-        "pow-challenge",
-        "checking your browser",
-        "preparing to download",
-    ),
-    "robot-text": (
-        "verify you are human",
-        "are you a robot",
-        "unusual traffic",
-        "not a robot",
-        "automated access",
-        "bot detection",
-        "ai crawlers",
-        "hostile web agent",
-    ),
-}
+#: recognised by in the start of a page. Equal to the contract's ``markers``
+#: table on every platform. Header lines are not searched for these: a
+#: defence's cookie, its CDN's ``Server`` value or a CSP naming a captcha comes
+#: with ordinary answers too.
+WALL_MARKERS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        # Akamai's refusal carries no Server header, and escapes its reference
+        # URL as entities; "you don't have permission to access" is also
+        # Apache's stock 403 text, so it is no needle.
+        "akamai": ("errors.edgesuite.net", "errors&#46;edgesuite&#46;net"),
+        "anubis": ("anubis", "making sure you're not a bot"),
+        "aws-waf": ("awswaf", "aws-waf-token"),
+        "captcha": ("g-recaptcha", "hcaptcha", "turnstile", "captcha"),
+        # "_cf_chl_opt" is the challenge's own script; "challenge-platform"
+        # also names the bot-management script Cloudflare adds to ordinary pages.
+        "cloudflare": ("just a moment", "cf-chl", "_cf_chl_opt", "attention required! | cloudflare"),
+        "datadome": ("datadome", "captcha-delivery.com"),
+        "imperva": ("incapsula", "_incapsula_resource", "visid_incap"),
+        "perimeterx": ("px-captcha", "perimeterx", "_pxhd"),
+        "proof-of-work": (
+            "proof of work",
+            "pow-challenge",
+            "checking your browser",
+            "preparing to download",
+        ),
+        "robot-text": (
+            "verify you are human",
+            "are you a robot",
+            "unusual traffic",
+            "not a robot",
+            "automated access",
+            "bot detection",
+            "ai crawlers",
+            "hostile web agent",
+        ),
+    }
+)
+
+#: The header names, lowercase, that a defence sends only with a challenge.
+#: Matched as whole names; values are not read. Equal to the contract's
+#: ``header_markers`` table on every platform.
+WALL_HEADER_MARKERS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        "aws-waf": ("x-amzn-waf-action",),
+        "cloudflare": ("cf-mitigated",),
+    }
+)
+
+#: The defence named by Cloudflare's own refusal (a key of both tables).
+CLOUDFLARE_DEFENCE = "cloudflare"
 
 # A-Z to a-z and nothing else: str.lower() also folds non-ASCII letters (the
-# Kelvin sign to "k"), which Swift's and Kotlin's ports would not match.
+# Kelvin sign to "k"), which the Swift and Kotlin ports deliberately do not do,
+# so all three agree.
 _ASCII_LOWER = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
 
 
@@ -88,40 +109,41 @@ def _ascii_lower(text: str) -> str:
 
 
 def named_defences(text: str, headers: Mapping[str, str] | None = None) -> tuple[str, ...]:
-    """The defences a page's text and its header lines name.
+    """The defences a page's text and its header names name.
 
     Args:
-        text: The start of a non-PDF body, any case.
-        headers: The answer's headers, when there are any; each is matched as
-            the line ``name: value``.
+        text: The start of a non-PDF body, any case; searched for
+            :data:`WALL_MARKERS`.
+        headers: The answer's headers, when there are any; their names are
+            compared whole with :data:`WALL_HEADER_MARKERS`.
 
     Returns:
-        The sorted names in :data:`WALL_MARKERS` that matched.
+        The sorted defence names that matched.
     """
-    haystacks = [_ascii_lower(text)]
+    page = _ascii_lower(text)
+    found = {
+        name for name, needles in WALL_MARKERS.items() if any(needle in page for needle in needles)
+    }
     if headers:
-        haystacks.extend(_ascii_lower(f"{name}: {value}") for name, value in headers.items())
-    return tuple(
-        sorted(
-            name
-            for name, needles in WALL_MARKERS.items()
-            if any(needle in haystack for haystack in haystacks for needle in needles)
+        names = {_ascii_lower(name) for name in headers}
+        found.update(
+            name for name, needles in WALL_HEADER_MARKERS.items() if names.intersection(needles)
         )
-    )
+    return tuple(sorted(found))
 
 
 def _server(headers: Mapping[str, str]) -> str:
-    """The ``Server`` header, trimmed and ASCII-lowercased; ``""`` without one.
+    """The ``Server`` header, trimmed of HTTP whitespace and ASCII-lowercased.
 
     Args:
         headers: The answer's headers, in any name case.
 
     Returns:
-        The server's name as the rule compares it.
+        The server's name as the rule compares it; ``""`` without one.
     """
     for name, value in headers.items():
         if _ascii_lower(name) == "server":
-            return _ascii_lower(value.strip())
+            return _ascii_lower(value.strip(HTTP_HEADER_WHITESPACE))
     return ""
 
 
@@ -150,7 +172,7 @@ def challenge_markers(
     if status in CLOUDFLARE_REFUSAL_STATUSES and _server(headers) == CLOUDFLARE_SERVER:
         # Cloudflare's own refusal, whatever the page says: ScienceDirect's
         # challenge markup lies beyond the bytes read.
-        found.add("cloudflare")
+        found.add(CLOUDFLARE_DEFENCE)
     return tuple(sorted(found))
 
 

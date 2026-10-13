@@ -1262,6 +1262,9 @@ CHALLENGE_BODY_PREFIX_BYTES = 64 * 1024
 CHALLENGE_GONE_STATUSES = frozenset({404, 410})
 CLOUDFLARE_REFUSAL_STATUSES = frozenset({403, 503})
 CLOUDFLARE_SERVER = "cloudflare"
+# The whitespace HTTP allows around a header's value (RFC 9110's OWS): a space
+# or a tab, and nothing else, so every platform trims a value alike.
+HTTP_HEADER_WHITESPACE = " \t"
 # Appended to a PDF's cache path while its download is in progress; the file
 # is renamed into place only once the body has arrived whole (#478).
 PDF_PARTIAL_SUFFIX = ".part"
