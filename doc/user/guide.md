@@ -112,8 +112,11 @@ Elsevier could not be asked, and the log asks you to enter the key again.
 Some open-access PDFs sit behind a robot check that blocks the app's downloads.
 Under Settings → Full Text, "Try bot-walled PDFs in a hidden browser" (on by
 default) lets the app later open each such PDF in a hidden built-in browser,
-save it if it arrives, and re-check that article's transparency. Nothing is
-sent but the page request itself.
+save it if it arrives, and re-check that article's transparency. The page
+opens as in any browser: it loads its own resources and runs the publisher's
+scripts, which is how the robot check is passed, and the publisher's cookies
+are kept in the app's own browser folder. Your searches, documents and keys
+are never sent.
 
 Rescued PDFs are saved in your PDF library, and a rescued article's
 transparency badge is re-checked, so it may change once the full text has been
