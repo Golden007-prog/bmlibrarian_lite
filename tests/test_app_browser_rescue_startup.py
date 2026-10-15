@@ -102,7 +102,7 @@ def test_the_message_promises_a_recheck_only_when_one_was_queued() -> None:
     window, said = _window(lambda _id: object(), False)
     app_module.LiteMainWindow._on_pdf_rescued(window, _entry())  # type: ignore[arg-type]
     assert "re-checking" not in said[0]
-    assert said[0].endswith("hidden browser.")
+    assert said[0].endswith("built-in browser.")
 
 
 @pytest.mark.parametrize("error", [__import__("sqlite3").Error("locked"), SQLiteError("locked")])
@@ -131,7 +131,84 @@ def test_an_unavailable_browser_is_said_while_the_setting_is_on() -> None:
             _browser_rescue_available=True,
             config=SimpleNamespace(discovery=SimpleNamespace(browser_rescue_hidden=hidden)),
             status_bar=SimpleNamespace(showMessage=lambda text, _ms, m=messages: m.append(text)),
+            rescue_indicator=SimpleNamespace(refresh=lambda *a, m=messages: m.append("refresh")),
         )
         app_module.LiteMainWindow.browser_rescue_unavailable(window)  # type: ignore[arg-type]
         assert window._browser_rescue_available is False
-        assert messages == expected
+        # Pending entries now wait for the reader too: the count is read again
+        assert messages == [*expected, "refresh"]
+
+
+# -- the review queue's wiring (#480, stage 3) -----------------------------------
+
+
+class _FakeService:
+    """The service's signals the window wires, as real Qt signals."""
+
+    def __init__(self) -> None:
+        """Make the signals on a QObject."""
+        from PySide6.QtCore import QObject, Signal
+
+        class _Signals(QObject):
+            rescued = Signal(object)
+            entry_changed = Signal(object)
+
+        self._signals = _Signals()
+        self.rescued = self._signals.rescued
+        self.entry_changed = self._signals.entry_changed
+
+    def wake(self, *_args: object) -> None:
+        """Ignored."""
+
+
+def _wired_window() -> SimpleNamespace:
+    """A stand-in window recording what its wiring calls."""
+    calls: list[tuple[str, Any]] = []
+    return SimpleNamespace(
+        calls=calls,
+        config=SimpleNamespace(discovery=SimpleNamespace(browser_rescue_hidden=True)),
+        _rescue_service=None,
+        rescue_indicator=SimpleNamespace(refresh=lambda *a: calls.append(("refresh", a))),
+        interrogation_tab=SimpleNamespace(on_rescue_entry_changed=lambda e: calls.append(("tab", e))),
+        systematic_review_tab=SimpleNamespace(transparency_outcome_ready=SimpleNamespace(connect=lambda f: None)),
+        research_questions_tab=SimpleNamespace(transparency_outcome_ready=SimpleNamespace(connect=lambda f: None)),
+        _on_pdf_rescued=lambda e: calls.append(("rescued", e)),
+    )
+
+
+def test_a_verdict_refreshes_the_indicator_and_tells_the_tab() -> None:
+    """entry_changed reaches the indicator and the interrogation tab's wait."""
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    window = _wired_window()
+    service = _FakeService()
+    app_module.LiteMainWindow.attach_rescue_service(window, service)  # type: ignore[arg-type]
+    service.entry_changed.emit("entry")
+    assert ("tab", "entry") in window.calls
+    assert any(c[0] == "refresh" for c in window.calls)
+
+
+@pytest.mark.parametrize("service, on, runs", [(None, True, False), (object(), False, False), (object(), True, True)])
+def test_the_hidden_pass_runs_only_with_a_service_and_the_setting(service: Any, on: bool, runs: bool) -> None:
+    """D4's "hidden pass runs": QtWebEngine started and the setting on."""
+    window = _wired_window()
+    window._rescue_service = service
+    window.config.discovery.browser_rescue_hidden = on
+    assert app_module.LiteMainWindow._hidden_pass_runs(window) is runs  # type: ignore[arg-type]
+
+
+def test_a_queued_rescue_wakes_the_service_and_refreshes() -> None:
+    """The tab's enqueue wakes the hidden pass at once and updates the count."""
+    woken: list[bool] = []
+    window = _wired_window()
+    window._rescue_service = SimpleNamespace(wake=lambda *a: woken.append(True))
+    app_module.LiteMainWindow._on_rescue_queued(window)  # type: ignore[arg-type]
+    assert woken == [True] and any(c[0] == "refresh" for c in window.calls)
+
+
+def test_a_rescue_is_said_without_hidden() -> None:
+    """D11: the window's rescue is not the hidden browser's."""
+    assert app_module.rescued_pdf_message("T", True, False) == (
+        "Fetched the PDF of \u201cT\u201d in the built-in browser; re-checking its transparency."
+    )
