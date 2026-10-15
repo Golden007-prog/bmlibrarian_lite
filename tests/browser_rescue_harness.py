@@ -26,12 +26,14 @@ prepare_web_engine()
 
 from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QUrl  # noqa: E402
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile  # noqa: E402
+from PySide6.QtWebEngineWidgets import QWebEngineView  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from shiboken6 import Shiboken  # noqa: E402
 
 from bmlibrarian_lite.browser_rescue import RescueRequest, RescueState, RescueVerdict  # noqa: E402
 from bmlibrarian_lite.config import LiteConfig  # noqa: E402
 from bmlibrarian_lite.constants import RESCUE_PRIORITY_WAITING, SERVICE_UNPAYWALL_PDF  # noqa: E402
+from bmlibrarian_lite.gui import rescue_attempt as rescue_attempt_module  # noqa: E402
 from bmlibrarian_lite.gui.browser_rescue_service import BrowserRescueService  # noqa: E402
 from bmlibrarian_lite.gui.rescue_attempt import RescueAttempt, rescue_profile  # noqa: E402
 from bmlibrarian_lite.storage import LiteStorage  # noqa: E402
@@ -44,6 +46,8 @@ SCENARIO_LIMIT_SECONDS = 30
 STALL_HOLD_SECONDS = 8
 SLOW_ANSWER_SECONDS = 5
 TRICKLE_CHUNKS = 10
+# How long a person's visit is left open before it is left: past the hidden timeout
+PERSON_WAIT_SECONDS = 2 * TIMEOUT_MS / 1000
 TRICKLE_CHUNK_BYTES = 100
 TRICKLE_PAUSE_SECONDS = 0.4
 # How long after /trickle sent its headers the server calls the download begun,
@@ -313,6 +317,76 @@ def pump(app: QApplication, seconds: float) -> None:
     run_until(app, lambda: False, seconds)
 
 
+def shown_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any]:
+    """Visits shown in a view: a person's, and one judged as a walk judges it."""
+    profile = rescue_profile(root / "shown-profile")
+    current: list[RescueAttempt] = []
+    profile.downloadRequested.connect(lambda request: current[0].accept_download(request))
+    view = QWebEngineView()
+    view.show()
+    results: dict[str, Any] = {}
+
+    def person(name: str, path: str, wait: float) -> dict[str, Any]:
+        """One person's visit, left after ``wait`` seconds if nothing ended it."""
+        out = root / "shown" / name
+        out.mkdir(parents=True)
+        verdicts: list[RescueVerdict] = []
+        attempt = RescueAttempt(profile, base + path, out / "article.pdf", TIMEOUT_MS, STALL_MS,
+                                MAX_PDF_BYTES, view=view, judge_pages=False)
+        attempt.finished.connect(verdicts.append)
+        current[:] = [attempt]
+        attempt.start()
+        shown = view.page() is not None and view.page().profile() is profile
+        finished = run_until(app, lambda: bool(verdicts), wait)
+        if not finished:
+            attempt.abort()
+        pump(app, 0.2)
+        # A finished visit lets its page go with deleteLater; deliver that first
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        result = {
+            "shown": shown,
+            "finished": finished,
+            "verdict": verdicts[0].to_dict() if verdicts else None,
+            "saved": (out / "article.pdf").is_file(),
+            "view_alive": view.page() is not None,
+            "view_released": view.page().profile() is not profile,
+        }
+        attempt.deleteLater()
+        return result
+
+    results["pdf"] = person("pdf", "/pdf?shown", SCENARIO_LIMIT_SECONDS)
+    # Neither a gone page nor an abstract ends a person's visit; leaving it does
+    results["gone"] = person("gone", "/gone?shown", PERSON_WAIT_SECONDS)
+    results["abstract"] = person("abstract", "/abstract?shown", PERSON_WAIT_SECONDS)
+
+    # A new window opens in the same page (D3)
+    page_probe = rescue_attempt_module._ShownPage(profile)
+    results["new_window_here"] = page_probe.createWindow(
+        QWebEnginePage.WebWindowType.WebBrowserTab) is page_probe
+    Shiboken.delete(page_probe)
+
+    # A walk's visit is judged as the hidden pass judges, in the view
+    out = root / "shown" / "walk"
+    out.mkdir(parents=True)
+    verdicts: list[RescueVerdict] = []
+    attempt = RescueAttempt(profile, base + "/walled?shown", out / "article.pdf", TIMEOUT_MS,
+                            STALL_MS, MAX_PDF_BYTES, view=view, judge_pages=True)
+    attempt.finished.connect(verdicts.append)
+    current[:] = [attempt]
+    attempt.start()
+    results["walk_walled"] = {
+        "finished": run_until(app, lambda: bool(verdicts), SCENARIO_LIMIT_SECONDS),
+        "verdict": verdicts[0].to_dict() if verdicts else None,
+    }
+    attempt.deleteLater()
+
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    Shiboken.delete(view)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    Shiboken.delete(profile)
+    return results
+
+
 def service_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any]:
     """Work a queue through the real service, then quit mid-visit."""
     config = LiteConfig()
@@ -390,6 +464,7 @@ def main() -> int:
         root = Path(tmp)
         output = {
             "attempts": attempt_scenarios(app, base, root),
+            "shown": shown_scenarios(app, base, root),
             "service": service_scenarios(app, base, root),
         }
     print(json.dumps(output))

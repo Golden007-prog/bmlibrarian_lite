@@ -307,3 +307,72 @@ def test_an_empty_download_learnt_nothing(qapp, tmp_path: Path) -> None:
     attempt, _ = _attempt(tmp_path, pdf_path)
     assert attempt._settle(written) == RescueVerdict(RescueOutcome.TRANSPORT)
     assert not pdf_path.exists() and not written.exists()
+
+
+# -- a visit a person sees (#480, stage 3) ---------------------------------------
+
+
+def _person_attempt(tmp_path: Path) -> tuple[RescueAttempt, list[RescueVerdict]]:
+    """A person's visit (judge_pages=False) with a stand-in page, as if started."""
+    attempt = RescueAttempt(
+        None,  # type: ignore[arg-type]
+        ADDRESS, tmp_path / "article.pdf", TIMEOUT_MS, STALL_MS, MAX_PDF_BYTES,
+        judge_pages=False,
+    )
+    attempt._page = _page()  # type: ignore[assignment]
+    verdicts: list[RescueVerdict] = []
+    attempt.finished.connect(verdicts.append)
+    return attempt, verdicts
+
+
+@pytest.mark.parametrize("status", [404, 410, 200, 403])
+def test_a_person_s_page_is_never_judged(qapp, tmp_path: Path, status: int) -> None:
+    """The page is the person's to read: no answer ends their visit (D2)."""
+    attempt, verdicts = _person_attempt(tmp_path)
+    attempt._on_loading_changed(_answered(status))
+    assert verdicts == []
+
+
+@pytest.mark.parametrize("domain", [Domain.ConnectionErrorDomain, Domain.DnsErrorDomain])
+def test_a_network_failure_is_shown_to_the_person_not_settled(qapp, tmp_path: Path, domain: Any) -> None:
+    """Chromium's error page is shown; the person can reload."""
+    attempt, verdicts = _person_attempt(tmp_path)
+    attempt._on_loading_changed(_Info(Status.LoadFailedStatus, domain, ERR_UNEXPECTED))
+    assert verdicts == []
+
+
+def test_a_person_s_throttled_page_still_slows_its_host(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pacing is shared whoever visits: a 429 penalises the host's limiter."""
+    penalised: list[tuple[str, Any]] = []
+    monkeypatch.setattr(
+        rescue_attempt, "penalise_host_for_answer",
+        lambda address, status, headers: penalised.append((address, status)) or True,
+    )
+    attempt, _verdicts = _person_attempt(tmp_path)
+    attempt._on_loading_changed(_answered(429))
+    assert penalised == [(ADDRESS, 429)]
+
+
+def test_a_person_s_renderer_crash_ends_the_visit(qapp, tmp_path: Path) -> None:
+    """A dead page shows nothing: the visit learnt nothing."""
+    attempt, verdicts = _person_attempt(tmp_path)
+    attempt._on_render_process_terminated()
+    assert verdicts == [RescueVerdict(RescueOutcome.TRANSPORT)]
+
+
+def test_a_person_s_visit_has_no_timeout(qapp, tmp_path: Path) -> None:
+    """A timeout that fires anyway (it is never started) does not read the page."""
+    attempt, verdicts = _person_attempt(tmp_path)
+    attempt._on_timeout()
+    assert verdicts == []
+
+
+def test_a_person_s_download_is_still_judged(qapp, tmp_path: Path) -> None:
+    """Only what arrives ends a person's visit: a size announced over the limit is too large."""
+    attempt, verdicts = _person_attempt(tmp_path)
+    request = _Request(attempt._page, total_bytes=MAX_PDF_BYTES + 1)
+    attempt.accept_download(request)  # type: ignore[arg-type]
+    assert request.cancelled
+    assert verdicts == [RescueVerdict(RescueOutcome.TOO_LARGE)]
