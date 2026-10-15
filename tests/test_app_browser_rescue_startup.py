@@ -184,6 +184,7 @@ def test_a_verdict_refreshes_the_indicator_and_tells_the_tab() -> None:
     window = _wired_window()
     service = _FakeService()
     app_module.LiteMainWindow.attach_rescue_service(window, service)  # type: ignore[arg-type]
+    window.calls.clear()  # attaching counts once already
     service.entry_changed.emit("entry")
     assert ("tab", "entry") in window.calls
     assert any(c[0] == "refresh" for c in window.calls)
@@ -234,3 +235,90 @@ def test_the_tab_is_given_the_free_check() -> None:
 
     setup = inspect.getsource(app_module.LiteMainWindow._setup_ui)
     assert "set_hidden_pass_check(self._hidden_pass_free)" in setup
+
+
+def test_attaching_the_service_counts_again_at_once() -> None:
+    """Counted at start-up as if no hidden pass ran: pending entries are not the reader's once it does."""
+    from PySide6.QtWidgets import QApplication
+
+    QApplication.instance() or QApplication([])
+    window = _wired_window()
+    app_module.LiteMainWindow.attach_rescue_service(window, _FakeService())  # type: ignore[arg-type]
+    assert window.calls == [("refresh", ())]
+
+
+class _RecordingDialog:
+    """Stands in for ReviewQueueDialog: records how it was made and used."""
+
+    made: list[_RecordingDialog] = []
+
+    def __init__(self, storage: Any, service: Any, make_view: Any, hidden: Any, parent: Any = None) -> None:
+        """Record the arguments."""
+        self.service, self.make_view = service, make_view
+        self.calls: list[tuple[str, Any]] = []
+        self.queue_changed = SimpleNamespace(connect=lambda f: self.calls.append(("connected", f)))
+        _RecordingDialog.made.append(self)
+
+    def refresh(self) -> None:
+        """Record a refresh."""
+        self.calls.append(("refresh", None))
+
+    def show(self) -> None:
+        """Record showing."""
+        self.calls.append(("show", None))
+
+    def raise_(self) -> None:
+        """Ignored."""
+
+    def activateWindow(self) -> None:  # noqa: N802
+        """Ignored."""
+
+    def focus_entry(self, entry_id: int) -> None:
+        """Record the focus."""
+        self.calls.append(("focus", entry_id))
+
+
+def _queue_window(service: Any) -> SimpleNamespace:
+    """A stand-in main window for show_review_queue."""
+    window = _wired_window()
+    window._rescue_service = service
+    window._review_queue = None
+    window.storage = object()
+    window._hidden_pass_runs = lambda: True
+    return window
+
+
+def test_the_review_queue_is_made_once_and_read_again_on_reopening(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One window per main window; reopened, its list is read again and the entry focused."""
+    _RecordingDialog.made = []
+    monkeypatch.setattr(app_module, "ReviewQueueDialog", _RecordingDialog)
+    window = _queue_window(None)
+    app_module.LiteMainWindow.show_review_queue(window)  # type: ignore[arg-type]
+    app_module.LiteMainWindow.show_review_queue(window, 7)  # type: ignore[arg-type]
+    (dialog,) = _RecordingDialog.made
+    assert dialog.calls[0] == ("connected", window.rescue_indicator.refresh)
+    assert ("refresh", None) in dialog.calls and dialog.calls[-1] == ("focus", 7)
+
+
+def test_without_a_service_the_review_queue_loads_no_browser_view(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D12: no service, no view, and the view's module is never imported."""
+    _RecordingDialog.made = []
+    monkeypatch.setattr(app_module, "ReviewQueueDialog", _RecordingDialog)
+    monkeypatch.setitem(sys.modules, "bmlibrarian_lite.gui.rescue_view", None)  # importing it would fail
+    app_module.LiteMainWindow.show_review_queue(_queue_window(None))  # type: ignore[arg-type]
+    assert _RecordingDialog.made[0].make_view is None
+
+
+def test_a_browser_view_that_cannot_load_still_opens_the_review_queue(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """QtWebEngineWidgets missing beside a working core: logged, and the window opens with its note."""
+    _RecordingDialog.made = []
+    monkeypatch.setattr(app_module, "ReviewQueueDialog", _RecordingDialog)
+    monkeypatch.setitem(sys.modules, "bmlibrarian_lite.gui.rescue_view", None)  # import raises ImportError
+    service = object()
+    app_module.LiteMainWindow.show_review_queue(_queue_window(service))  # type: ignore[arg-type]
+    (dialog,) = _RecordingDialog.made
+    assert dialog.service is service and dialog.make_view is None
+    assert ("show", None) in dialog.calls
+    assert "browser view could not be loaded" in caplog.text

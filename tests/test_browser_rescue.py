@@ -8,6 +8,7 @@ import pytest
 
 from bmlibrarian_lite.browser_rescue import (
     OPEN_RESCUE_STATES,
+    DismissOutcome,
     RescueEntry,
     RescueOutcome,
     RescueRequest,
@@ -15,6 +16,7 @@ from bmlibrarian_lite.browser_rescue import (
     RescueSubject,
     RescueVerdict,
     WaitOutcome,
+    WaitResult,
     awaiting_reader_states,
     dismiss_entry,
     dismissed_state,
@@ -550,18 +552,34 @@ class _Dismissals:
 def test_dismissing_returns_the_entry_it_changed() -> None:
     """A dismissal that applied returns the dismissed entry."""
     dismissed = _entry(1, RescueState.DISMISSED)
-    assert dismiss_entry(_Dismissals(RecordedVerdict(dismissed, applied=True)), 1) == dismissed
+    result = dismiss_entry(_Dismissals(RecordedVerdict(dismissed, applied=True)), 1)
+    assert result.outcome is DismissOutcome.DISMISSED and result.entry == dismissed
 
 
 def test_dismissing_an_entry_no_longer_open_changes_nothing() -> None:
-    """One another process settled first is not reported as dismissed."""
-    assert dismiss_entry(_Dismissals(RecordedVerdict(_entry(1, RescueState.RESCUED), applied=False)), 1) is None
+    """One another process settled first is not open, and not a failed write."""
+    rescued = _entry(1, RescueState.RESCUED)
+    result = dismiss_entry(_Dismissals(RecordedVerdict(rescued, applied=False)), 1)
+    assert result.outcome is DismissOutcome.NOT_OPEN and result.entry == rescued
+
+
+def test_dismissing_an_entry_that_is_gone_is_not_a_failed_write() -> None:
+    """A row gone meanwhile is not open; the reader is not told a write failed."""
+    result = dismiss_entry(_Dismissals(RecordedVerdict(None, applied=False)), 1)
+    assert result.outcome is DismissOutcome.NOT_OPEN and result.entry is None
 
 
 def test_a_dismissal_that_cannot_be_written_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
     """The window reports the failure; nothing raises into Qt's slot."""
-    assert dismiss_entry(_Dismissals(sqlite3.OperationalError("database is locked")), 1) is None
+    result = dismiss_entry(_Dismissals(sqlite3.OperationalError("database is locked")), 1)
+    assert result.outcome is DismissOutcome.FAILED and result.entry is None
     assert "could not be dismissed" in caplog.text
+
+
+def test_an_applied_queue_change_needs_its_entry() -> None:
+    """Applied with no entry would leave the caller nothing to report."""
+    with pytest.raises(ValueError):
+        RecordedVerdict(None, applied=True)
 
 
 def test_with_a_hidden_pass_only_a_person_s_entries_wait_for_the_reader() -> None:
@@ -594,37 +612,118 @@ def test_without_a_hidden_pass_nothing_is_waited_for() -> None:
 
 def test_a_watched_entry_without_a_verdict_keeps_the_reader_waiting() -> None:
     """Waiting until the watched entry has had its visit."""
-    assert wait_outcome([_entry(1, RescueState.PENDING)], {1}, set()) is WaitOutcome.WAITING
+    assert wait_outcome([_entry(1, RescueState.PENDING)], {1}, set()).outcome is WaitOutcome.WAITING
 
 
 def test_a_rescue_during_the_wait_ends_it() -> None:
     """One rescued address is enough, whatever the others do."""
     entries = [_entry(1, RescueState.RESCUED), _entry(2, RescueState.PENDING)]
-    assert wait_outcome(entries, {1, 2}, {1}) is WaitOutcome.RESCUED
+    assert wait_outcome(entries, {1, 2}, {1}).outcome is WaitOutcome.RESCUED
 
 
 def test_a_rescue_from_before_the_wait_is_not_this_wait_s() -> None:
     """A PDF rescued earlier is not on disk, or discovery would have found it."""
-    assert wait_outcome([_entry(1, RescueState.RESCUED)], set(), set()) is WaitOutcome.NOTHING
+    assert wait_outcome([_entry(1, RescueState.RESCUED)], set(), set()).outcome is WaitOutcome.NOTHING
 
 
 def test_a_transport_verdict_ends_the_wait_with_the_entry_still_open() -> None:
     """The entry stays pending, a retry is minutes away: the reader is offered the queue."""
-    assert wait_outcome([_entry(1, RescueState.PENDING)], {1}, {1}) is WaitOutcome.NEEDS_READER
+    assert wait_outcome([_entry(1, RescueState.PENDING)], {1}, {1}).outcome is WaitOutcome.NEEDS_READER
 
 
 def test_a_challenge_ends_the_wait_and_offers_the_queue() -> None:
     """A wall the hidden pass could not pass waits for the reader."""
-    assert wait_outcome([_entry(1, RescueState.NEEDS_PERSON)], {1}, {1}) is WaitOutcome.NEEDS_READER
+    assert wait_outcome([_entry(1, RescueState.NEEDS_PERSON)], {1}, {1}).outcome is WaitOutcome.NEEDS_READER
 
 
 def test_every_entry_settled_without_a_pdf_offers_nothing() -> None:
     """No PDF behind the wall: today's fallback."""
     entries = [_entry(1, RescueState.NO_PDF), _entry(2, RescueState.GONE)]
-    assert wait_outcome(entries, {1, 2}, {1, 2}) is WaitOutcome.NOTHING
+    assert wait_outcome(entries, {1, 2}, {1, 2}).outcome is WaitOutcome.NOTHING
+
+
+def test_the_rescue_carries_the_entry_it_came_from() -> None:
+    """The caller loads the PDF of the entry that decided the outcome, never one it looks for."""
+    rescued = _entry(1, RescueState.RESCUED)
+    result = wait_outcome([rescued, _entry(2, RescueState.PENDING)], {1, 2}, {1})
+    assert result == WaitResult(WaitOutcome.RESCUED, rescued)
+
+
+def test_the_offer_carries_an_open_entry() -> None:
+    """The review queue opens on an entry that is still open."""
+    open_entry = _entry(2, RescueState.NEEDS_PERSON)
+    result = wait_outcome([_entry(1, RescueState.NO_PDF), open_entry], {1, 2}, {1, 2})
+    assert result == WaitResult(WaitOutcome.NEEDS_READER, open_entry)
+
+
+def test_at_its_limit_a_watched_rescue_not_heard_of_here_counts() -> None:
+    """Another process recorded the rescue: no verdict reached this tab, yet its PDF is this wait's."""
+    rescued = _entry(1, RescueState.RESCUED)
+    result = wait_outcome([rescued], {1}, set(), final=True)
+    assert result == WaitResult(WaitOutcome.RESCUED, rescued)
+
+
+def test_at_its_limit_the_wait_never_goes_on() -> None:
+    """A watched entry still pending is decided as open: the offer, not more waiting."""
+    pending = _entry(1, RescueState.PENDING)
+    assert wait_outcome([pending], {1}, set(), final=True) == WaitResult(WaitOutcome.NEEDS_READER, pending)
+
+
+def test_at_its_limit_an_earlier_rescue_is_still_not_this_wait_s() -> None:
+    """Control: final counts only watched entries, not one rescued before the wait."""
+    assert wait_outcome([_entry(1, RescueState.RESCUED)], set(), set(), final=True).outcome is WaitOutcome.NOTHING
+
+
+def test_a_wait_about_no_entry_is_refused() -> None:
+    """An empty list is a failed queue write, never "every entry settled without a PDF"."""
+    with pytest.raises(ValueError):
+        wait_outcome([], set(), set())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "with_entry"),
+    [
+        (WaitOutcome.RESCUED, False),
+        (WaitOutcome.NEEDS_READER, False),
+        (WaitOutcome.WAITING, True),
+        (WaitOutcome.NOTHING, True),
+    ],
+)
+def test_a_wait_result_holds_its_entry_with_its_outcome(outcome: WaitOutcome, with_entry: bool) -> None:
+    """An outcome decided by an entry carries it; the others carry none."""
+    with pytest.raises(ValueError):
+        WaitResult(outcome, _entry(1, RescueState.PENDING) if with_entry else None)
 
 
 def test_the_wait_lasts_while_any_watched_entry_is_unvisited() -> None:
     """Two addresses: one answered, one still to visit."""
     entries = [_entry(1, RescueState.NEEDS_PERSON), _entry(2, RescueState.PENDING)]
-    assert wait_outcome(entries, {1, 2}, {1}) is WaitOutcome.WAITING
+    assert wait_outcome(entries, {1, 2}, {1}).outcome is WaitOutcome.WAITING
+
+
+def test_a_naive_moment_is_not_stamped() -> None:
+    """Read as local time, it would compare wrongly with every stored stamp."""
+    with pytest.raises(ValueError):
+        stamp(datetime(2026, 10, 15, 12, 0))
+
+
+def test_every_outcome_but_transport_settles_in_a_state_of_its_own() -> None:
+    """The exhaustiveness the import-time assert held, now held whatever ``-O`` says."""
+    from bmlibrarian_lite.browser_rescue import _SETTLED_BY
+
+    assert set(_SETTLED_BY) | {RescueOutcome.TRANSPORT} == set(RescueOutcome)
+
+
+@pytest.mark.parametrize(
+    ("address", "host", "doi"),
+    [
+        ("file:///etc/passwd", "", DOI),
+        ("javascript:alert(1)", "alert(1)", DOI),
+        (ADDRESS, "elsewhere.example", DOI),
+        (ADDRESS, "www.sciencedirect.com", " "),
+    ],
+)
+def test_a_request_a_browser_cannot_trust_is_refused(address: str, host: str, doi: str) -> None:
+    """A browser goes to the address, pacing goes by the host, and the DOI names the PDF."""
+    with pytest.raises(ValueError):
+        RescueRequest("doc-1", doi, None, "T", address, host, SERVICE_UNPAYWALL_PDF)

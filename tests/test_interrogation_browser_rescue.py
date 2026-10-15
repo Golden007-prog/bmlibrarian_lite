@@ -236,7 +236,7 @@ def test_two_addresses_wait_for_both_or_one_rescue(make: Any, tmp_path: Path) ->
 
 
 def test_with_the_hidden_pass_off_the_tab_offers_the_queue_at_once(make: Any) -> None:
-    """Review focus 3: no pass will come, so no wait."""
+    """No pass will come, so no wait."""
     h = make(hidden=False)
     h.fail_with(_walled(ADDRESS))
     assert h.tab._pdf_progress_dialog is None
@@ -245,7 +245,7 @@ def test_with_the_hidden_pass_off_the_tab_offers_the_queue_at_once(make: Any) ->
 
 
 def test_the_wait_ends_at_its_limit_with_the_offer(make: Any) -> None:
-    """Review focus 2: a slow or stuck pass never keeps the reader waiting past the limit."""
+    """A slow or stuck pass never keeps the reader waiting past the limit."""
     h = make()
     h.fail_with(_walled(ADDRESS))
     h.tab._on_rescue_wait_limit()
@@ -300,19 +300,161 @@ def test_a_document_without_a_doi_is_not_queued(make: Any) -> None:
     assert h.entries() == [] and h.abstracts == [FULLTEXT_UNAVAILABLE]
 
 
-def test_a_queue_that_cannot_be_written_is_today_s_fallback(make: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Golden rule 8: logged; the reader gets the abstract, not a hang."""
+def _locked(*_a: Any, **_k: Any) -> Any:
+    """A queue call that fails as a locked database does."""
     import sqlite3
 
+    raise sqlite3.OperationalError("database is locked")
+
+
+def test_a_queue_that_cannot_be_read_still_names_the_wall(make: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Golden rule 8: logged; the reader gets the fallback naming the robot check, not a hang."""
     h = make()
-
-    def fail(*_a: Any, **_k: Any) -> Any:
-        raise sqlite3.OperationalError("database is locked")
-
-    monkeypatch.setattr(h.storage, "rescue_entries_for_document", fail)
+    monkeypatch.setattr(h.storage, "rescue_entries_for_document", _locked)
     h.fail_with(_walled(ADDRESS))
-    assert h.abstracts == [FULLTEXT_UNAVAILABLE]
+    assert h.abstracts == [FULLTEXT_WALLED] and h.offers == []
     assert h.tab._pdf_progress_dialog is None
+    # Queued all the same: the hidden pass and the count hear of it
+    assert h.queued == [True]
+
+
+def test_a_queue_that_cannot_be_written_still_names_the_wall(make: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Nothing queued: no wait and no offer, but never "could not be retrieved" for a walled copy."""
+    h = make()
+    monkeypatch.setattr(h.storage, "enqueue_rescues", _locked)
+    h.fail_with(_walled(ADDRESS))
+    assert h.entries() == [] and h.queued == []
+    assert h.abstracts == [FULLTEXT_WALLED] and h.offers == []
+    assert h.tab._pdf_progress_dialog is None
+
+
+# -- the PR review's findings (#480, stage 3) --------------------------------------
+
+
+def test_at_its_limit_a_rescue_recorded_elsewhere_loads_its_pdf(make: Any, tmp_path: Path) -> None:
+    """Another process rescued the watched entry and no verdict reached this tab: the PDF loads, nothing raises."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    (entry,) = h.entries()
+    h.storage.record_rescue_verdict(entry.id, RescueVerdict(RescueOutcome.PDF))  # no on_rescue_entry_changed
+    (tmp_path / "rescued.pdf").write_bytes(b"%PDF-1.4\n")
+    h.tab._on_rescue_wait_limit()
+    assert h.pdfs == [(tmp_path / "rescued.pdf", BROWSER_PDF_LABEL)]
+    assert h.abstracts == [] and h.tab._rescue_wait is None
+
+
+def test_the_wait_has_its_limit_running_and_stops_it_when_settled(make: Any) -> None:
+    """The limit is what ends a wait no verdict ends; a settled wait leaves no timer behind."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    timer = h.tab._rescue_wait_timer
+    assert timer.isActive() and timer.interval() == tab_module.RESCUE_READER_WAIT_LIMIT_MS
+    h.verdict(ADDRESS, RescueVerdict(RescueOutcome.CHALLENGE, 403, ()))
+    assert not timer.isActive()
+
+
+def test_cancel_on_the_wait_s_dialog_is_the_reader_s_cancel(make: Any) -> None:
+    """The dialog's own Cancel reaches the wait: cancelled, and the wait is over."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    h.tab._pdf_progress_dialog.canceled.emit()
+    assert h.abstracts == [FULLTEXT_CANCELLED] and h.tab._rescue_wait is None
+
+
+def test_a_rescue_reported_while_the_queue_cannot_be_read_still_loads(
+    make: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry the signal carries is known as it stands: a failed re-read does not lose it."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    (entry,) = h.entries()
+    rescued = h.storage.record_rescue_verdict(entry.id, RescueVerdict(RescueOutcome.PDF)).entry
+    (tmp_path / "rescued.pdf").write_bytes(b"%PDF-1.4\n")
+    monkeypatch.setattr(h.storage, "rescue_entries_for_document", _locked)
+    h.tab.on_rescue_entry_changed(rescued)
+    assert h.pdfs == [(tmp_path / "rescued.pdf", BROWSER_PDF_LABEL)]
+
+
+def test_a_wall_reported_while_the_queue_cannot_be_read_offers_the_queue(
+    make: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reported entry is still open: the offer, naming the robot check."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    (entry,) = h.entries()
+    walled = h.storage.record_rescue_verdict(entry.id, RescueVerdict(RescueOutcome.CHALLENGE, 403, ())).entry
+    monkeypatch.setattr(h.storage, "rescue_entries_for_document", _locked)
+    h.tab.on_rescue_entry_changed(walled)
+    assert h.abstracts == [FULLTEXT_WALLED] and h.offers == [True]
+
+
+def test_a_queue_unreadable_at_the_limit_still_names_the_wall(make: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The limit ends the wait whatever the queue does."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    monkeypatch.setattr(h.storage, "rescue_entries_for_document", _locked)
+    h.tab._on_rescue_wait_limit()
+    assert h.abstracts == [FULLTEXT_WALLED] and h.tab._rescue_wait is None
+
+
+def test_a_discovery_the_reader_moved_on_from_starts_no_wait(make: Any) -> None:
+    """Its failure arrives after another citation was opened: nothing is queued or waited for it."""
+    h = make()
+    first = h.tab._fulltext_worker
+    h.tab.load_from_citation(_citation(doc_id="doc-2", doi="10.1/other"))
+    second_dialog = h.tab._pdf_progress_dialog
+    first.lookups = _walled(ADDRESS)
+    first.error.emit("no full text")
+    assert h.entries() == [] and h.tab._rescue_wait is None
+    assert h.abstracts == [] and h.offers == []
+    assert h.tab._pdf_progress_dialog is second_dialog is not None
+
+
+def test_a_discovery_the_reader_moved_on_from_loads_nothing(make: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Its full text arrives after another citation was opened: the one now open stays."""
+    h = make()
+    loaded: list[str] = []
+    monkeypatch.setattr(h.tab, "_load_citation_fulltext", lambda content, _c, _label: loaded.append(content))
+    first = h.tab._fulltext_worker
+    h.tab.load_from_citation(_citation(doc_id="doc-2", doi="10.1/other"))
+    first.finished.emit("the first article", "", "europepmc_xml")
+    assert loaded == []
+    h.tab._fulltext_worker.finished.emit("the second article", "", "europepmc_xml")
+    assert loaded == ["the second article"]
+
+
+def test_an_entry_already_waiting_for_a_person_is_offered_at_once(make: Any) -> None:
+    """Opened again after the hidden pass met the wall: no wait, the offer."""
+    h = make()
+    h.storage.enqueue_rescues(list(tab_module.rescue_requests(
+        tab_module.RescueSubject("doc-1", DOI, "1", "Walled trial"), _walled(ADDRESS))))
+    (entry,) = h.entries()
+    h.storage.record_rescue_verdict(entry.id, RescueVerdict(RescueOutcome.CHALLENGE, 403, ()))
+    h.fail_with(_walled(ADDRESS))
+    assert h.tab._rescue_wait is None
+    assert h.abstracts == [FULLTEXT_WALLED] and h.offers == [True]
+
+
+def test_an_entry_the_reader_dismissed_is_not_offered_or_queued_again(make: Any) -> None:
+    """Set aside: the plain fallback, no offer, and it stays dismissed."""
+    h = make()
+    h.storage.enqueue_rescues(list(tab_module.rescue_requests(
+        tab_module.RescueSubject("doc-1", DOI, "1", "Walled trial"), _walled(ADDRESS))))
+    (entry,) = h.entries()
+    h.storage.dismiss_rescue(entry.id)
+    h.fail_with(_walled(ADDRESS))
+    assert h.abstracts == [FULLTEXT_UNAVAILABLE] and h.offers == []
+    assert h.entries()[0].state is RescueState.DISMISSED
+
+
+def test_the_service_saves_where_the_tab_loads() -> None:
+    """Both are faked above; a divergence would leave the reader's rescued PDF unloaded."""
+    from bmlibrarian_lite.browser_rescue import RescueEntry, RescueRequest, rescue_pdf_path
+    from bmlibrarian_lite.gui.browser_rescue_service import _default_pdf_path
+
+    request = RescueRequest("doc-1", DOI, "1", "T", ADDRESS, "www.sciencedirect.com", SERVICE_UNPAYWALL_PDF)
+    entry = RescueEntry(1, request, RescueState.PENDING, 0, None, 0, "t", "t")
+    assert _default_pdf_path(entry) == rescue_pdf_path(DOI)
 
 
 @pytest.mark.parametrize("choose_open", [True, False])

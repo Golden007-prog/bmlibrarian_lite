@@ -118,9 +118,8 @@ _SETTLED_BY: dict[RescueOutcome, RescueState] = {
     RescueOutcome.TOO_LARGE: RescueState.TOO_LARGE,
 }
 
-assert set(_SETTLED_BY) | {RescueOutcome.TRANSPORT} == set(RescueOutcome), (
-    "every rescue outcome needs the state it leaves an entry in"
-)
+# Every outcome but TRANSPORT settles an entry in a state of its own; a test
+# holds this (an import-time assert would vanish under ``python -O``)
 
 
 def http_status_or_none(value: object) -> int | None:
@@ -269,7 +268,13 @@ def stamp(moment: datetime) -> str:
 
     Returns:
         The stored text.
+
+    Raises:
+        ValueError: If ``moment`` is naive: it would be read as local time,
+            and compare wrongly with every stored stamp.
     """
+    if moment.tzinfo is None:
+        raise ValueError("A stored moment must be timezone-aware")
     return moment.astimezone(UTC).isoformat(timespec="microseconds")
 
 
@@ -438,6 +443,12 @@ class RescueRequest:
         host: The address's host, which the visit is paced by.
         service: Who named the address (``SERVICE_UNPAYWALL_PDF``,
             ``SERVICE_OPENALEX_PDF``).
+
+    Raises:
+        ValueError: If the address is no ``http(s)`` address, its host is
+            not ``host``, or the document ID or DOI is blank: a browser is
+            sent to the address, the pacing goes by the host, and the DOI
+            names the saved PDF.
     """
 
     document_id: str
@@ -447,6 +458,13 @@ class RescueRequest:
     address: str
     host: str
     service: str
+
+    def __post_init__(self) -> None:
+        """Hold the invariants a visit relies on, whatever the request was read from."""
+        if not self.document_id.strip() or not self.doi.strip():
+            raise ValueError("A walled PDF needs its document ID and DOI")
+        if fetchable_host(self.address) != self.host:
+            raise ValueError(f"A walled PDF's address must be http(s) at its host {self.host!r}")
 
 
 @dataclass(frozen=True)
@@ -677,6 +695,41 @@ class WaitOutcome(Enum):
     NOTHING = "nothing"
 
 
+#: The outcomes decided by one entry, which the result carries.
+_OUTCOMES_WITH_ENTRY = frozenset({WaitOutcome.RESCUED, WaitOutcome.NEEDS_READER})
+
+
+@dataclass(frozen=True)
+class WaitResult:
+    """Where a reader's wait stands, with the entry that decided it.
+
+    Carrying the entry keeps the outcome and the entry acted on from
+    disagreeing: a caller never looks for "the rescued entry" by rules of its
+    own.
+
+    Attributes:
+        outcome: Where the wait stands.
+        entry: The rescued entry (``RESCUED``), or the open one to show the
+            reader (``NEEDS_READER``); ``None`` for the other outcomes.
+
+    Raises:
+        ValueError: If the entry is missing for an outcome that needs one,
+            or given for one that takes none.
+    """
+
+    outcome: WaitOutcome
+    entry: RescueEntry | None = None
+
+    def __post_init__(self) -> None:
+        """Hold the outcome and its entry together."""
+        needs_entry = self.outcome in _OUTCOMES_WITH_ENTRY
+        if needs_entry != (self.entry is not None):
+            raise ValueError(
+                f"A {self.outcome.value!r} wait result "
+                f"{'needs' if needs_entry else 'takes no'} entry"
+            )
+
+
 def wait_watch(
     entries: Sequence[RescueEntry], hidden_pass_runs: bool, now: datetime
 ) -> frozenset[int]:
@@ -708,31 +761,73 @@ def wait_outcome(
     entries: Sequence[RescueEntry],
     watched: AbstractSet[int],
     answered: AbstractSet[int],
-) -> WaitOutcome:
+    *,
+    final: bool = False,
+) -> WaitResult:
     """Where a reader's wait stands.
 
     Args:
-        entries: The document's entries as they stand now.
+        entries: The document's entries as they stand now; never empty, as
+            a wait is only for entries this load queued.
         watched: The entries waited for (:func:`wait_watch`).
         answered: The entries that have had a verdict since the wait began.
+        final: The wait is over (its limit): it is decided on what is known.
+            A watched entry then counts as answered, so the outcome is never
+            ``WAITING``, and one rescued counts as this wait's even when its
+            verdict was not seen here (another process recorded it).
 
     Returns:
-        ``RESCUED`` when an entry answered during the wait was rescued (one
-        rescued earlier is not this wait's: its PDF is not on disk, or
-        discovery would have found it); ``WAITING`` while a watched entry is
-        pending and unanswered; ``NEEDS_READER`` while any entry is open;
-        ``NOTHING`` otherwise.
+        ``RESCUED`` with the entry when an entry answered during the wait
+        was rescued (one rescued earlier is not this wait's: its PDF is not
+        on disk, or discovery would have found it); ``WAITING`` while a
+        watched entry is pending and unanswered; ``NEEDS_READER`` with an
+        open entry while any is open; ``NOTHING`` otherwise.
+
+    Raises:
+        ValueError: If ``entries`` is empty: no wait is about nothing, and
+            "every entry settled without a PDF" would be false of it.
     """
-    if any(e.state is RescueState.RESCUED and e.id in answered for e in entries):
-        return WaitOutcome.RESCUED
+    if not entries:
+        raise ValueError("A wait needs the entries it is about")
+    counted = set(answered) | set(watched) if final else answered
+    rescued = next(
+        (e for e in entries if e.state is RescueState.RESCUED and e.id in counted), None
+    )
+    if rescued is not None:
+        return WaitResult(WaitOutcome.RESCUED, rescued)
     if any(
-        e.state is RescueState.PENDING and e.id in watched and e.id not in answered
+        e.state is RescueState.PENDING and e.id in watched and e.id not in counted
         for e in entries
     ):
-        return WaitOutcome.WAITING
-    if any(e.state in OPEN_RESCUE_STATES for e in entries):
-        return WaitOutcome.NEEDS_READER
-    return WaitOutcome.NOTHING
+        return WaitResult(WaitOutcome.WAITING)
+    open_entry = next((e for e in entries if e.state in OPEN_RESCUE_STATES), None)
+    if open_entry is not None:
+        return WaitResult(WaitOutcome.NEEDS_READER, open_entry)
+    return WaitResult(WaitOutcome.NOTHING)
+
+
+class WalkEndReason(Enum):
+    """Why *Walk the queue* ended."""
+
+    #: Every listed entry was visited or skipped as no longer open.
+    FINISHED = "finished"
+    #: The reader stopped it, chose an entry, or acted on the walk's entry.
+    STOPPED = "stopped"
+    #: The queue could not be read (logged): unreadable is not settled.
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class WalkEnd:
+    """How *Walk the queue* ended.
+
+    Attributes:
+        reason: Why it ended.
+        failed: How many of its pages could not be opened (logged).
+    """
+
+    reason: WalkEndReason
+    failed: int = 0
 
 
 class RescueDismissals(Protocol):
@@ -750,7 +845,32 @@ class RescueDismissals(Protocol):
         ...
 
 
-def dismiss_entry(queue: RescueDismissals, entry_id: int) -> RescueEntry | None:
+class DismissOutcome(Enum):
+    """What asking to dismiss an entry did."""
+
+    #: It was set aside.
+    DISMISSED = "dismissed"
+    #: It was no longer open: settled, dismissed or gone meanwhile.
+    NOT_OPEN = "not_open"
+    #: The queue could not be written (logged).
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class DismissResult:
+    """What asking to dismiss an entry did, and the entry as it now stands.
+
+    Attributes:
+        outcome: What it did.
+        entry: The entry as it now stands; ``None`` when it is gone, or
+            unknown because the write failed.
+    """
+
+    outcome: DismissOutcome
+    entry: RescueEntry | None = None
+
+
+def dismiss_entry(queue: RescueDismissals, entry_id: int) -> DismissResult:
     """Dismiss an entry for the reader, logging rather than raising a failure.
 
     Args:
@@ -758,13 +878,17 @@ def dismiss_entry(queue: RescueDismissals, entry_id: int) -> RescueEntry | None:
         entry_id: The entry.
 
     Returns:
-        The dismissed entry; ``None`` when it was no longer open (settled or
-        dismissed elsewhere meanwhile) or the queue could not be written
-        (logged).
+        ``DISMISSED`` with the entry; ``NOT_OPEN`` with the entry as it
+        stands (``None`` when gone) when it was settled or dismissed
+        elsewhere meanwhile; ``FAILED`` when the queue could not be written
+        (logged): three answers, so a reader is never told a write failed
+        when it was not tried.
     """
     try:
         recorded = queue.dismiss_rescue(entry_id)
     except (sqlite3.Error, SQLiteError) as e:
         logger.error("Walled PDF %s could not be dismissed: %s", entry_id, e)
-        return None
-    return recorded.entry if recorded.applied else None
+        return DismissResult(DismissOutcome.FAILED)
+    if recorded.applied:
+        return DismissResult(DismissOutcome.DISMISSED, recorded.entry)
+    return DismissResult(DismissOutcome.NOT_OPEN, recorded.entry)

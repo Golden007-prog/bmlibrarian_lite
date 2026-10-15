@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections.abc import Callable
+from datetime import UTC, datetime
 from enum import Enum, IntEnum
 from typing import TYPE_CHECKING
 
@@ -34,10 +35,12 @@ from PySide6.QtWidgets import (
 
 from ..browser_rescue import (
     OPEN_RESCUE_STATES,
+    DismissOutcome,
     RescueEntry,
     RescueOutcome,
     RescueState,
     RescueVerdict,
+    WalkEnd,
     awaiting_reader_states,
     dismiss_entry,
     fetchable_host,
@@ -45,21 +48,33 @@ from ..browser_rescue import (
 from ..browser_rescue_text import (
     REVIEW_QUEUE_HELP,
     REVIEW_QUEUE_NO_BROWSER,
+    REVIEW_QUEUE_NOT_OPEN,
     REVIEW_QUEUE_UNREADABLE,
     REVIEW_QUEUE_UNWRITABLE,
     SHOWN_VISIT_LOADING,
+    SHOWN_VISIT_NOT_A_PDF,
     SHOWN_VISIT_NOT_STARTED,
     SHOWN_VISIT_OPENING,
+    SHOWN_VISIT_SETTLED_MEANWHILE,
+    SYSTEM_BROWSER_FAILED,
+    SYSTEM_BROWSER_REFUSED,
+    VERDICT_UNSAVED,
+    WALK_NOTHING_WAITING,
     WALK_RUNNING,
+    last_visit_text,
     retry_text,
     service_label,
     state_label,
     verdict_text,
+    walk_end_text,
 )
 from ..constants import REVIEW_QUEUE_HEIGHT_LINES, REVIEW_QUEUE_WIDTH_CHARS
 from ..exceptions import SQLiteError
 
 if TYPE_CHECKING:
+    # Type only: importing this module never loads QtWebEngine
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+
     from ..storage import LiteStorage
     from .browser_rescue_service import BrowserRescueService
 
@@ -111,7 +126,7 @@ class ReviewQueueDialog(QDialog):
         self,
         storage: LiteStorage,
         service: BrowserRescueService | None,
-        make_view: Callable[[QWidget], QWidget] | None,
+        make_view: Callable[[QWidget], QWebEngineView] | None,
         hidden_pass_runs: Callable[[], bool],
         parent: QWidget | None = None,
     ) -> None:
@@ -144,13 +159,14 @@ class ReviewQueueDialog(QDialog):
             service.shown_visit_started.connect(self._on_visit_started)
             service.shown_visit_ended.connect(self._on_visit_ended)
             service.shown_visit_failed.connect(self._on_visit_failed)
+            service.shown_download_ignored.connect(self._on_download_ignored)
             service.entry_changed.connect(self.refresh)
             service.walk_ended.connect(self._on_walk_ended)
         self.refresh()
 
     # -- building --------------------------------------------------------------
 
-    def _build(self, make_view: Callable[[QWidget], QWidget] | None) -> None:
+    def _build(self, make_view: Callable[[QWidget], QWebEngineView] | None) -> None:
         """Lay the window out.
 
         Args:
@@ -190,7 +206,7 @@ class ReviewQueueDialog(QDialog):
         self.status_label.setObjectName("reviewQueueStatus")
         self.status_label.setWordWrap(True)
         right_layout.addWidget(self.status_label)
-        self.view: QWidget | None = make_view(right) if make_view is not None else None
+        self.view: QWebEngineView | None = make_view(right) if make_view is not None else None
         self.view_note: QLabel | None = None
         if self.view is not None:
             right_layout.addWidget(self.view, 1)
@@ -208,7 +224,7 @@ class ReviewQueueDialog(QDialog):
         self.dismiss_button.clicked.connect(self._dismiss_selected)
         self.walk_button = QPushButton(WALK_LABEL)
         self.walk_button.clicked.connect(self._toggle_walk)
-        self.walk_button.setEnabled(self._service is not None)
+        self.walk_button.setEnabled(self._service is not None and self.view is not None)
         for button in (self.reload_button, self.system_browser_button, self.dismiss_button):
             buttons.addWidget(button)
         buttons.addStretch(1)
@@ -266,9 +282,13 @@ class ReviewQueueDialog(QDialog):
             logger.error("The browser rescue queue could not be read for its window: %s", e)
             self.status_label.setText(REVIEW_QUEUE_UNREADABLE)
             return
+        if self.status_label.text() == REVIEW_QUEUE_UNREADABLE:
+            # Read again: the fault the line spoke of is over
+            self.status_label.setText("")
         selected = self.selected_entry_id()
         self._entries = entries
         hidden = self._hidden_pass_runs()
+        now = datetime.now(UTC)
         self.table.blockSignals(True)
         # Rows are reused: a row left selected would hand its selection to
         # whichever entry now fills it, with no selection change to say so
@@ -276,13 +296,13 @@ class ReviewQueueDialog(QDialog):
         self.table.setRowCount(len(entries))
         for row, entry in enumerate(entries):
             state = state_label(entry.state, hidden)
-            retry = retry_text(entry) if entry.state is RescueState.PENDING else ""
+            retry = retry_text(entry, now)
             cells = {
                 _Column.TITLE: entry.request.title or entry.request.doi,
                 _Column.HOST: entry.request.host,
                 _Column.NAMED_BY: service_label(entry.request.service),
                 _Column.STATE: f"{state}; {retry}" if retry else state,
-                _Column.VERDICT: verdict_text(entry.verdict),
+                _Column.VERDICT: last_visit_text(entry),
             }
             for column, text in cells.items():
                 item = QTableWidgetItem(text)
@@ -303,15 +323,20 @@ class ReviewQueueDialog(QDialog):
         return entry.id if entry is not None else None
 
     def _selected_entry(self) -> RescueEntry | None:
-        """The selected entry, as last read."""
+        """The selected entry, as last read: found by the ID its row holds, not its position."""
         rows = self.table.selectionModel().selectedRows()
         if not rows:
             return None
-        row = rows[0].row()
-        return self._entries[row] if 0 <= row < len(self._entries) else None
+        item = self.table.item(rows[0].row(), _Column.TITLE)
+        entry_id = item.data(Qt.ItemDataRole.UserRole) if item is not None else None
+        return next((e for e in self._entries if e.id == entry_id), None)
 
     def focus_entry(self, entry_id: int) -> None:
-        """Select an entry, switching to *All* when the filter hides it.
+        """Select an entry, switching to *All* when the filter hides it, and show it.
+
+        An entry already selected, but not shown (the window was closed, or
+        its page could not open), is shown again: selecting it once more
+        changes no selection, so nothing else would.
 
         Args:
             entry_id: The entry.
@@ -320,7 +345,10 @@ class ReviewQueueDialog(QDialog):
             self.set_filter(QueueFilter.ALL)
         for row, entry in enumerate(self._entries):
             if entry.id == entry_id:
-                self.table.selectRow(row)
+                if self.selected_entry_id() == entry_id:
+                    self._on_selection_changed()
+                else:
+                    self.table.selectRow(row)
                 return
 
     # -- visits ----------------------------------------------------------------------
@@ -333,14 +361,14 @@ class ReviewQueueDialog(QDialog):
             return
         if entry.state not in OPEN_RESCUE_STATES:
             self._service.end_shown_visit()
-            self.status_label.setText(verdict_text(entry.verdict))
+            self.status_label.setText(last_visit_text(entry))
             return
         if self._service.shown_entry_id == entry.id:
             return
         if self.view is None:
             return
         self.status_label.setText(SHOWN_VISIT_OPENING)
-        self._service.visit_shown(entry, self.view)  # type: ignore[arg-type]
+        self._service.visit_shown(entry, self.view)
 
     def _on_visit_started(self, _entry: RescueEntry) -> None:
         """A visit's page is opening in the view."""
@@ -348,16 +376,28 @@ class ReviewQueueDialog(QDialog):
         self.status_label.setText(WALK_RUNNING if walking else SHOWN_VISIT_LOADING)
 
     def _on_visit_ended(self, entry: RescueEntry, verdict: RescueVerdict | None) -> None:
-        """Say how a visit ended; after a person's rescue, open the next waiting entry.
+        """Say how a visit ended; after a person's saved rescue, open the next waiting entry.
 
         Args:
-            entry: The entry visited.
+            entry: The entry visited, as it now stands when it settled
+                before its page opened.
             verdict: Its verdict; ``None`` when it was left without one.
         """
         walking = self._service is not None and self._service.walking
+        unsaved = self._service is not None and self._service.holds_unsaved_verdict
         self.refresh()
         if verdict is None:
-            # Left without a verdict: the reader moved on, or it could not open
+            if entry.state not in OPEN_RESCUE_STATES:
+                # Settled before its page opened (rescued, dismissed meanwhile)
+                hidden = self._hidden_pass_runs()
+                self.status_label.setText(
+                    f"{SHOWN_VISIT_SETTLED_MEANWHILE}: {state_label(entry.state, hidden)}"
+                )
+            # Otherwise left without a verdict: the reader moved on, or it could not open
+            return
+        if unsaved:
+            # Nothing else opens until it is saved: saying "opening" would be untrue
+            self.status_label.setText(VERDICT_UNSAVED)
             return
         self.status_label.setText(verdict_text(verdict))
         if verdict.outcome is RescueOutcome.PDF and not walking:
@@ -372,8 +412,12 @@ class ReviewQueueDialog(QDialog):
         if entry.id == self.selected_entry_id():
             self.status_label.setText(SHOWN_VISIT_NOT_STARTED)
 
+    def _on_download_ignored(self, _entry: RescueEntry) -> None:
+        """A person's download was no PDF; the page stays open."""
+        self.status_label.setText(SHOWN_VISIT_NOT_A_PDF)
+
     def _select_next_waiting(self, after: int) -> None:
-        """Select the first listed open entry other than ``after``.
+        """Select the first listed open entry other than ``after``, from the top of the list.
 
         Args:
             after: The entry just rescued.
@@ -385,9 +429,8 @@ class ReviewQueueDialog(QDialog):
 
     def _reload(self) -> None:
         """Reload the page shown."""
-        reload = getattr(self.view, "reload", None)
-        if callable(reload):
-            reload()
+        if self.view is not None:
+            self.view.reload()
 
     def _open_selected_in_system_browser(self) -> None:
         """Open the selected entry's address in the system's browser."""
@@ -403,25 +446,29 @@ class ReviewQueueDialog(QDialog):
         """
         if fetchable_host(address) is None:
             logger.warning("Not opening a walled PDF's address that is no web address: %r", address)
+            self.status_label.setText(SYSTEM_BROWSER_REFUSED)
             return
-        QDesktopServices.openUrl(QUrl(address))
+        if not QDesktopServices.openUrl(QUrl(address)):
+            logger.error("The system's browser could not open %s", address)
+            self.status_label.setText(SYSTEM_BROWSER_FAILED)
 
     def _dismiss_selected(self) -> None:
-        """Set the selected open entry aside, ending its visit first."""
+        """Set the selected open entry aside, then end its visit.
+
+        The visit ends only once the entry is no longer open: a dismissal
+        that could not be written leaves the reader's page as it was.
+        """
         entry = self._selected_entry()
         if entry is None or entry.state not in OPEN_RESCUE_STATES:
             return
+        result = dismiss_entry(self._storage, entry.id)
+        if result.outcome is DismissOutcome.FAILED:
+            self.status_label.setText(REVIEW_QUEUE_UNWRITABLE)
+            return
         if self._service is not None and self._service.shown_entry_id == entry.id:
             self._service.end_shown_visit()
-        if dismiss_entry(self._storage, entry.id) is None:
-            # Settled elsewhere meanwhile, or the queue could not be written
-            try:
-                current = self._storage.rescue_entry(entry.id)
-            except (sqlite3.Error, SQLiteError) as e:
-                logger.error("Walled PDF %s could not be read after its dismissal failed: %s", entry.id, e)
-                current = None
-            if current is None or current.state in OPEN_RESCUE_STATES:
-                self.status_label.setText(REVIEW_QUEUE_UNWRITABLE)
+        if result.outcome is DismissOutcome.NOT_OPEN:
+            self.status_label.setText(REVIEW_QUEUE_NOT_OPEN)
         self.refresh()
         self.queue_changed.emit()
 
@@ -435,15 +482,25 @@ class ReviewQueueDialog(QDialog):
         waiting = awaiting_reader_states(self._hidden_pass_runs())
         ids = [e.id for e in self._entries if e.state in waiting]
         if not ids:
+            self.status_label.setText(WALK_NOTHING_WAITING)
             return
-        self._service.walk(ids, self.view)  # type: ignore[arg-type]
+        # Said before the walk starts: it can end before walk() returns (every
+        # entry settled elsewhere), and walk_ended then says so
         self.walk_button.setText(STOP_WALK_LABEL)
         self.status_label.setText(WALK_RUNNING)
+        self._service.walk(ids, self.view)
 
-    def _on_walk_ended(self) -> None:
-        """The walk is over."""
+    def _on_walk_ended(self, end: WalkEnd) -> None:
+        """The walk is over: say how, unless the reader's own act says it.
+
+        Args:
+            end: How it ended.
+        """
         self.walk_button.setText(WALK_LABEL)
         self.refresh()
+        text = walk_end_text(end)
+        if text:
+            self.status_label.setText(text)
 
     def _update_buttons(self) -> None:
         """Enable what applies to the selection."""
@@ -465,4 +522,7 @@ class ReviewQueueDialog(QDialog):
             if self._service.walking:
                 self._service.stop_walk()
             self._service.end_shown_visit()
+        # Reopened, the window shows no page: a selection kept would show none
+        # either, and selecting that row again would change nothing
+        self.table.clearSelection()
         super().done(result)

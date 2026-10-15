@@ -24,23 +24,23 @@ TOOLTIP = "Open the review queue: PDFs behind a robot check that wait for you"
 _UNKNOWN = "?"
 
 
-def indicator_text(count: int | str) -> str:
+def indicator_text(count: int | None) -> str:
     """The indicator's text.
 
     Args:
-        count: The count, or "?" when it could not be read.
+        count: The count; ``None`` when it could not be read.
 
     Returns:
-        "Walled PDFs: N".
+        "Walled PDFs: N", or "Walled PDFs: ?" for an unread count.
     """
-    return f"Walled PDFs: {count}"
+    return f"Walled PDFs: {_UNKNOWN if count is None else count}"
 
 
 class RescueQueueIndicator(QPushButton):
     """The "Walled PDFs: N" button: the entries waiting for the reader; hidden at 0 (D4).
 
-    Read on :meth:`refresh`, which the window calls on every change it hears
-    of, and every ``poll_ms`` for entries other processes wrote.
+    Read on :meth:`refresh`, which the main window calls on every change it
+    hears of, and every ``poll_ms`` for entries other processes wrote.
     """
 
     def __init__(
@@ -90,7 +90,7 @@ class RescueQueueIndicator(QPushButton):
             count = self._storage.count_rescue_entries(awaiting_reader_states(self._hidden_pass_runs()))
         except (sqlite3.Error, SQLiteError) as e:
             logger.error("The browser rescue queue could not be counted: %s", e)
-            self.setText(indicator_text(_UNKNOWN))
+            self.setText(indicator_text(None))
             self.setToolTip(REVIEW_QUEUE_UNREADABLE)
             self.show()
             return None

@@ -839,6 +839,9 @@ class LiteMainWindow(QMainWindow):
         # tab's wait (#480, stage 3)
         service.entry_changed.connect(self.rescue_indicator.refresh)
         service.entry_changed.connect(self.interrogation_tab.on_rescue_entry_changed)
+        # Counted at start-up as if no hidden pass ran: pending entries are
+        # no longer the reader's to visit
+        self.rescue_indicator.refresh()
 
     def browser_rescue_unavailable(self) -> None:
         """Say the hidden browser could not start, here and in Settings (#480, stage 2).
@@ -896,9 +899,15 @@ class LiteMainWindow(QMainWindow):
         if self._review_queue is None:
             make_view = None
             if self._rescue_service is not None:
-                from .rescue_view import make_rescue_view
-
-                make_view = make_rescue_view
+                try:
+                    from .rescue_view import make_rescue_view
+                except (ImportError, RuntimeError) as e:
+                    # QtWebEngineWidgets is packaged apart from QtWebEngineCore
+                    # on some systems: the window opens all the same, saying
+                    # pages cannot be shown here
+                    logger.error("The review queue's browser view could not be loaded: %s", e)
+                else:
+                    make_view = make_rescue_view
             self._review_queue = ReviewQueueDialog(
                 self.storage, self._rescue_service, make_view, self._hidden_pass_runs, parent=self
             )

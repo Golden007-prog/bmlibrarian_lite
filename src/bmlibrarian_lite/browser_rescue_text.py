@@ -10,10 +10,22 @@ No Qt: pure text from the rules' types.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
+from typing import assert_never
 
-from .browser_rescue import RescueEntry, RescueOutcome, RescueState, RescueVerdict
+from .browser_rescue import (
+    RescueEntry,
+    RescueOutcome,
+    RescueState,
+    RescueVerdict,
+    WalkEnd,
+    WalkEndReason,
+    stamp,
+)
 from .constants import SERVICE_OPENALEX_PDF, SERVICE_UNPAYWALL_PDF
+
+logger = logging.getLogger(__name__)
 
 #: Each state as the window's list shows it.
 STATE_LABELS: dict[RescueState, str] = {
@@ -38,8 +50,9 @@ SERVICE_LABELS: dict[str, str] = {
 #: The window's help line, above the list.
 REVIEW_QUEUE_HELP = (
     "These open-access PDFs sit behind a robot check the app's downloads could "
-    "not pass. Select one to open its page here; if it asks, tick the box. The "
-    "PDF is saved when it arrives, and the article's transparency is re-checked."
+    "not pass. Select one to open its page in the built-in browser; if it asks, "
+    "tick the box, then download the article's PDF. The PDF is saved when it "
+    "arrives, and the article's transparency is re-checked."
 )
 #: Said while a selected entry's page opens.
 SHOWN_VISIT_OPENING = "Opening the publisher's page…"
@@ -57,8 +70,26 @@ REVIEW_QUEUE_NO_BROWSER = (
 #: Said when the queue could not be read or written.
 REVIEW_QUEUE_UNREADABLE = "The queue could not be read; the log says why."
 REVIEW_QUEUE_UNWRITABLE = "The entry could not be dismissed; the log says why."
+REVIEW_QUEUE_NOT_OPEN = "The entry was settled elsewhere meanwhile; it is not dismissed."
 #: Said when a person's visit could not start.
 SHOWN_VISIT_NOT_STARTED = "The page could not be opened here; the log says why."
+#: Said when a person's download was not a PDF; the page stays open.
+SHOWN_VISIT_NOT_A_PDF = (
+    "That file was not a PDF, so it was not kept. The page stays open: "
+    "download the article's own PDF."
+)
+#: Said when a visit's result could not be saved yet.
+VERDICT_UNSAVED = (
+    "The visit's result could not be saved yet; the app keeps trying, and "
+    "opens no other page until it is saved. The log says why."
+)
+#: Said when the entry a visit was asked for was settled before its page opened.
+SHOWN_VISIT_SETTLED_MEANWHILE = "Settled before its page opened"
+#: Said when *Walk the queue* has nothing to visit.
+WALK_NOTHING_WAITING = "No listed entry is waiting for you."
+#: Said when an address cannot be opened in the system's browser.
+SYSTEM_BROWSER_REFUSED = "This address is not a web address, so it is not opened."
+SYSTEM_BROWSER_FAILED = "The system's browser could not be opened."
 
 #: The interrogation tab's wait, and its offer.
 BROWSER_RESCUE_WAITING = "Trying the publisher's page in a browser…"
@@ -67,7 +98,8 @@ REVIEW_QUEUE_OFFER_TITLE = "Robot check"
 #: that is off, busy or slower than the wait, or a page it could not reach.
 REVIEW_QUEUE_OFFER = (
     "The publisher's copy of this article is behind a robot check and could "
-    "not be fetched automatically, so the abstract is loaded for now. In the "
+    "not be fetched automatically, so what the app already had (usually the "
+    "abstract) is loaded for now. In the "
     "review queue you can open the page and tick the box; the PDF is then "
     "saved, and opening the citation again loads it."
 )
@@ -76,6 +108,10 @@ REVIEW_QUEUE_OFFER_LATER = "Not now"
 
 _RETRY_PREFIX = "Tried again after "
 _CLOCK_FORMAT = "%H:%M"
+_NOT_VISITED = "Not visited yet"
+_VERDICT_UNREADABLE = "The last visit's result could not be read"
+_WALK_FINISHED = "The walk is over."
+_WALK_UNREADABLE = "The walk stopped: the queue could not be read; the log says why."
 
 
 def state_label(state: RescueState, hidden_pass_runs: bool) -> str:
@@ -121,46 +157,95 @@ def _with_status(text: str, verdict: RescueVerdict) -> str:
 
 
 def verdict_text(verdict: RescueVerdict | None) -> str:
-    """The last visit's verdict as a sentence.
+    """A visit's verdict as a sentence.
 
     Args:
-        verdict: The verdict; ``None`` before a visit or when unreadable.
+        verdict: The verdict; ``None`` before a visit.
 
     Returns:
         The sentence.
     """
     if verdict is None:
-        return "Not visited yet"
-    outcome = verdict.outcome
-    if outcome is RescueOutcome.PDF:
-        return "The PDF arrived"
-    if outcome is RescueOutcome.CHALLENGE:
-        if verdict.markers:
-            return f"A robot check ({', '.join(verdict.markers)})"
-        return _with_status("Refused", verdict)
-    if outcome is RescueOutcome.NO_PDF:
-        return _with_status("The page served no PDF", verdict)
-    if outcome is RescueOutcome.GONE:
-        return _with_status("Not found", verdict)
-    if outcome is RescueOutcome.TOO_LARGE:
-        return "The PDF is larger than the app downloads"
-    return _with_status("The page could not be reached", verdict)
+        return _NOT_VISITED
+    match verdict.outcome:
+        case RescueOutcome.PDF:
+            return "The PDF arrived"
+        case RescueOutcome.CHALLENGE:
+            if verdict.markers:
+                return f"A robot check ({', '.join(verdict.markers)})"
+            return _with_status("Refused", verdict)
+        case RescueOutcome.NO_PDF:
+            return _with_status("The page served no PDF", verdict)
+        case RescueOutcome.GONE:
+            return _with_status("Not found", verdict)
+        case RescueOutcome.TOO_LARGE:
+            return "The PDF is larger than the app downloads"
+        case RescueOutcome.TRANSPORT:
+            return _with_status("Nothing was learnt: the page or its download failed", verdict)
+        case unknown:
+            assert_never(unknown)
 
 
-def retry_text(entry: RescueEntry) -> str:
-    """When a held-back entry is tried again, in the reader's local time.
+def last_visit_text(entry: RescueEntry) -> str:
+    """An entry's last visit as a sentence, telling an unreadable one from none.
 
     Args:
         entry: The entry.
 
     Returns:
-        "Tried again after HH:MM"; empty when it is not held back, or its
-        stored time cannot be read.
+        The verdict's sentence; "Not visited yet" when no visit was counted
+        and none is stored; a sentence saying it could not be read when a
+        visit was made but its verdict is unreadable (logged by the store).
     """
-    if entry.retry_after is None:
+    if entry.verdict is None and entry.attempts > 0:
+        return _VERDICT_UNREADABLE
+    return verdict_text(entry.verdict)
+
+
+def retry_text(entry: RescueEntry, now: datetime) -> str:
+    """When a held-back pending entry is tried again, in the reader's local time.
+
+    Args:
+        entry: The entry.
+        now: The moment (timezone-aware).
+
+    Returns:
+        "Tried again after HH:MM"; empty when it is not pending, not held
+        back, already due, or its stored time cannot be read (logged).
+    """
+    if entry.state is not RescueState.PENDING or entry.retry_after is None:
+        return ""
+    if entry.retry_after <= stamp(now):
         return ""
     try:
         moment = datetime.fromisoformat(entry.retry_after)
     except ValueError:
+        logger.warning("Rescue entry %s's retry time %r could not be read", entry.id, entry.retry_after)
         return ""
     return _RETRY_PREFIX + moment.astimezone().strftime(_CLOCK_FORMAT)
+
+
+def walk_end_text(end: WalkEnd) -> str:
+    """How *Walk the queue* ended, as a sentence.
+
+    Args:
+        end: How it ended.
+
+    Returns:
+        The sentence; empty when the reader stopped it and no page failed,
+        which leaves what the window says about the reader's own act.
+    """
+    failed = (
+        f" {end.failed} page{'s' if end.failed != 1 else ''} could not be opened here; the log says why."
+        if end.failed
+        else ""
+    )
+    match end.reason:
+        case WalkEndReason.FINISHED:
+            return _WALK_FINISHED + failed
+        case WalkEndReason.UNREADABLE:
+            return _WALK_UNREADABLE + failed
+        case WalkEndReason.STOPPED:
+            return failed.strip()
+        case unknown:
+            assert_never(unknown)

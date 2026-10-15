@@ -1338,8 +1338,10 @@ RESCUE_PRIORITY_WAITING = 1
 RESCUE_VISIBLE_TIMEOUT_MS = 60_000
 #: The longest the interrogation tab waits for the hidden browser on a
 #: walled PDF the reader asked for: a visit already under way, then this
-#: one, each at most RESCUE_HIDDEN_TIMEOUT_MS plus RESCUE_PAGE_READ_GRACE_MS,
-#: and the host's pacing slot. Past it the reader is offered the review queue.
+#: one, each usually at most RESCUE_HIDDEN_TIMEOUT_MS plus
+#: RESCUE_PAGE_READ_GRACE_MS (a download under way is bounded only by its
+#: stall timer, #525), plus the host's pacing slot (#531). A bound, not an
+#: estimate: past it the reader is offered the review queue.
 RESCUE_READER_WAIT_LIMIT_MS = 90_000
 #: The review queue window's initial size, in average character widths and
 #: line heights of its font.

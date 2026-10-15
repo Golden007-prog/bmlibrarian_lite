@@ -15,7 +15,6 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -31,7 +30,12 @@ from PySide6.QtWebEngineWidgets import QWebEngineView  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from shiboken6 import Shiboken  # noqa: E402
 
-from bmlibrarian_lite.browser_rescue import RescueRequest, RescueState, RescueVerdict  # noqa: E402
+from bmlibrarian_lite.browser_rescue import (  # noqa: E402
+    RescueOutcome,
+    RescueRequest,
+    RescueState,
+    RescueVerdict,
+)
 from bmlibrarian_lite.config import LiteConfig  # noqa: E402
 from bmlibrarian_lite.constants import RESCUE_PRIORITY_WAITING, SERVICE_UNPAYWALL_PDF  # noqa: E402
 from bmlibrarian_lite.gui import rescue_attempt as rescue_attempt_module  # noqa: E402
@@ -447,11 +451,13 @@ def service_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
     # A person's visit through the service: shown in a view, its PDF recorded
     view = QWebEngineView()
     view.show()
-    storage.enqueue_rescues([request("doc-g", "/walled?g")])
-    run_until(app, lambda: entry_of("?g").state is RescueState.NEEDS_PERSON, SCENARIO_LIMIT_SECONDS)
-    # Point the entry's address at a PDF, as a person's tick would clear the wall
-    walled_g = entry_of("?g")
-    person_entry = replace(walled_g, request=replace(walled_g.request, address=base + "/pdf?g"))
+    # Its address serves a PDF, as a person's tick would clear the wall; the
+    # wall is recorded here, with no event loop turn between, so the hidden
+    # pass never sees it pending. The service reads the stored entry again
+    # before showing it, so the stored address is the one visited.
+    storage.enqueue_rescues([request("doc-g", "/pdf?g")])
+    storage.record_rescue_verdict(entry_of("?g").id, RescueVerdict(RescueOutcome.CHALLENGE, 403, ("cloudflare",)))
+    person_entry = entry_of("?g")
     ended: list[Any] = []
     service.shown_visit_ended.connect(lambda e, v: ended.append(v))
     service.visit_shown(person_entry, view)

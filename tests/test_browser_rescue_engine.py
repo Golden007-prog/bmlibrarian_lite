@@ -278,7 +278,7 @@ def test_a_person_s_visit_through_the_service_rescues_the_entry(harness: dict[st
 
 
 def test_quit_during_a_shown_visit_releases_the_page_first(harness: dict[str, Any]) -> None:
-    """Review focus 1: the shown entry stays as it was; no profile-release warning."""
+    """Quit during a shown visit: the entry stays as it was; no profile-release warning."""
     quit_ = harness["out"]["shown_quit"]
     assert quit_["visiting"]
     assert (quit_["state"], quit_["attempts"]) == ("pending", 0)

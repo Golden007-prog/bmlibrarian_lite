@@ -32,8 +32,9 @@ class _Storage:
 
 
 def test_the_text_names_the_count() -> None:
-    """The text names the count."""
+    """The text names the count, or "?" for one that could not be read."""
     assert indicator_text(3) == "Walled PDFs: 3"
+    assert indicator_text(None) == "Walled PDFs: ?"
 
 
 def test_it_is_hidden_at_zero_and_shown_otherwise(qapp) -> None:

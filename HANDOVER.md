@@ -48,16 +48,26 @@ sub-projects 2 and 3; replaces #483).
   check, then quit. Offscreen smoke runs passed, apart from #530's cold-start
   segfault (2 of the first 2 runs, then 0 of 48; evidence on #530).
   Lodged from stage 3: **#534** (the *Fetch PDF* button's path is not
-  queued), **#535** (the review's minor follow-ups); **#532** now also
+  queued), **#535** (the review's minor follow-ups), and from the PR review
+  **#537** (a rescued entry whose PDF is gone is never tried again), **#538**
+  (a discovery ending on a paywall skips the priority path), **#539** (visit
+  mode and phase types), **#540** (a harness walk through the real service);
+  **#532** now also
   covers a person's visit saving a PDF they navigated to. Still open from stage 2: **#524**, **#525**, **#527**, **#528**,
   **#530**–**#533**.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
-  download; leaving it records nothing. In a shown page, `createWindow`
-  returns the page. The window never imports QtWebEngine. The tab waits only
-  while a watched entry is pending, due and unvisited, and never past
-  `RESCUE_READER_WAIT_LIMIT_MS`; with no hidden pass it does not wait.
+  download, and a download that is no PDF is discarded with the page left
+  open; leaving it records nothing. Every visit, hidden or shown, reads its
+  entry again when it starts and skips one settled meanwhile. In a shown page,
+  `createWindow` returns the page. The window never imports QtWebEngine at
+  runtime. The tab waits only while a watched entry is pending, due and
+  unvisited, and never past `RESCUE_READER_WAIT_LIMIT_MS`; with no hidden
+  pass, or while the window holds the browser, it does not wait. Only the
+  current full-text discovery's signals count: opening another citation lets
+  the running one go. A queue the tab cannot write or read still names the
+  robot check, never "could not be retrieved".
 - **Stage 2's rules that bind:** a challenged copy is never a paywall (D1).
   A visit that learnt nothing (no answer, a network error, 408/429/5xx with
   no marker) is `transport`: the entry stays pending, retried no sooner than
@@ -213,7 +223,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 ### Next up
 
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
-  browser's stage 3** is in review (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups), **#534**, **#535** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+  browser's stage 3** is in review (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted

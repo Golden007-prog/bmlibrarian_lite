@@ -5,6 +5,10 @@ decisions: `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`. What
 the embedded browser passes and what it does not:
 `doc/developer/unpaywall_pdf_survey/spikes/README.md`.
 
+Decision labels come from two documents. **Spec D*n*** is the design spec's
+(stage 2). A bare **D*n***, here and in code comments, is the stage 3 plan's
+(`docs/superpowers/plans/2026-10-15-browser-rescue-stage-3.md`).
+
 ## What It Does
 
 An open-access PDF (Unpaywall's or OpenAlex's) whose host answered our client
@@ -23,22 +27,31 @@ tick the robot check (stage 3).
   verdicts (`page_verdict`, `download_verdict`), `next_state`, which failures
   are queued (`rescue_requests`, `queue_challenged_copies`), the pacing delay
   (`rescue_delay_ms`), `penalise_host_for_answer` and `reanalyse_rescued`.
+  Stage 3 adds `dismissed_state` and `dismiss_entry` (a `DismissResult`:
+  dismissed, not open, or failed), `awaiting_reader_states`, the reader's
+  wait (`wait_watch`, and `wait_outcome`, whose `WaitResult` carries the entry
+  that decided it), `WalkEnd`, `fetchable_host`, and `stamp` (the stored
+  time format, aware moments only).
 - `rescue_queue_store.py`: the queue's table. SQL only; `LiteStorage` opens the
-  connection. `record_verdict` runs its own transaction, because the MCP server
-  writes the same table from another process. It returns a `RecordedVerdict`:
-  the entry as it now stands and whether this verdict was applied, so a rescue
-  another process recorded first is not announced twice.
+  connection. `record_verdict` and `dismiss` each run their own transaction,
+  because the MCP server writes the same table from another process. They
+  return a `RecordedVerdict`: the entry as it now stands and whether this
+  change was applied, so a rescue another process recorded first is not
+  announced twice.
 - `gui/rescue_attempt.py`: `RescueAttempt`, one visit of one address, ending in
   exactly one verdict; and `rescue_profile`.
-- `gui/browser_rescue_service.py`: `BrowserRescueService`, the hidden pass. One
-  visit at a time, driven by signals and timers; nothing waits on it.
+- `gui/browser_rescue_service.py`: `BrowserRescueService`: the hidden pass, the
+  window's shown visits and the walk. One visit at a time, driven by signals
+  and timers; nothing waits on it.
 - `browser_rescue_text.py`: what the reader reads about the queue (state,
   service and verdict labels; the window's and the interrogation tab's
   sentences). Pure text, no Qt.
 - `gui/review_queue_dialog.py`: `ReviewQueueDialog`, the review queue window.
   It never imports QtWebEngine: its view comes from `make_view`.
-- `gui/rescue_view.py`: `make_rescue_view()`, the only QtWebEngineWidgets
-  import. `gui/app.py` imports it lazily, and only with a service.
+- `gui/rescue_view.py`: `make_rescue_view()`, the only runtime
+  QtWebEngineWidgets import (others are for type checking only). `gui/app.py`
+  imports it lazily, and only with a service; if it cannot load, the window
+  opens without a view, as without QtWebEngine.
 - `gui/rescue_queue_indicator.py`: `RescueQueueIndicator`, "Walled PDFs: N" in
   the status bar, hidden at 0.
 - `gui/web_engine.py`: `prepare_web_engine()`, QtWebEngine's start-up
@@ -91,11 +104,11 @@ the host's shared limiter (`limiter_for(host).penalise(retry_after)`, with the
 answer's `Retry-After`), except on loopback, so the rescue and the HTTP client
 back off together. The hidden page is muted.
 
-- **D2.** `too_large` is its own state: the PDF is real, the application just
-  does not download that much.
-- **D3.** A transport failure is retried no sooner than
+- **Spec D2.** `too_large` is its own state: the PDF is real, the application
+  just does not download that much.
+- **Spec D3.** A transport failure is retried no sooner than
   `RESCUE_RETRY_DELAY_SECONDS` (15 minutes) later. After `MAX_RESCUE_ATTEMPTS`
-  (3) the entry becomes `needs_person` and waits for stage 3's window.
+  (3) the entry becomes `needs_person` and waits for the review queue window.
 
 Three rules inside a visit: a visit accepts only a download its own page
 started (the profile is shared, and a page an earlier visit let go of may still
@@ -120,11 +133,22 @@ error in the pass's slots is logged and never leaves the pass busy (#525).
   one attempt under way. A shown visit asked for while a hidden one runs
   starts when that one ends. While a shown visit is asked for or under way,
   or a walk runs, the hidden pass takes no entry. Shown visits take their
-  host's pacing slot like hidden ones.
+  host's pacing slot like hidden ones; a slot that cannot be claimed fails
+  the visit rather than opening it unpaced.
+- **Every visit reads its entry again when it starts.** A shown visit may
+  have waited behind a hidden visit, an unsaved verdict or its pacing slot;
+  a hidden one, for its slot. One settled meanwhile (rescued, dismissed,
+  superseded) is not visited: a shown one ends with `shown_visit_ended(entry
+  as it now stands, None)`, and a hidden one is skipped, so it cannot replace
+  a PDF already rescued. A shown entry that cannot be read is shown as last
+  read.
 - **A person's visit is judged only by its download (D2).** `RescueAttempt(...,
   view=, judge_pages=False)`: no timeout, no page verdict. A 404 or a network
   error is shown, not settled, and the host is still penalised for 429/503.
-  It ends on a finished download or a renderer crash. Leaving it (another
+  It ends on a finished download or a renderer crash. A finished download
+  that is neither a PDF nor a wall (a citation export, a supplement), which
+  would be `no_pdf`, is discarded instead: `download_ignored` is emitted, the
+  page stays open, and the next download is taken. Leaving it (another
   entry, *Dismiss*, closing the window, quit) is `abort()`: no verdict, no
   attempt counted.
 - **New windows open in the same page (D3).** `_ShownPage.createWindow`
@@ -135,14 +159,20 @@ error in the pass's slots is logged and never leaves the pass busy (#525).
   mid-display.
 - **Walk the queue** (`walk(entry_ids, view)`) judges each page as the hidden
   pass does, with `RESCUE_VISIBLE_TIMEOUT_MS` (60 s). It re-reads each entry
-  before its visit and skips one no longer open. The reader choosing an
-  entry, or `stop_walk()`, ends it. When it ends, the hidden pass looks again
-  at once.
+  before its visit and skips one no longer open; a queue it cannot read stops
+  it (unreadable is not settled). A page that cannot open is counted and
+  passed. It ends when the list is done, on `stop_walk()`, when the reader
+  chooses an entry, or on `end_shown_visit()` (dismissing the walk's entry,
+  selecting a settled one, closing the window). When it ends, the hidden pass
+  looks again at once. It may end before `walk()` returns, so the window
+  says it is walking before it asks.
 - Signals: `entry_changed(entry)` after every applied verdict, hidden or
   shown. `shown_visit_started(entry)`. `shown_visit_ended(entry, verdict |
-  None)`, where `None` means left without a verdict. `shown_visit_failed(entry)`
-  when the page could not open (`ended(entry, None)` comes first).
-  `walk_ended()`.
+  None)`, where `None` means left without a verdict; the window reads
+  `holds_unsaved_verdict` to tell a saved verdict from one waiting to be.
+  `shown_visit_failed(entry)` when the page could not open (`ended(entry,
+  None)` comes first). `shown_download_ignored(entry)`. `walk_ended(WalkEnd)`:
+  finished, stopped or unreadable, with how many pages could not open.
 - **What waits for the reader (D4):** `needs_person`, plus `pending` while no
   hidden pass will visit (`awaiting_reader_states`). The indicator counts
   these, and the window's default filter lists them.
@@ -158,27 +188,35 @@ fail for it.
 
 **The interrogation tab** (stage 3, citation path only, D7) queues what its
 full-text discovery left at `RESCUE_PRIORITY_WAITING`.
-`FulltextDiscoveryWorker.lookups` carries the record out (D10). The tab waits
-while one of the document's entries is pending, due now and unvisited since
-the wait began (`wait_watch`, `wait_outcome`). The wait ends on any of these:
+`FulltextDiscoveryWorker.lookups` carries the record out (D10). Only the
+current discovery's signals count: opening another citation stops the running
+one and lets go of it, so its late failure starts no wait over the article
+now open. The tab waits while one of the entries this load queued is
+pending, due now and unvisited since the wait began (`wait_watch`,
+`wait_outcome`). The wait ends on any of these:
 - a rescue: the PDF is loaded, labelled "fetched in the built-in browser";
 - an entry still open, which includes a transport verdict: the abstract,
   "behind a robot check", and an offer to open the review queue on that
   entry;
 - everything settled without a PDF: today's fallback;
 - *Cancel*: "cancelled", and the entry stays queued;
-- `RESCUE_READER_WAIT_LIMIT_MS` (90 s).
+- `RESCUE_READER_WAIT_LIMIT_MS` (90 s), decided on what is known
+  (`wait_outcome(..., final=True)`): a watched entry rescued by another
+  process, whose verdict never reached this tab, still loads its PDF.
 
-With the hidden pass off or unavailable, the tab does not wait (D8). It falls
-back through `load_from_citation`'s own `fall_back(reason)`, so a stale cached
-full text is still preferred to the abstract.
+A queue that cannot be written or read falls back naming the robot check,
+never "could not be retrieved"; a verdict whose re-read fails is decided by
+the entry it carries. With the hidden pass off or unavailable, or while the
+review queue window holds the browser (a visit or a walk), the tab does not
+wait (D8). It falls back through `load_from_citation`'s own `fall_back(reason)`,
+so a stale cached full text is still preferred to the abstract.
 
-**D1.** A challenged copy is not a paywall. Before stage 2, a challenged 401,
+**Spec D1.** A challenged copy is not a paywall. Before stage 2, a challenged 401,
 403 or `text/html` 200 at a paywall-looking address took the paywall branch, so
 the reader was told a source refused access. It now is a challenged copy and is
 queued.
 
-**D7.** The service wakes on the systematic review and Research Questions tabs'
+**Spec D7.** The service wakes on the systematic review and Research Questions tabs'
 analysis outcomes (an analysis is where walled PDFs are queued); a 60 s poll
 (`RESCUE_POLL_INTERVAL_MS`) catches entries other processes wrote. The hidden
 pass runs only while `discovery.browser_rescue_hidden` is on. It is read when an
@@ -219,21 +257,26 @@ Everything that pumps QtWebEngine runs in `tests/browser_rescue_harness.py`, in
 a **subprocess**, against a loopback publisher. Pumping the suite's shared
 `QApplication` inherits earlier tests' dangling timers (#516, #517).
 `tests/test_browser_rescue_engine.py` runs the harness once and asserts on its
-JSON. Stage 3 adds `shown_scenarios`, which covers:
+JSON. Stage 3 adds `shown_scenarios`, a shown case in `service_scenarios`, and
+`shown_quit_scenario`:
 - a person's visit in a `QWebEngineView`: the PDF is saved, and a gone page or
   an abstract stays unjudged until it is left;
 - `createWindow`;
 - a walk's judged visit;
-- a person's visit through the real service;
-- `shown_quit_scenario`: quit during a shown visit, after which the entry is
+- a person's visit through the real service (`service_scenarios`);
+- quit during a shown visit (`shown_quit_scenario`), after which the entry is
   unchanged and no profile-release warning appears.
 
-The window, the indicator and the tab are tested in the suite with a fake
-service, calling slots directly and never pumping. Run it alone:
+Run the harness alone:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python tests/browser_rescue_harness.py
 ```
+
+The window, the indicator and the tab are tested in the suite with a fake
+service, calling slots directly and never pumping. The window's fake service
+is coupled as the real one is (choosing an entry or ending the visit stops a
+walk; a walk can end inside `walk()`).
 
 A QtWebEngine that cannot start **fails** these tests; it never skips them, as
 a skip would leave CI green with the feature untested. CI sets

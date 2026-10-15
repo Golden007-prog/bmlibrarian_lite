@@ -1,8 +1,9 @@
 """The review queue window's embedded view (#480, stage 3).
 
-The only module that imports QtWebEngineWidgets. It is loaded only once the
-hidden browser's service started, so the window, and importing the app,
-never load QtWebEngine.
+The only runtime import of QtWebEngineWidgets (others import it for type
+checking only). ``show_review_queue`` imports this module lazily, and only
+when the rescue service exists, so importing the app or the window's module
+never loads it.
 """
 
 from __future__ import annotations

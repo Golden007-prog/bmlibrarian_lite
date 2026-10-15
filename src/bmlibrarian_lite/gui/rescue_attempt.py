@@ -151,14 +151,19 @@ class RescueAttempt(QObject):
 
     A hidden visit (no view) judges the page it stays on. A person's visit
     (``judge_pages=False``, in the review queue window's view) ends only
-    with a download or a renderer crash; leaving it is :meth:`abort`.
+    with a download or a renderer crash; leaving it is :meth:`abort`. A file
+    a person downloads that is neither a PDF nor a wall (a citation export,
+    a supplement) is not the article's answer: it is discarded, said with
+    ``download_ignored``, and the page stays open for the PDF.
 
     Signals:
         finished: The visit's :class:`RescueVerdict`, emitted once, and never
             after :meth:`abort`.
+        download_ignored: A person's download was not a PDF; the visit goes on.
     """
 
     finished = Signal(object)
+    download_ignored = Signal()
 
     def __init__(
         self,
@@ -236,9 +241,10 @@ class RescueAttempt(QObject):
 
         Only one this visit's own page started: the profile is shared, and a
         page an earlier visit let go of may still start one, which is
-        another article's PDF. Only the first: a page that starts a second
-        is not believed twice. A size announced over the limit is refused
-        before a byte is written.
+        another article's PDF. Only one at a time: a page that starts a
+        second while the first runs is not believed twice (a person's visit
+        takes another once a file that was no PDF is discarded). A size
+        announced over the limit is refused before a byte is written.
 
         Args:
             request: The profile's download request.
@@ -274,7 +280,7 @@ class RescueAttempt(QObject):
         self._stall.start()
 
     def abort(self) -> None:
-        """End the visit with no verdict, for quit: its entry stays as it was."""
+        """End the visit with no verdict (quit, or the reader leaving a shown visit): its entry stays as it was."""
         if self._done:
             return
         self._done = True
@@ -371,7 +377,7 @@ class RescueAttempt(QObject):
             self._download.cancel()
 
     def _on_download_finished(self) -> None:
-        """Keep a whole PDF; anything else ends the visit without one."""
+        """Keep a whole PDF; anything else ends the visit without one, but a person's file that is no PDF."""
         request = self._download
         if self._done or request is None or not request.isFinished():
             return
@@ -381,7 +387,17 @@ class RescueAttempt(QObject):
             outcome = RescueOutcome.TOO_LARGE if self._too_large else RescueOutcome.TRANSPORT
             self._finish(RescueVerdict(outcome))
             return
-        self._finish(self._settle(written))
+        verdict = self._settle(written)
+        if not self._judge_pages and verdict.outcome is RescueOutcome.NO_PDF:
+            # A person's visit (D2): a file that is no PDF is not the
+            # article's answer, and settling on it would close the entry for
+            # good. The page stays open, and another download is taken.
+            logger.info("A download from %s was no PDF; the page stays open", self._address)
+            self._stall.stop()
+            self._download = None
+            self.download_ignored.emit()
+            return
+        self._finish(verdict)
 
     def _settle(self, written: Path) -> RescueVerdict:
         """Rename a finished download into place if it is a PDF within the limit.

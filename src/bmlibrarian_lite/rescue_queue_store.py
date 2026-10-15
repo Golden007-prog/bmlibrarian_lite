@@ -81,6 +81,15 @@ class RecordedVerdict:
     entry: RescueEntry | None
     applied: bool
 
+    def __post_init__(self) -> None:
+        """An applied change has the entry it changed.
+
+        Raises:
+            ValueError: If it was applied with no entry.
+        """
+        if self.applied and self.entry is None:
+            raise ValueError("An applied queue change needs the entry it changed")
+
 
 def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
     """Read one stored entry.
@@ -90,8 +99,9 @@ def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
 
     Returns:
         The entry, its verdict ``None`` when unreadable; ``None`` for a
-        state this build does not know (a newer build's), which is left
-        alone.
+        state this build does not know (a newer build's), or a request it
+        cannot trust (damage: no web address, a host that is not the
+        address's, no DOI), which is left alone (logged).
     """
     try:
         state = RescueState(row["state"])
@@ -104,9 +114,11 @@ def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
             verdict = RescueVerdict.from_dict(json.loads(row["verdict"]))
         except (TypeError, ValueError):
             verdict = None
-    return RescueEntry(
-        id=row["id"],
-        request=RescueRequest(
+        if verdict is None:
+            # Shown as unreadable, never as "not visited yet"
+            logger.warning("The last verdict of rescue entry %s could not be read", row["id"])
+    try:
+        request = RescueRequest(
             document_id=row["document_id"],
             doi=row["doi"],
             pmid=row["pmid"],
@@ -114,7 +126,15 @@ def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
             address=row["address"],
             host=row["host"],
             service=row["service"],
-        ),
+        )
+    except (TypeError, AttributeError, ValueError) as e:
+        # Never handed to a browser: a damaged row is left alone, as a newer
+        # build's state is
+        logger.warning("Leaving rescue entry %s alone: it cannot be read (%s)", row["id"], e)
+        return None
+    return RescueEntry(
+        id=row["id"],
+        request=request,
         state=state,
         attempts=row["attempts"],
         verdict=verdict,
@@ -220,12 +240,12 @@ def record_verdict(
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (entry_id,)).fetchone()
-        entry = entry_from_row(row) if row is not None else None
-        if entry is None or entry.state not in OPEN_RESCUE_STATES:
+        current = entry_from_row(row) if row is not None else None
+        if current is None or current.state not in OPEN_RESCUE_STATES:
             conn.rollback()
-            return RecordedVerdict(entry, applied=False)
-        attempts = entry.attempts + 1
-        state = next_state(entry.state, verdict, attempts)
+            return RecordedVerdict(current, applied=False)
+        attempts = current.attempts + 1
+        state = next_state(current.state, verdict, attempts)
         at = stamp(now)
         retry_after = (
             stamp(now + timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS))
@@ -243,10 +263,10 @@ def record_verdict(
         if state is RescueState.RESCUED:
             conn.execute(
                 f"""
-                UPDATE {TABLE} SET state = ?, updated_at = ?
+                UPDATE {TABLE} SET state = ?, retry_after = NULL, updated_at = ?
                 WHERE document_id = ? AND id != ? AND state IN ({_OPEN_MARKS})
                 """,
-                (RescueState.SUPERSEDED.value, at, entry.request.document_id, entry_id, *_OPEN),
+                (RescueState.SUPERSEDED.value, at, current.request.document_id, entry_id, *_OPEN),
             )
         conn.commit()
     except BaseException:
@@ -254,7 +274,7 @@ def record_verdict(
         raise
     return RecordedVerdict(
         replace(
-            entry, state=state, attempts=attempts, verdict=verdict, updated_at=at,
+            current, state=state, attempts=attempts, verdict=verdict, updated_at=at,
             retry_after=retry_after,
         ),
         applied=True,

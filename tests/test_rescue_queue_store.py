@@ -14,6 +14,7 @@ from bmlibrarian_lite.browser_rescue import (
     RescueRequest,
     RescueState,
     RescueVerdict,
+    fetchable_host,
 )
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.constants import (
@@ -30,7 +31,9 @@ TRANSPORT = RescueVerdict(RescueOutcome.TRANSPORT)
 
 
 def _request(document_id: str = "doc-1", address: str = "https://a.example/1.pdf") -> RescueRequest:
-    return RescueRequest(document_id, "10.1/x", None, "Title", address, "a.example", SERVICE_UNPAYWALL_PDF)
+    host = fetchable_host(address)
+    assert host is not None
+    return RescueRequest(document_id, "10.1/x", None, "Title", address, host, SERVICE_UNPAYWALL_PDF)
 
 
 @pytest.fixture
@@ -217,13 +220,37 @@ def test_a_newer_builds_state_is_left_alone(conn: sqlite3.Connection) -> None:
     assert store.entries(conn, list(RescueState)) == []
 
 
-def test_a_damaged_verdict_reads_as_none(conn: sqlite3.Connection) -> None:
-    """A damaged stored verdict reads as None rather than failing."""
+def test_a_damaged_verdict_reads_as_none(conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture) -> None:
+    """A damaged stored verdict reads as None rather than failing, and is logged."""
     store.enqueue(conn, [_request()], 0, T0)
     conn.execute(f"UPDATE {store.TABLE} SET verdict = '{{not json'")
     conn.commit()
     entry = store.next_pending(conn, T0)
     assert entry is not None and entry.verdict is None
+    assert "could not be read" in caplog.text
+
+
+def test_a_newer_builds_verdict_is_logged_as_unreadable(
+    conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Valid JSON with an outcome this build does not know is unreadable too, never silently none."""
+    store.enqueue(conn, [_request()], 0, T0)
+    conn.execute(f"UPDATE {store.TABLE} SET verdict = ?", (json.dumps({"outcome": "newer"}),))
+    conn.commit()
+    entry = store.next_pending(conn, T0)
+    assert entry is not None and entry.verdict is None
+    assert "could not be read" in caplog.text
+
+
+def test_a_superseded_sibling_keeps_no_retry_time(conn: sqlite3.Connection) -> None:
+    """Only a pending entry is held back: superseding one held back clears its retry time."""
+    first, second = _queued(conn, _request("doc-1", "https://a.example/1.pdf"),
+                            _request("doc-1", "https://b.example/1.pdf"))
+    store.record_verdict(conn, second, TRANSPORT, T0)
+    store.record_verdict(conn, first, PDF, T0)
+    sibling = store.entry(conn, second)
+    assert sibling is not None and sibling.state is RescueState.SUPERSEDED
+    assert sibling.retry_after is None
 
 
 def test_stamps_sort_as_time_does() -> None:
@@ -375,3 +402,18 @@ def test_storage_reads_counts_and_dismisses(storage: LiteStorage) -> None:
     assert storage.count_rescue_entries([RescueState.PENDING]) == 1
     assert storage.dismiss_rescue(entry.id).applied
     assert storage.count_rescue_entries([RescueState.PENDING]) == 0
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [("address", "file:///etc/passwd"), ("host", "elsewhere.example"), ("doi", "")],
+)
+def test_a_damaged_row_is_never_handed_to_a_browser(
+    conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture, column: str, value: str
+) -> None:
+    """A row whose address, host or DOI cannot be trusted is left alone, logged."""
+    store.enqueue(conn, [_request()], 0, T0)
+    conn.execute(f"UPDATE {store.TABLE} SET {column} = ?", (value,))
+    conn.commit()
+    assert store.next_pending(conn, T0) is None
+    assert "cannot be read" in caplog.text

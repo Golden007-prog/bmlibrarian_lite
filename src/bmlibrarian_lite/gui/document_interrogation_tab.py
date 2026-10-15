@@ -56,11 +56,10 @@ from PySide6.QtCore import Qt, Signal, QTimer
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled, get_font_scale
 
 from ..browser_rescue import (
-    OPEN_RESCUE_STATES,
     RescueEntry,
-    RescueState,
     RescueSubject,
     WaitOutcome,
+    WaitResult,
     queue_challenged_copies,
     rescue_pdf_path,
     rescue_requests,
@@ -171,7 +170,8 @@ class _RescueWait:
         document_id: Its document.
         addresses: The walled addresses this load queued.
         watched: The entries waited for (``wait_watch``).
-        fall_back: Loads the abstract, naming a cause.
+        fall_back: Loads the fallback (a stale cached full text if there is
+            one, else the abstract), naming a cause.
         answered: The entries with a verdict since the wait began.
     """
 
@@ -200,8 +200,8 @@ class DocumentInterrogationTab(QWidget):
 
     Signals:
         status_message: A message for the status bar.
-        rescue_queued: A walled PDF the reader opened was queued for the
-            browser, first (#480, stage 3).
+        rescue_queued: A walled PDF the reader opened is in the browser's
+            queue (new, or raised to first when still open) (#480, stage 3).
         review_queue_requested: The reader asked to open the review queue
             on this entry ID.
     """
@@ -907,6 +907,7 @@ class DocumentInterrogationTab(QWidget):
 
     def load_from_citation(self, citation: 'Citation') -> None:
         """Load a document from a citation object."""
+        self._supersede_fulltext_discovery()
         self._clear_document()
         self._current_doc_metadata = build_doc_metadata(citation)
         self._pending_citation = citation
@@ -1011,17 +1012,20 @@ class DocumentInterrogationTab(QWidget):
             core_api_key=self.config.discovery.core_api_key or None,
             elsevier_credentials=ElsevierCredentials.from_config(self.config.discovery),
         )
-        self._fulltext_worker.progress.connect(self._update_progress_dialog)
-        self._fulltext_worker.finished.connect(
-            lambda content, path, source: self._on_fulltext_ready(content, path, source, citation)
-        )
-        self._fulltext_worker.paywall_detected.connect(
-            lambda url, err: self._on_paywall_detected(url, err, on_error)
-        )
         worker = self._fulltext_worker
-        worker.error.connect(
-            lambda e, w=worker: self._on_fulltext_error(e, citation, on_error, w.lookups, fall_back)
-        )
+        # Each outcome is this run's only while it is the current one: a run
+        # the reader replaced by opening another citation must not load its
+        # article, or start a wait for it, over the one now open
+        worker.progress.connect(self._for_current_fulltext(worker, self._update_progress_dialog))
+        worker.finished.connect(self._for_current_fulltext(
+            worker, lambda content, path, source: self._on_fulltext_ready(content, path, source, citation)
+        ))
+        worker.paywall_detected.connect(self._for_current_fulltext(
+            worker, lambda url, err: self._on_paywall_detected(url, err, on_error)
+        ))
+        worker.error.connect(self._for_current_fulltext(
+            worker, lambda e: self._on_fulltext_error(e, citation, on_error, worker.lookups, fall_back)
+        ))
         self._fulltext_worker.cancelled.connect(
             lambda e, w=self._fulltext_worker: self._on_fulltext_cancelled(e, w)
         )
@@ -1093,6 +1097,53 @@ class DocumentInterrogationTab(QWidget):
             # passes a callback. Kept so a caller without one still names
             # the cause rather than falling back silently.
             self._load_citation_abstract(citation, FULLTEXT_UNAVAILABLE)
+
+    def _is_current_fulltext(self, worker: object) -> bool:
+        """Whether a full-text discovery's signal is the current run's.
+
+        Args:
+            worker: The run that is reporting.
+
+        Returns:
+            ``True`` for the current run; ``False`` (logged) for one the
+            reader replaced by opening another citation.
+        """
+        if worker is self._fulltext_worker:
+            return True
+        logger.debug("A superseded full-text discovery reported; its outcome is not loaded")
+        return False
+
+    def _for_current_fulltext(
+        self, worker: object, handler: Callable[..., None]
+    ) -> Callable[..., None]:
+        """A slot that runs ``handler`` only while ``worker`` is the current run.
+
+        Args:
+            worker: The run whose signal it is.
+            handler: What its signal does.
+
+        Returns:
+            The slot to connect.
+        """
+
+        def slot(*args: object) -> None:
+            """Run the handler for the current run; drop a superseded one's signal."""
+            if self._is_current_fulltext(worker):
+                handler(*args)
+
+        return slot
+
+    def _supersede_fulltext_discovery(self) -> None:
+        """Stop a running full-text discovery the reader has moved on from.
+
+        Asked to stop and let go of: whatever it still reports is not
+        loaded (:meth:`_is_current_fulltext`). Its thread is the tab's
+        child, so letting go of the reference does not destroy it running.
+        """
+        worker, self._fulltext_worker = self._fulltext_worker, None
+        if worker is not None:
+            worker.cancel()
+            self._close_progress_dialog()
 
     def _cancel_fulltext_discovery(self) -> None:
         """Ask a running full-text discovery to stop.
@@ -1227,16 +1278,21 @@ class DocumentInterrogationTab(QWidget):
         Args:
             citation: The citation being loaded.
             lookups: What its discovery left unsettled.
-            fall_back: Loads the abstract, naming a cause.
+            fall_back: Loads the fallback (a stale cached full text if there
+                is one, else the abstract), naming a cause.
 
         Returns:
-            Whether this took the load over (waiting, or settled at once:
-            the offer); ``False`` leaves today's fallback to the caller.
+            Whether this took the load over (waiting, or settled at once: a
+            rescued PDF, the offer, or the fallback naming the robot check);
+            ``False`` leaves today's fallback to the caller.
         """
+        # A wait still open belongs to a load this one replaces
+        self._end_rescue_wait()
         document = citation.document
         try:
             subject = RescueSubject(document.id, document.doi, document.pmid, document.title or "")
-        except ValueError:
+        except ValueError as e:
+            logger.warning("No walled PDF of citation %r is queued: %s", document.id, e)
             return False
         requests = rescue_requests(subject, lookups)
         if not requests:
@@ -1245,13 +1301,21 @@ class DocumentInterrogationTab(QWidget):
         addresses = frozenset(r.address for r in requests)
         entries = self._wait_entries(subject.document_id, addresses)
         if entries is None:
-            return False
-        if entries:
+            # Queued, most likely, but unreadable: the hidden pass and the
+            # count still hear of it; the reader is told the cause
             self.rescue_queued.emit()
+            fall_back(FULLTEXT_WALLED)
+            return True
+        if not entries:
+            # Queueing failed (logged): no wait, no offer, but the cause is
+            # still the robot check, not an absent full text
+            fall_back(FULLTEXT_WALLED)
+            return True
+        self.rescue_queued.emit()
         watched = wait_watch(entries, self._hidden_pass_runs(), datetime.now(UTC))
         wait = _RescueWait(citation, subject.document_id, addresses, watched, fall_back)
-        outcome = wait_outcome(entries, watched, wait.answered)
-        if outcome is WaitOutcome.WAITING:
+        result = wait_outcome(entries, watched, wait.answered)
+        if result.outcome is WaitOutcome.WAITING:
             self._rescue_wait = wait
             self._pdf_progress_dialog = self._create_progress_dialog("Fetching Full Text")
             self._pdf_progress_dialog.setLabelText(BROWSER_RESCUE_WAITING)
@@ -1259,7 +1323,7 @@ class DocumentInterrogationTab(QWidget):
             self._pdf_progress_dialog.show()
             self._rescue_wait_timer.start(RESCUE_READER_WAIT_LIMIT_MS)
             return True
-        return self._settle_rescue_wait(wait, outcome, entries)
+        return self._settle_rescue_wait(wait, result)
 
     def _wait_entries(self, document_id: str, addresses: frozenset[str]) -> list[RescueEntry] | None:
         """This load's queue entries, as they stand.
@@ -1292,14 +1356,20 @@ class DocumentInterrogationTab(QWidget):
         wait.answered.add(entry.id)
         entries = self._wait_entries(wait.document_id, wait.addresses)
         if entries is None:
+            # The others cannot be read (logged), but this one is known as it
+            # stands: a rescue it reports is not lost to the failed read
             self._end_rescue_wait()
-            wait.fall_back(FULLTEXT_UNAVAILABLE)
+            result = wait_outcome([entry], wait.watched, wait.answered, final=True)
+            if result.outcome is WaitOutcome.NOTHING:
+                wait.fall_back(FULLTEXT_WALLED)
+            else:
+                self._settle_rescue_wait(wait, result)
             return
-        outcome = wait_outcome(entries, wait.watched, wait.answered)
-        if outcome is WaitOutcome.WAITING:
+        result = wait_outcome(entries or [entry], wait.watched, wait.answered)
+        if result.outcome is WaitOutcome.WAITING:
             return
         self._end_rescue_wait()
-        self._settle_rescue_wait(wait, outcome, entries)
+        self._settle_rescue_wait(wait, result)
 
     def _on_rescue_wait_limit(self) -> None:
         """The wait's limit: decide on what is known, waiting no longer."""
@@ -1308,11 +1378,11 @@ class DocumentInterrogationTab(QWidget):
             return
         self._end_rescue_wait()
         entries = self._wait_entries(wait.document_id, wait.addresses)
-        if entries is None:
-            wait.fall_back(FULLTEXT_UNAVAILABLE)
+        if not entries:
+            # Unreadable (logged), or gone: the PDF is still behind the wall
+            wait.fall_back(FULLTEXT_WALLED)
             return
-        outcome = wait_outcome(entries, wait.watched, wait.watched | wait.answered)
-        self._settle_rescue_wait(wait, outcome, entries)
+        self._settle_rescue_wait(wait, wait_outcome(entries, wait.watched, wait.answered, final=True))
 
     def _cancel_rescue_wait(self) -> None:
         """The reader stopped waiting: the abstract; the entry stays queued."""
@@ -1329,33 +1399,32 @@ class DocumentInterrogationTab(QWidget):
             self._rescue_wait = None
             self._close_progress_dialog()
 
-    def _settle_rescue_wait(
-        self, wait: _RescueWait, outcome: WaitOutcome, entries: list[RescueEntry]
-    ) -> bool:
+    def _settle_rescue_wait(self, wait: _RescueWait, result: WaitResult) -> bool:
         """Load what the wait came to.
 
         Args:
             wait: The wait.
-            outcome: Where it stands; never ``WAITING``.
-            entries: Its entries, as they stand.
+            result: Where it stands, with its entry; never ``WAITING``.
 
         Returns:
             ``True``: the load is decided here.
         """
-        if outcome is WaitOutcome.RESCUED:
-            rescued = next(e for e in entries if e.state is RescueState.RESCUED and e.id in wait.answered)
-            path = rescue_pdf_path(rescued.request.doi)
-            if path.is_file():
+        if result.outcome is WaitOutcome.RESCUED and result.entry is not None:
+            try:
+                path: Path | None = rescue_pdf_path(result.entry.request.doi)
+            except OSError as e:
+                logger.error("The PDF library could not be reached for %s: %s", wait.document_id, e)
+                path = None
+            if path is not None and path.is_file():
                 self._load_citation_pdf(path, wait.citation, BROWSER_PDF_LABEL)
             else:
                 logger.warning("The rescued PDF of %s is not at %s", wait.document_id, path)
                 wait.fall_back(FULLTEXT_UNAVAILABLE)
             return True
-        if outcome is WaitOutcome.NEEDS_READER:
+        if result.outcome is WaitOutcome.NEEDS_READER and result.entry is not None:
             wait.fall_back(FULLTEXT_WALLED)
-            open_entry = next(e for e in entries if e.state in OPEN_RESCUE_STATES)
             if ask_to_open_review_queue(self):
-                self.review_queue_requested.emit(open_entry.id)
+                self.review_queue_requested.emit(result.entry.id)
             return True
         wait.fall_back(FULLTEXT_UNAVAILABLE)
         return True

@@ -36,7 +36,7 @@ gui/                  # PySide6: SystematicReview, ResearchQuestions, AuditTrail
                       #   transparency_badge, transparency_settings_dialog, quality_badge, quality_filter_panel
                       #   thread_keeper (holds a thread its owner let go of until it ends)
                       #   rescue_attempt / browser_rescue_service (the hidden and shown browser visits), web_engine (QtWebEngine start-up)
-                      #   review_queue_dialog (walled PDFs' review queue), rescue_queue_indicator, rescue_view (the only QtWebEngineWidgets import)
+                      #   review_queue_dialog (walled PDFs' review queue), rescue_queue_indicator, rescue_view (the only runtime QtWebEngineWidgets import)
 llm/                  # LLMClient (Anthropic/Ollama providers), token_tracker
 pubmed/               # PubMedSearchClient
 quality/              # QualityManager, study classification, evidence_summary, metadata_filter
