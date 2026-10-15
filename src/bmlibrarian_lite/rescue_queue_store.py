@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 Dr Horst Herb
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""The browser rescue queue's table (#480, stage 2).
+"""The browser rescue queue's table (#480, stages 2 and 3).
 
 SQL only; the rules are ``browser_rescue``'s. Every function takes an open
 connection whose ``row_factory`` is ``sqlite3.Row``. ``LiteStorage`` opens
@@ -25,6 +25,7 @@ from .browser_rescue import (
     RescueRequest,
     RescueState,
     RescueVerdict,
+    dismissed_state,
     next_state,
     stamp,
 )
@@ -67,7 +68,7 @@ _OPEN_MARKS = ", ".join("?" for _ in _OPEN)
 
 @dataclass(frozen=True)
 class RecordedVerdict:
-    """What recording one visit's verdict did.
+    """What recording one visit's verdict, or a dismissal, did.
 
     Attributes:
         entry: The entry as it now stands; ``None`` when it is gone or its
@@ -280,3 +281,87 @@ def entries(conn: sqlite3.Connection, states: Iterable[RescueState]) -> list[Res
         values,
     )
     return [entry for entry in map(entry_from_row, rows) if entry is not None]
+
+
+def entry(conn: sqlite3.Connection, entry_id: int) -> RescueEntry | None:
+    """One entry by its ID.
+
+    Args:
+        conn: The connection.
+        entry_id: The entry.
+
+    Returns:
+        The entry; ``None`` when it is gone or its state is a newer build's.
+    """
+    row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (entry_id,)).fetchone()
+    return entry_from_row(row) if row is not None else None
+
+
+def dismiss(conn: sqlite3.Connection, entry_id: int, now: datetime) -> RecordedVerdict:
+    """Set an open entry aside for the reader; its last verdict is kept.
+
+    One immediate transaction, as :func:`record_verdict` takes, so a rescue
+    another process recorded in between is not overwritten.
+
+    Args:
+        conn: The connection.
+        entry_id: The entry.
+        now: The moment.
+
+    Returns:
+        The entry as it now stands, and whether it was dismissed; an entry no
+        longer open is returned unchanged and not applied.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = entry(conn, entry_id)
+        if current is None or current.state not in OPEN_RESCUE_STATES:
+            conn.rollback()
+            return RecordedVerdict(current, applied=False)
+        state = dismissed_state(current.state)
+        at = stamp(now)
+        conn.execute(
+            f"UPDATE {TABLE} SET state = ?, retry_after = NULL, updated_at = ? WHERE id = ?",
+            (state.value, at, entry_id),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return RecordedVerdict(replace(current, state=state, retry_after=None, updated_at=at), applied=True)
+
+
+def count(conn: sqlite3.Connection, states: Iterable[RescueState]) -> int:
+    """How many entries are in the given states.
+
+    Args:
+        conn: The connection.
+        states: The states counted.
+
+    Returns:
+        The count; 0 for no states.
+    """
+    values = [state.value for state in states]
+    if not values:
+        return 0
+    marks = ", ".join("?" for _ in values)
+    row = conn.execute(f"SELECT COUNT(*) FROM {TABLE} WHERE state IN ({marks})", values).fetchone()
+    return int(row[0])
+
+
+def for_document(conn: sqlite3.Connection, document_id: str) -> list[RescueEntry]:
+    """A document's entries, in any state, oldest first.
+
+    Args:
+        conn: The connection.
+        document_id: The document.
+
+    Returns:
+        Its entries; rows this build cannot read are left out.
+    """
+    rows = conn.execute(
+        f"SELECT * FROM {TABLE} WHERE document_id = ? ORDER BY created_at, id", (document_id,)
+    )
+    return [e for e in map(entry_from_row, rows) if e is not None]
