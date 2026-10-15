@@ -39,7 +39,7 @@ from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer im
 
 @pytest.fixture
 def analyzer() -> StudyTransparencyAnalyzer:
-    """Create an analyzer without browser fallback (no network in __init__)."""
+    """Create an analyzer (no network in __init__)."""
     return StudyTransparencyAnalyzer(
         email="test@example.com",
         auto_discover_fulltext=False,

@@ -281,7 +281,7 @@ class RaisingHttpSession:
 
 @pytest.fixture
 def discoverer():
-    """A discoverer with no browser fallback and an Unpaywall address."""
+    """A discoverer with an Unpaywall address."""
     from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
 
     return PDFDiscoverer(

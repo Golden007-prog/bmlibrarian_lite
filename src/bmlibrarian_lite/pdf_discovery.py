@@ -130,7 +130,7 @@ _ID_CONVERTER_ERROR_STATUS = "error"
 # ``email=<the user's address>`` (the same leak as #196/#330).
 #
 # The download path (``_try_download``) does NOT yet
-# follow it -- they still put ``str(e)`` into the reader-facing ``error`` and
+# follow it -- it still puts ``str(e)`` into the reader-facing ``error`` and
 # ``verification_warning`` fields. Those URLs are publisher and PMC ones
 # rather than the credential-bearing lookups, so no secret leaks today, but
 # the migration is unfinished: see #350 before adding another handler there.

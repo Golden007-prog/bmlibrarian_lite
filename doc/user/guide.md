@@ -112,17 +112,27 @@ Elsevier could not be asked, and the log asks you to enter the key again.
 Some open-access PDFs sit behind a robot check that blocks the app's downloads.
 Under Settings → Full Text, "Try bot-walled PDFs in a hidden browser" (on by
 default) lets the app later open each such PDF in a hidden built-in browser,
-save it if it arrives, and re-check that article's transparency. The page
-opens as in any browser: it loads its own resources and runs the publisher's
-scripts, which is how the robot check is passed, and the publisher's cookies
-are kept in the app's own browser folder. Your searches, documents and keys
-are never sent.
+save it if it arrives, and re-check that article's transparency when the
+article is in your library. This runs only while the desktop app is open: at
+start-up, after each analysis, and once a minute. It also opens the PDFs the
+app's MCP server queued. Switching the setting off stops visits not yet made;
+the PDFs stay queued for when it is on again.
+
+The page opens as in any browser: it loads its own resources and runs the
+publisher's scripts, and those of the robot check's provider (such as Google's
+reCAPTCHA or Cloudflare), which is how the check is passed. Those sites learn
+which article is fetched, as the publisher did when the app first tried. Your
+searches, documents and keys are never sent.
 
 Rescued PDFs are saved in your PDF library, and a rescued article's
 transparency badge is re-checked, so it may change once the full text has been
-read. The browser keeps its cookies in `~/.bmlibrarian_lite/browser_profile/`
-(readable by you alone). While a copy has not been rescued (or cannot be), the
-article reads "could not be asked … (the host asked for a robot check)".
+read. The browser keeps the sites' cookies and a cache of what the pages loaded
+in `browser_profile/` inside the app's data folder (by default
+`~/.bmlibrarian_lite/browser_profile/`, readable by you alone); deleting that
+folder clears them. While a copy has not been rescued (or cannot be), the
+article reads "could not be asked … (the host asked for a robot check)". If the
+hidden browser cannot start on your computer, the status bar says so at
+start-up and the setting is shown disabled, with the reason in the log.
 
 ### Launching the Application
 

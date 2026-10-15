@@ -524,7 +524,7 @@ By default, `analyze()` automatically attempts to retrieve full-text content whe
 | 4 | Cached PDF | Previously downloaded PDF, text extracted |
 | 5 | PDF download | Unpaywall, PubMed Central, publisher HTTP, DOI resolution |
 
-A walled open-access PDF is queued for the desktop's embedded browser (see `doc/developer/browser_rescue.md`).
+The analyzer queues nothing itself: it records a walled open-access PDF in `report.fulltext_lookups`, and `assess_document` (the desktop's analyses) and the MCP server queue it for the desktop's embedded browser (see `doc/developer/browser_rescue.md`). Its command line queues nothing.
 
 **Disabling auto-discovery entirely:** Set `auto_discover_fulltext=False` to use only API metadata (equivalent to the old behaviour).
 

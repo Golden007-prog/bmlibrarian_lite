@@ -48,20 +48,27 @@ sub-projects 2 and 3; replaces #483).
   `needs_person`, controls 5/5 `no_pdf`. **Check the PR's CI run**: the
   QtWebEngine apt libraries, `QTWEBENGINE_DISABLE_SANDBOX` and the engine
   harness have only run locally on PySide6 6.10.1. The maintainer should
-  launch and quit the real app once (a scripted 8 s smoke run passed).
+  launch and quit the real app once (a scripted 8 s smoke run passed). The
+  review's findings are applied on the branch: a visit takes only its own
+  page's download; an empty download, a page read mid-navigation, or a
+  status-less page is `transport`, a wall served as a download `challenge`;
+  the setting is re-read when a delayed visit starts; no rescue is announced
+  at quit; a rescue during a pending analysis analyses once more after it
+  (#526); errors in the pass's slots are logged and free it (#525's
+  exception bullet); an unavailable QtWebEngine is said in the status bar
+  and Settings.
 - **Next, stage 3 (Python):** the review queue window, its status-bar
   indicator, and the interrogation tab's priority path (spec section 4).
-  Write its plan first; the user reviews it. Carry in from stage 2:
-  `RescueAttempt.accept_download` must check `request.page()` is its own page
-  once a shown view shares the profile; test `needs_person → rescued`;
-  derive `rescue_queue_store._OPEN` from `OPEN_RESCUE_STATES` when touching
-  states; the setting's text says searches, documents and keys are never
-  sent but not that the visit tells the publisher which article was asked
-  for (consider a clause). Lodged from stage 2: **#524** (a `no_pdf`/`gone`
-  verdict keeps the stored "could not be asked" sentence), **#525** (no
-  watchdog for the hidden pass), **#526** (a rescue during that document's
-  analysis is not re-analysed), **#527** (frozen bundle and QtWebEngine),
-  **#528** (two instances, no lease).
+  Write its plan first; the user reviews it. Carry in from stage 2: test
+  `needs_person → rescued`; a shown view sharing the profile relies on
+  `accept_download`'s own-page check; `RescueEntry.retry_after` is there for
+  the window. Lodged from stage 2: **#524** (a `no_pdf`/`gone` verdict keeps
+  the stored "could not be asked" sentence), **#525** (no per-visit deadline;
+  the redirect's host is not the one penalised), **#527** (frozen bundle and
+  QtWebEngine), **#528** (two instances, no lease), **#530** (the engine
+  harness fails intermittently under load), **#531** (a throttled host holds
+  up the queue), **#532** (a fetched PDF is not checked against the title),
+  **#533** (queue identity across MCP and storage IDs).
 - **Stage 2's rules that bind:** a challenged copy is never a paywall (D1).
   A visit that learnt nothing (no answer, a network error, 408/429/5xx with
   no marker) is `transport`: the entry stays pending, retried no sooner than
@@ -217,7 +224,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 ### Next up
 
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
-  browser's stage 3** is next (above); **#524**–**#528** (stage 2 follow-ups); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+  browser's stage 3** is next (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted

@@ -24,8 +24,8 @@ Provides shared fixtures for testing:
 """
 
 # QtWebEngine must be prepared before any QApplication exists (#480, stage
-# 2): gui/app.py imports the browser rescue, and a test that builds the
-# window would otherwise get a broken engine.
+# 2): a QApplication made first breaks every later engine start, and tests
+# make one before the browser rescue's tests import QtWebEngine.
 from bmlibrarian_lite.gui.web_engine import prepare_web_engine
 
 prepare_web_engine()

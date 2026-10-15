@@ -30,8 +30,8 @@ Each address is asked, once and without retries, by five clients:
     Chrome's navigation headers over the same ``requests`` client: what a
     header change alone would recover.
 ``browser``
-    Headless Chromium through Playwright, launched as
-    ``pdf_discovery.BrowserSession`` launches it, with a current Chrome
+    Headless Chromium through Playwright, launched as the retired
+    ``pdf_discovery.BrowserSession`` launched it (#483), with a current Chrome
     User-Agent. It waits a few seconds on an HTML page for a challenge to
     clear, so a wall that only needs JavaScript is passed.
 
@@ -758,8 +758,8 @@ def probe_http(url: str, headers: Mapping[str, str | None]) -> dict[str, Any]:
 class BrowserProbe:
     """Headless Chromium, with cookies cleared between addresses.
 
-    Launched as ``pdf_discovery.BrowserSession`` launches it (automation
-    flag off, downloads accepted), with a current Chrome User-Agent rather
+    Launched as the retired ``pdf_discovery.BrowserSession`` launched it
+    (#483: automation flag off, downloads accepted), with a current Chrome User-Agent rather
     than its ``HeadlessChrome`` default, which every wall reads. The profile
     sets Chrome's "download PDFs instead of opening them" preference: the
     built-in viewer takes a PDF's body, so a PDF it displayed could not be

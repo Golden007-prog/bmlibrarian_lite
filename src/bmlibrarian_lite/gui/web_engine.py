@@ -2,8 +2,8 @@
 
 QtWebEngine must be imported, with OpenGL contexts shared, before the
 ``QApplication`` exists. Otherwise its first page fails, and Qt only warns.
-The application, the test suite's preflight, the engine harness and CI's
-preflight all call :func:`prepare_web_engine`.
+The application, ``tests/conftest.py``, the engine harness and CI's
+``qt_preflight.py`` all call :func:`prepare_web_engine`.
 """
 
 from PySide6.QtCore import QCoreApplication, Qt

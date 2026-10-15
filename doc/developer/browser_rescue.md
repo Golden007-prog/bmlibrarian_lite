@@ -23,7 +23,9 @@ the full text.
   (`rescue_delay_ms`), `penalise_host_for_answer` and `reanalyse_rescued`.
 - `rescue_queue_store.py`: the queue's table. SQL only; `LiteStorage` opens the
   connection. `record_verdict` runs its own transaction, because the MCP server
-  and the CLI write the same table from other processes.
+  writes the same table from another process. It returns a `RecordedVerdict`:
+  the entry as it now stands and whether this verdict was applied, so a rescue
+  another process recorded first is not announced twice.
 - `gui/rescue_attempt.py`: `RescueAttempt`, one visit of one address, ending in
   exactly one verdict; and `rescue_profile`.
 - `gui/browser_rescue_service.py`: `BrowserRescueService`, the hidden pass. One
@@ -31,7 +33,9 @@ the full text.
 - `gui/web_engine.py`: `prepare_web_engine()`, QtWebEngine's start-up
   requirement. `gui/app.py` imports the service lazily (`start_browser_rescue`)
   and guards the preparation (`prepare_browser_rescue`), so an app whose
-  QtWebEngine cannot load starts without the hidden pass, with a warning.
+  QtWebEngine cannot load starts without the hidden pass, with a warning in the
+  log, a status-bar message (while the setting is on) and the setting shown
+  disabled in Settings (`LiteMainWindow.browser_rescue_unavailable`).
 
 ## States
 
@@ -54,17 +58,23 @@ same document was rescued) are reached outside a visit. `pending` and
 
 A **transport** outcome learnt nothing about the article, so the entry stays
 `pending` (unreachable is not absent). Transport covers: a network error, a
-renderer crash, a stalled or interrupted download, a PDF that arrived and could
-not be kept, a visit with no main-frame answer before `RESCUE_HIDDEN_TIMEOUT_MS`,
-and a load failure in Chromium's internal error domain other than ERR_ABORTED
-(-3, which a script-driven navigation produces).
+renderer crash, a stalled or interrupted download, an empty download, a PDF
+that arrived and could not be kept, a visit that could not start (no profile
+or PDF folder), a visit with no main-frame answer before
+`RESCUE_HIDDEN_TIMEOUT_MS` (`page_verdict` with no status), a page read while a
+navigation it started is still open (the page in view is the one being left;
+a challenge it shows still counts), and a load failure in Chromium's internal
+error domain other than ERR_ABORTED (-3, which a script-driven navigation
+produces). A browser status that is no HTTP status counts as none.
 
 A page that answered with a status that says "not now" and shows no challenge
 marker (408, 425, 429, any 5xx) is transport too: a temporary server error must
 not settle an entry. A 401 or 403 with no marker is a `challenge` with no
 markers and waits for a person, since the HTTP client was already walled at that
-address. Markers win over the status; 404 and 410 stay `gone`; a 2xx or 3xx page
-with no marker and no PDF is `no_pdf`. A main-frame 429 or 503 also penalises
+address. Markers win over the status; 404 and 410 stay `gone`; any other
+answered page with no marker and no PDF is `no_pdf`. A download that is not a
+PDF goes through the same marker rules: a wall served as a download is a
+`challenge`, an empty one is transport, and only the rest is `no_pdf`. A main-frame 429 or 503 also penalises
 the host's shared limiter (`limiter_for(host).penalise(retry_after)`, with the
 answer's `Retry-After`), except on loopback, so the rescue and the HTTP client
 back off together. The hidden page is muted.
@@ -75,15 +85,21 @@ back off together. The hidden page is muted.
   `RESCUE_RETRY_DELAY_SECONDS` (15 minutes) later. After `MAX_RESCUE_ATTEMPTS`
   (3) the entry becomes `needs_person` and waits for stage 3's window.
 
-Two rules inside a visit: once a download is accepted, later page answers are
-ignored, and a visit that ends mid-download cancels the download and discards
-the partial file. If the verdict cannot be written to storage, the service keeps
+Three rules inside a visit: a visit accepts only a download its own page
+started (the profile is shared, and a page an earlier visit let go of may still
+start one: another article's PDF); once a download is accepted, later page
+answers are ignored; and a visit that ends mid-download cancels the download
+and discards the partial file. If the verdict cannot be written to storage, the service keeps
 it and tries the write again, never the visit: the entry is still pending, and
 visiting it again would ask the publisher twice. The retry waits
 `RESCUE_VERDICT_SAVE_RETRY_SECONDS` (30 s), doubling with each further failure
 up to `RESCUE_RETRY_DELAY_SECONDS`, and a successful write resets the wait.
 While a verdict is unsaved no new entry is taken, since the next write would
-most likely fail too. At quit an unsaved verdict gets one last try.
+most likely fail too. At quit an unsaved verdict gets one last try, and a
+rescue it records is not announced: re-analysing would start an analysis while
+the app quits, and the next session's analysis finds the PDF. Any error
+writing a verdict holds it like a database lock does; any other unexpected
+error in the pass's slots is logged and never leaves the pass busy (#525).
 
 ## Who Queues
 
@@ -100,7 +116,15 @@ queued.
 **D7.** The service wakes on the systematic review and Research Questions tabs'
 analysis outcomes (an analysis is where walled PDFs are queued); a 60 s poll
 (`RESCUE_POLL_INTERVAL_MS`) catches entries other processes wrote. The hidden
-pass runs only while `discovery.browser_rescue_hidden` is on, read live.
+pass runs only while `discovery.browser_rescue_hidden` is on. It is read when an
+entry is taken and again when its visit starts, after the host's pacing slot,
+which a throttling host can push minutes away.
+
+A rescue re-analyses its document when storage holds it
+(`reanalyse_rescued`). If that document's analysis is already pending, it may
+have passed the cached-PDF tier before the PDF arrived, so the manager analyses
+it once more when that one ends (`analyze_document(..., again_if_pending=True)`);
+never after `stop()`.
 
 Pacing: the browser does not go through `requests`, so each visit claims its
 host's slot with `limiter_for(host).claim()` without sleeping and is scheduled
@@ -145,5 +169,10 @@ a skip would leave CI green with the feature untested. CI sets
 
 - A `no_pdf` or `gone` verdict does not rewrite the stored sentence the reader
   saw ("could not be asked"). Lodged as #524.
-- Only one visit runs at a time.
+- Only one visit runs at a time, so a host whose pacing slot is minutes away
+  holds up every other host's entries meanwhile (#531).
+- A fetched PDF is checked for `%PDF` and its size, not against the article's
+  title (#532).
+- An entry is unique by document ID and address, and the MCP server queues
+  under its own IDs, so one address can be queued twice (#533).
 - Until stage 3 the reader sees no persistent indicator of the queue.
