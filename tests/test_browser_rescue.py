@@ -1,6 +1,7 @@
 """The browser rescue queue's pure rules (#480, stage 2)."""
 
 import sqlite3
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -13,13 +14,21 @@ from bmlibrarian_lite.browser_rescue import (
     RescueState,
     RescueSubject,
     RescueVerdict,
+    WaitOutcome,
+    awaiting_reader_states,
+    dismiss_entry,
+    dismissed_state,
     download_verdict,
+    fetchable_host,
     http_status_or_none,
     next_state,
     page_verdict,
     queue_challenged_copies,
     rescue_pdf_path,
     rescue_requests,
+    stamp,
+    wait_outcome,
+    wait_watch,
 )
 from bmlibrarian_lite.constants import (
     MAX_RESCUE_ATTEMPTS,
@@ -34,6 +43,7 @@ from bmlibrarian_lite.data_models import (
     SourceLookupFailure,
 )
 from bmlibrarian_lite.exceptions import SQLiteError
+from bmlibrarian_lite.rescue_queue_store import RecordedVerdict
 
 DOI = "10.1000/xyz"
 ADDRESS = "https://www.sciencedirect.com/science/article/pii/S1/pdfft"
@@ -484,3 +494,137 @@ def test_retry_after_is_read_from_headers_whatever_their_case() -> None:
     assert retry_after_from_headers({"retry-after": "3"}) == 3.0
     assert retry_after_from_headers({"Retry-After": "Wed, 21 Oct 2026 07:28:00 GMT"}) is None
     assert retry_after_from_headers({}) is None
+
+
+# -- stage 3: the window and the reader's wait ----------------------------------
+
+T0 = datetime(2026, 10, 15, 9, 0, tzinfo=UTC)
+
+
+def _entry(entry_id: int, state: RescueState, retry_after: str | None = None) -> RescueEntry:
+    request = RescueRequest("doc-1", DOI, "123", "A title", f"{ADDRESS}?{entry_id}",
+                            "www.sciencedirect.com", SERVICE_UNPAYWALL_PDF)
+    return RescueEntry(entry_id, request, state, 0, None, 0, "t", "t", retry_after)
+
+
+@pytest.mark.parametrize(
+    "address, host",
+    [
+        ("https://a.example/x.pdf", "a.example"),
+        ("HTTP://A.example/x.pdf", "a.example"),
+        ("ftp://a.example/x.pdf", None),
+        ("/relative/x.pdf", None),
+        ("https:///x.pdf", None),
+        ("javascript:alert(1)", None),
+        ("", None),
+        (None, None),
+    ],
+)
+def test_only_a_web_address_with_a_host_is_fetchable(address: str | None, host: str | None) -> None:
+    """The window opens only what a browser can visit; a stored address is untrusted."""
+    assert fetchable_host(address) == host
+
+
+@pytest.mark.parametrize("state", sorted(OPEN_RESCUE_STATES, key=lambda s: s.value))
+def test_an_open_entry_is_dismissed(state: RescueState) -> None:
+    """An open entry is dismissed."""
+    assert dismissed_state(state) is RescueState.DISMISSED
+
+
+@pytest.mark.parametrize("state", [s for s in RescueState if s not in OPEN_RESCUE_STATES])
+def test_a_settled_entry_stays_as_it_is(state: RescueState) -> None:
+    """A settled entry is never reopened or rewritten by a dismissal."""
+    assert dismissed_state(state) is state
+
+
+class _Dismissals:
+    def __init__(self, result: RecordedVerdict | Exception) -> None:
+        self.result = result
+
+    def dismiss_rescue(self, entry_id: int) -> RecordedVerdict:
+        if isinstance(self.result, Exception):
+            raise self.result
+        return self.result
+
+
+def test_dismissing_returns_the_entry_it_changed() -> None:
+    """A dismissal that applied returns the dismissed entry."""
+    dismissed = _entry(1, RescueState.DISMISSED)
+    assert dismiss_entry(_Dismissals(RecordedVerdict(dismissed, applied=True)), 1) == dismissed
+
+
+def test_dismissing_an_entry_no_longer_open_changes_nothing() -> None:
+    """One another process settled first is not reported as dismissed."""
+    assert dismiss_entry(_Dismissals(RecordedVerdict(_entry(1, RescueState.RESCUED), applied=False)), 1) is None
+
+
+def test_a_dismissal_that_cannot_be_written_is_logged_not_raised(caplog: pytest.LogCaptureFixture) -> None:
+    """The window reports the failure; nothing raises into Qt's slot."""
+    assert dismiss_entry(_Dismissals(sqlite3.OperationalError("database is locked")), 1) is None
+    assert "could not be dismissed" in caplog.text
+
+
+def test_with_a_hidden_pass_only_a_person_s_entries_wait_for_the_reader() -> None:
+    """The hidden pass visits pending entries; only needs_person waits for the reader."""
+    assert awaiting_reader_states(True) == frozenset({RescueState.NEEDS_PERSON})
+
+
+def test_without_a_hidden_pass_every_open_entry_waits_for_the_reader() -> None:
+    """With no hidden pass to visit them, pending entries wait for the reader too."""
+    assert awaiting_reader_states(False) == OPEN_RESCUE_STATES
+
+
+def test_the_tab_watches_pending_entries_due_now() -> None:
+    """Only pending entries the hidden pass will visit now are waited for."""
+    later = stamp(T0 + timedelta(minutes=5))
+    earlier = stamp(T0 - timedelta(minutes=5))
+    entries = [
+        _entry(1, RescueState.PENDING),
+        _entry(2, RescueState.PENDING, retry_after=later),
+        _entry(3, RescueState.PENDING, retry_after=earlier),
+        _entry(4, RescueState.NEEDS_PERSON),
+    ]
+    assert wait_watch(entries, True, T0) == frozenset({1, 3})
+
+
+def test_without_a_hidden_pass_nothing_is_waited_for() -> None:
+    """No pass will come, so the tab does not wait."""
+    assert wait_watch([_entry(1, RescueState.PENDING)], False, T0) == frozenset()
+
+
+def test_a_watched_entry_without_a_verdict_keeps_the_reader_waiting() -> None:
+    """Waiting until the watched entry has had its visit."""
+    assert wait_outcome([_entry(1, RescueState.PENDING)], {1}, set()) is WaitOutcome.WAITING
+
+
+def test_a_rescue_during_the_wait_ends_it() -> None:
+    """One rescued address is enough, whatever the others do."""
+    entries = [_entry(1, RescueState.RESCUED), _entry(2, RescueState.PENDING)]
+    assert wait_outcome(entries, {1, 2}, {1}) is WaitOutcome.RESCUED
+
+
+def test_a_rescue_from_before_the_wait_is_not_this_wait_s() -> None:
+    """A PDF rescued earlier is not on disk, or discovery would have found it."""
+    assert wait_outcome([_entry(1, RescueState.RESCUED)], set(), set()) is WaitOutcome.NOTHING
+
+
+def test_a_transport_verdict_ends_the_wait_with_the_entry_still_open() -> None:
+    """The entry stays pending, a retry is minutes away: the reader is offered the queue."""
+    assert wait_outcome([_entry(1, RescueState.PENDING)], {1}, {1}) is WaitOutcome.NEEDS_READER
+
+
+def test_a_challenge_ends_the_wait_and_offers_the_queue() -> None:
+    """A wall the hidden pass could not pass waits for the reader."""
+    assert wait_outcome([_entry(1, RescueState.NEEDS_PERSON)], {1}, {1}) is WaitOutcome.NEEDS_READER
+
+
+def test_every_entry_settled_without_a_pdf_offers_nothing() -> None:
+    """No PDF behind the wall: today's fallback."""
+    entries = [_entry(1, RescueState.NO_PDF), _entry(2, RescueState.GONE)]
+    assert wait_outcome(entries, {1, 2}, {1, 2}) is WaitOutcome.NOTHING
+
+
+def test_the_wait_lasts_while_any_watched_entry_is_unvisited() -> None:
+    """Two addresses: one answered, one still to visit."""
+    entries = [_entry(1, RescueState.NEEDS_PERSON), _entry(2, RescueState.PENDING)]
+    assert wait_outcome(entries, {1, 2}, {1}) is WaitOutcome.WAITING

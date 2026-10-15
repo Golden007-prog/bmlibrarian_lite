@@ -1330,8 +1330,21 @@ RESCUE_POLL_INTERVAL_MS = 60_000
 #: The priority of an entry an analysis queued.
 RESCUE_PRIORITY_DEFAULT = 0
 #: The priority of an entry a reader is waiting on: visited before every
-#: default one. Used from stage 3's interrogation tab, not yet built.
+#: default one. Used by the interrogation tab's priority path (stage 3).
 RESCUE_PRIORITY_WAITING = 1
+#: How long a visit in the review queue window's *Walk the queue* waits for
+#: a download before it reads the page: the spike's 60 s, which cleared the
+#: Cloudflare publishers 9 times in 9 with the window shown and nobody ticking.
+RESCUE_VISIBLE_TIMEOUT_MS = 60_000
+#: The longest the interrogation tab waits for the hidden browser on a
+#: walled PDF the reader asked for: a visit already under way, then this
+#: one, each at most RESCUE_HIDDEN_TIMEOUT_MS plus RESCUE_PAGE_READ_GRACE_MS,
+#: and the host's pacing slot. Past it the reader is offered the review queue.
+RESCUE_READER_WAIT_LIMIT_MS = 90_000
+#: The review queue window's initial size, in average character widths and
+#: line heights of its font.
+REVIEW_QUEUE_WIDTH_CHARS = 140
+REVIEW_QUEUE_HEIGHT_LINES = 40
 #: The browser's persistent profile, under the data directory: its cookies
 #: are kept, so a clearance or a person's tick carries over between pages
 #: and sessions.

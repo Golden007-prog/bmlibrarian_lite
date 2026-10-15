@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 Dr Horst Herb
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Bot-walled PDFs fetched by an embedded browser: the queue's rules (#480, stage 2).
+"""Bot-walled PDFs fetched by an embedded browser: the queue's rules (#480, stages 2 and 3).
 
 A PDF that an open-access source names, and whose host answered our client
 with a bot wall's challenge (``RequestFailureKind.CHALLENGED``), is queued
@@ -20,10 +20,12 @@ import logging
 import math
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from .bot_walls import challenge_markers
@@ -47,6 +49,9 @@ from .exceptions import SQLiteError
 from .pdf_utils import generate_pdf_path
 from .polite_session import is_loopback_host, retry_after_from_headers
 from .rate_limit import limiter_for
+
+if TYPE_CHECKING:
+    from .rescue_queue_store import RecordedVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +230,65 @@ def next_state(state: RescueState, verdict: RescueVerdict, attempts: int) -> Res
             return RescueState.PENDING
         return RescueState.NEEDS_PERSON
     return _SETTLED_BY[verdict.outcome]
+
+
+def dismissed_state(state: RescueState) -> RescueState:
+    """Where an entry stands after the reader dismisses it.
+
+    Args:
+        state: Where it stood.
+
+    Returns:
+        ``DISMISSED`` for an open entry; a settled entry's own state, since a
+        dismissal never reopens or rewrites a verdict.
+    """
+    return RescueState.DISMISSED if state in OPEN_RESCUE_STATES else state
+
+
+def awaiting_reader_states(hidden_pass_runs: bool) -> frozenset[RescueState]:
+    """The states of the entries that wait for the reader.
+
+    Args:
+        hidden_pass_runs: Whether a hidden pass will visit pending entries:
+            the setting is on and QtWebEngine started.
+
+    Returns:
+        ``NEEDS_PERSON``; with no hidden pass, every open state, since no one
+        but the reader will visit a pending entry.
+    """
+    if hidden_pass_runs:
+        return frozenset({RescueState.NEEDS_PERSON})
+    return OPEN_RESCUE_STATES
+
+
+def stamp(moment: datetime) -> str:
+    """A moment as stored: UTC ISO 8601 to the microsecond, so text order is time order.
+
+    Args:
+        moment: A timezone-aware moment.
+
+    Returns:
+        The stored text.
+    """
+    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def fetchable_host(address: str | None) -> str | None:
+    """The host of an address a browser can be sent to.
+
+    Args:
+        address: An address from a discovery record or from storage, untrusted.
+
+    Returns:
+        Its host, lowercased, for an ``http(s)`` address that names one;
+        ``None`` for anything else.
+    """
+    if not address:
+        return None
+    parsed = urlparse(address)
+    if parsed.scheme.lower() not in _FETCHABLE_SCHEMES or not parsed.hostname:
+        return None
+    return parsed.hostname
 
 
 def page_verdict(status: int | None, headers: Mapping[str, str], html: str) -> RescueVerdict:
@@ -453,10 +517,8 @@ def rescue_requests(subject: RescueSubject, record: LookupRecord) -> tuple[Rescu
     seen: set[str] = set()
     for failure in challenged:
         address = failure.address or ""
-        parsed = urlparse(address)
-        if parsed.scheme.lower() not in _FETCHABLE_SCHEMES or not parsed.hostname:
-            continue
-        if address in seen:
+        host = fetchable_host(address)
+        if host is None or address in seen:
             continue
         seen.add(address)
         requests.append(
@@ -466,7 +528,7 @@ def rescue_requests(subject: RescueSubject, record: LookupRecord) -> tuple[Rescu
                 pmid=subject.pmid,
                 title=subject.title,
                 address=address,
-                host=parsed.hostname,
+                host=host,
                 service=failure.service,
             )
         )
@@ -600,3 +662,109 @@ def reanalyse_rescued(
         )
         return False
     return bool(reanalyse(request.document_id, request.pmid, request.doi))
+
+
+class WaitOutcome(Enum):
+    """What a reader waiting on a document's walled PDFs is told."""
+
+    #: A watched entry has not had its visit yet.
+    WAITING = "waiting"
+    #: A PDF arrived during the wait.
+    RESCUED = "rescued"
+    #: An entry is still open: the review queue can try it with the reader.
+    NEEDS_READER = "needs_reader"
+    #: Every entry settled without a PDF.
+    NOTHING = "nothing"
+
+
+def wait_watch(
+    entries: Sequence[RescueEntry], hidden_pass_runs: bool, now: datetime
+) -> frozenset[int]:
+    """The entries a reader waits for: those the hidden pass will visit now.
+
+    A pending entry held back after a transport failure is not due for
+    minutes, so waiting on it would only run out the wait's limit.
+
+    Args:
+        entries: The document's entries.
+        hidden_pass_runs: Whether a hidden pass will visit them.
+        now: The moment.
+
+    Returns:
+        The IDs of the pending entries that are due; none when no hidden
+        pass runs.
+    """
+    if not hidden_pass_runs:
+        return frozenset()
+    at = stamp(now)
+    return frozenset(
+        e.id
+        for e in entries
+        if e.state is RescueState.PENDING and (e.retry_after is None or e.retry_after <= at)
+    )
+
+
+def wait_outcome(
+    entries: Sequence[RescueEntry],
+    watched: AbstractSet[int],
+    answered: AbstractSet[int],
+) -> WaitOutcome:
+    """Where a reader's wait stands.
+
+    Args:
+        entries: The document's entries as they stand now.
+        watched: The entries waited for (:func:`wait_watch`).
+        answered: The entries that have had a verdict since the wait began.
+
+    Returns:
+        ``RESCUED`` when an entry answered during the wait was rescued (one
+        rescued earlier is not this wait's: its PDF is not on disk, or
+        discovery would have found it); ``WAITING`` while a watched entry is
+        pending and unanswered; ``NEEDS_READER`` while any entry is open;
+        ``NOTHING`` otherwise.
+    """
+    if any(e.state is RescueState.RESCUED and e.id in answered for e in entries):
+        return WaitOutcome.RESCUED
+    if any(
+        e.state is RescueState.PENDING and e.id in watched and e.id not in answered
+        for e in entries
+    ):
+        return WaitOutcome.WAITING
+    if any(e.state in OPEN_RESCUE_STATES for e in entries):
+        return WaitOutcome.NEEDS_READER
+    return WaitOutcome.NOTHING
+
+
+class RescueDismissals(Protocol):
+    """Where a queue entry is dismissed (``LiteStorage``)."""
+
+    def dismiss_rescue(self, entry_id: int) -> RecordedVerdict:
+        """Dismiss an open entry.
+
+        Args:
+            entry_id: The entry.
+
+        Returns:
+            The entry as it now stands, and whether the dismissal applied.
+        """
+        ...
+
+
+def dismiss_entry(queue: RescueDismissals, entry_id: int) -> RescueEntry | None:
+    """Dismiss an entry for the reader, logging rather than raising a failure.
+
+    Args:
+        queue: The storage.
+        entry_id: The entry.
+
+    Returns:
+        The dismissed entry; ``None`` when it was no longer open (settled or
+        dismissed elsewhere meanwhile) or the queue could not be written
+        (logged).
+    """
+    try:
+        recorded = queue.dismiss_rescue(entry_id)
+    except (sqlite3.Error, SQLiteError) as e:
+        logger.error("Walled PDF %s could not be dismissed: %s", entry_id, e)
+        return None
+    return recorded.entry if recorded.applied else None

@@ -17,7 +17,7 @@ import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from .browser_rescue import (
     OPEN_RESCUE_STATES,
@@ -26,6 +26,7 @@ from .browser_rescue import (
     RescueState,
     RescueVerdict,
     next_state,
+    stamp,
 )
 from .constants import RESCUE_RETRY_DELAY_SECONDS
 
@@ -78,18 +79,6 @@ class RecordedVerdict:
 
     entry: RescueEntry | None
     applied: bool
-
-
-def stamp(moment: datetime) -> str:
-    """A moment as stored: UTC ISO 8601 to the microsecond, so text order is time order.
-
-    Args:
-        moment: A timezone-aware moment.
-
-    Returns:
-        The stored text.
-    """
-    return moment.astimezone(UTC).isoformat(timespec="microseconds")
 
 
 def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
