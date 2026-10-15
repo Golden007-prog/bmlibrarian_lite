@@ -96,6 +96,8 @@ bmlibrarian_lite/
 │   ├── fulltext_discovery.py # Europe PMC XML → PMC open-data bucket → Unpaywall → DOI
 │   ├── pmc_open_data.py     # PMC's open-data S3 bucket (JATS by PMC ID)
 │   ├── pdf_discovery.py     # PDF source discovery
+│   ├── browser_rescue.py    # Walled PDFs queued for the embedded browser: states, verdicts
+│   ├── rescue_queue_store.py # The browser rescue queue's table
 │   ├── chunking.py          # Text chunking utilities
 │   ├── pdf_utils.py         # PDF text extraction
 │   ├── utils.py             # Shared utilities
@@ -126,6 +128,9 @@ bmlibrarian_lite/
 │   │   ├── quality_benchmark_dialog.py
 │   │   ├── chat_widgets.py
 │   │   ├── thread_keeper.py   # Holds a thread its owner let go of until it ends
+│   │   ├── rescue_attempt.py  # One hidden browser visit of a walled PDF
+│   │   ├── browser_rescue_service.py # The hidden browser pass over the queue
+│   │   ├── web_engine.py      # QtWebEngine start-up (prepare_web_engine)
 │   │   └── workers.py
 │   ├── llm/                 # LLM client abstraction
 │   │   ├── client.py
@@ -932,6 +937,12 @@ def test_document_card(qapp, sample_document):
     assert not card.expanded
 ```
 
+QtWebEngine is the exception to the `qapp` fixture: never pump it in the
+suite's shared `QApplication` (#516, #517). Its tests drive
+`tests/browser_rescue_harness.py` in a subprocess with its own application, and
+fail rather than skip when the engine cannot start. Run it alone with
+`QT_QPA_PLATFORM=offscreen python tests/browser_rescue_harness.py`.
+
 ### Test Commands
 
 ```bash
@@ -973,6 +984,9 @@ Two things about this job are deliberate and should not be "optimised" away:
   install would skip roughly a hundred tests and leave the job green. The
   preflight turns that into a loud failure, and it exercises what the tests
   actually need rather than merely that the package imports.
+  The preflight is `.github/scripts/qt_preflight.py`; it also checks
+  QtWebEngine (the browser rescue), and the job sets
+  `QTWEBENGINE_DISABLE_SANDBOX`. See `doc/developer/browser_rescue.md`.
 
 ### `lint-delta` job
 

@@ -16,6 +16,7 @@
 
 """Tests for TransparencyManager."""
 
+from concurrent.futures import Future
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 import time
@@ -31,6 +32,7 @@ from bmlibrarian_lite.transparency import (
     TransparencyRisk,
     TransparencySettings,
 )
+from bmlibrarian_lite.transparency.transparency_models import may_replace_stored
 from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer import (
     TransparencyReport,
     DataAvailabilityInfo,
@@ -121,7 +123,6 @@ class TestTransparencyManagerInit:
                 email="test@example.com",
                 pubmed_api_key="test_key",
                 unpaywall_email="test@example.com",
-                use_browser_fallback=False,
                 auto_discover_fulltext=True,
                 core_api_key=None,
                 elsevier_credentials=None,
@@ -216,6 +217,83 @@ class TestAnalyzeDocument:
         assert len(signals) == 1
         assert signals[0][0] == "doc1"
         assert signals[0][1].kind is TransparencyFailureKind.NO_IDENTIFIER
+
+    def test_a_rescue_reanalyses_past_this_builds_stored_result(self, manager, mock_storage):
+        """A rescued PDF re-runs the analysis though a final row is stored (#480, stage 2)."""
+        mock_storage.get_transparency_result.return_value = TransparencyResult(
+            document_id="doc1", transparency_score=80, risk_level=TransparencyRisk.LOW
+        )
+        served = []
+        manager.analysis_complete.connect(lambda _id, r: served.append(r))
+        with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
+            queued = manager.reanalyse("doc1", pmid="12345678", doi="10.1/x")
+        assert queued is True
+        assert served == []
+        assert executor.submit.called
+        assert executor.submit.call_args.args[1:4] == ("doc1", "12345678", "10.1/x")
+
+    def test_a_rescue_never_overwrites_a_newer_builds_row(self, manager, mock_storage):
+        """Control: may_replace_stored still decides (#374)."""
+        newer = TransparencyResult(
+            document_id="doc1", transparency_score=80, risk_level=TransparencyRisk.LOW,
+            analyzer_version="999.0",
+        )
+        assert not may_replace_stored(newer)
+        mock_storage.get_transparency_result.return_value = newer
+        served = []
+        manager.analysis_complete.connect(lambda _id, r: served.append(r))
+        with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
+            queued = manager.reanalyse("doc1", pmid="12345678")
+        assert queued is False
+        assert served == [newer]
+        assert not executor.submit.called
+
+    def test_reanalyse_queues_nothing_when_disabled_or_without_identifiers(self, manager, mock_storage):
+        """False when analysis is off or the document has no PMID or DOI."""
+        assert manager.reanalyse("doc1") is False
+        manager.settings.enabled = False
+        assert manager.reanalyse("doc1", pmid="12345678") is False
+
+    def test_a_plain_analysis_of_a_pending_document_queues_nothing(self, manager, mock_storage):
+        """Control: an ordinary request for a pending document is not repeated."""
+        mock_storage.get_transparency_result.return_value = None
+        with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
+            assert manager.analyze_document("doc1", pmid="12345678") is True
+            assert manager.analyze_document("doc1", pmid="12345678") is False
+            done = Future()
+            done.set_result(TransparencyResult(document_id="doc1", transparency_score=80, risk_level=TransparencyRisk.LOW))
+            manager._on_analysis_complete("doc1", done)
+        assert executor.submit.call_count == 1
+
+    def test_a_rescue_while_pending_analyses_once_more_after(self, manager, mock_storage):
+        """The pending analysis may have looked for the PDF too soon: it runs again after (#480)."""
+        mock_storage.get_transparency_result.return_value = None
+        with patch.object(manager, "start"), patch.object(manager, "_executor") as executor:
+            assert manager.analyze_document("doc1", pmid="12345678") is True
+            assert manager.reanalyse("doc1", pmid="12345678", doi="10.1/x") is True
+            assert executor.submit.call_count == 1
+            done = Future()
+            done.set_result(TransparencyResult(document_id="doc1", transparency_score=80, risk_level=TransparencyRisk.LOW))
+            manager._on_analysis_complete("doc1", done)
+            assert executor.submit.call_count == 2
+            assert executor.submit.call_args.args[1:4] == ("doc1", "12345678", "10.1/x")
+            # Once only: the second analysis's end queues no third
+            manager._on_analysis_complete("doc1", done)
+            assert executor.submit.call_count == 2
+
+    def test_a_stopped_manager_starts_no_analysis_for_a_rescue(self, manager, mock_storage):
+        """After stop(), a pending analysis's end starts nothing (the app is quitting)."""
+        mock_storage.get_transparency_result.return_value = None
+        with patch.object(manager, "_executor") as executor:
+            manager.start = lambda: None  # type: ignore[method-assign]
+            assert manager.analyze_document("doc1", pmid="12345678") is True
+            assert manager.reanalyse("doc1", pmid="12345678") is True
+        manager.stop()
+        done = Future()
+        done.set_result(TransparencyResult(document_id="doc1", transparency_score=80, risk_level=TransparencyRisk.LOW))
+        manager._on_analysis_complete("doc1", done)
+        assert manager._executor is None
+        assert executor.submit.call_count == 1
 
     def test_cached_result_returned(self, manager, mock_storage):
         """Test that cached results are returned without re-analysis."""

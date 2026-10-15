@@ -790,11 +790,11 @@ with, in place of `http_status` or `malformed_response`. It is not an answer
 about the article: the reader is told the copy went unobtained because the
 host asked for a robot check (through the tried-sources statement where the
 copy carries an address, through the "could not be asked" notice where it
-does not), and no absence is settled. One exception remains on the desktop
-until stage 2: a challenged 401 or 403, or a challenged `text/html` 200 at an
-address the paywall sniff takes for a paywall's (one containing "access",
-"login", "pay" and the like), still takes the paywall branch, so the reader is
-first told a source refused access.
+does not), and no absence is settled.
+
+On the desktop a challenged copy is not a paywall, and is queued for the
+embedded browser (`doc/developer/browser_rescue.md`); the apps have no browser
+yet.
 
 A non-PDF answer is challenged when `challenge_markers` names a defence:
 

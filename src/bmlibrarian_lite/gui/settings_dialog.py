@@ -69,6 +69,8 @@ from ..constants import (
     CORE_API_KEY_FROM_ENVIRONMENT,
     ELSEVIER_API_KEY_EXPLANATION,
     ELSEVIER_API_KEY_FROM_ENVIRONMENT,
+    BROWSER_RESCUE_EXPLANATION,
+    BROWSER_RESCUE_UNAVAILABLE_NOTE,
     ELSEVIER_INSTTOKEN_EXPLANATION,
     ELSEVIER_INSTTOKEN_FROM_ENVIRONMENT,
     ENV_CORE_API_KEY,
@@ -262,6 +264,7 @@ class SettingsDialog(QDialog):
         self,
         config: LiteConfig,
         parent: Optional[QDialog] = None,
+        browser_rescue_available: bool = True,
     ) -> None:
         """
         Initialize the settings dialog.
@@ -269,9 +272,13 @@ class SettingsDialog(QDialog):
         Args:
             config: Lite configuration to modify
             parent: Optional parent widget
+            browser_rescue_available: Whether the hidden browser could
+                start; when not, its setting is shown disabled, with why
+                (#480, stage 2)
         """
         super().__init__(parent)
         self.config = config
+        self._browser_rescue_available = browser_rescue_available
         self.setWindowTitle("Settings")
         self.setMinimumWidth(scaled(550))
         self.setMinimumHeight(scaled(500))
@@ -813,6 +820,24 @@ class SettingsDialog(QDialog):
         elsevier_token_note.setWordWrap(True)
         layout.addRow(elsevier_token_note)
 
+        self.browser_rescue_hidden_check = QCheckBox(
+            "Try bot-walled PDFs in a hidden browser"
+        )
+        self.browser_rescue_hidden_check.setToolTip(BROWSER_RESCUE_EXPLANATION)
+        layout.addRow(self.browser_rescue_hidden_check)
+        browser_rescue_note = QLabel(f"<small>{BROWSER_RESCUE_EXPLANATION}</small>")
+        browser_rescue_note.setWordWrap(True)
+        layout.addRow(browser_rescue_note)
+        self.browser_rescue_unavailable_note: QLabel | None = None
+        if not self._browser_rescue_available:
+            # The setting is kept as it is, for when the browser can start
+            self.browser_rescue_hidden_check.setEnabled(False)
+            self.browser_rescue_unavailable_note = QLabel(
+                f"<small>{BROWSER_RESCUE_UNAVAILABLE_NOTE}</small>"
+            )
+            self.browser_rescue_unavailable_note.setWordWrap(True)
+            layout.addRow(self.browser_rescue_unavailable_note)
+
         self.tab_widget.addTab(tab, "Full Text")
 
     def _setup_api_keys_tab(self) -> None:
@@ -1194,6 +1219,9 @@ class SettingsDialog(QDialog):
             self.elsevier_api_key_input.setText(self.config.discovery.elsevier_api_key)
         elif os.environ.get(ENV_ELSEVIER_API_KEY, "").strip():
             self.elsevier_api_key_input.setPlaceholderText(ELSEVIER_API_KEY_FROM_ENVIRONMENT)
+        self.browser_rescue_hidden_check.setChecked(
+            self.config.discovery.browser_rescue_hidden
+        )
         if self.config.discovery.elsevier_insttoken:
             self.elsevier_insttoken_input.setText(self.config.discovery.elsevier_insttoken)
         elif not self.config.discovery.elsevier_api_key and os.environ.get(
@@ -1310,6 +1338,9 @@ class SettingsDialog(QDialog):
         self.config.discovery.elsevier_api_key = elsevier_key or None
         elsevier_token = self.elsevier_insttoken_input.text().strip()
         self.config.discovery.elsevier_insttoken = elsevier_token or None
+        self.config.discovery.browser_rescue_hidden = (
+            self.browser_rescue_hidden_check.isChecked()
+        )
 
         # Save Search Provider settings
         provider_value = self.search_provider_combo.currentData()

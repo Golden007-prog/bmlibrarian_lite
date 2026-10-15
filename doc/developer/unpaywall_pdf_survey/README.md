@@ -162,11 +162,13 @@ the maintainer's.
    fingerprinting was not separated out. Only a browser gets past these
    walls, so no HTTP client change would recover them either.
 
-**Found on the way:** the desktop already has a browser fallback for an
-open-access 401/403 (`pdf_discovery.BrowserSession`). It never works:
-Playwright is not a dependency, and once installed, the code reads Chrome's
-"Download is starting" as a failure and discards the download it had just got
-past the wall for. Lodged as #483.
+**Found on the way:** the desktop had a browser fallback for an open-access
+401/403 (`pdf_discovery.BrowserSession`). It never worked: Playwright is not a
+dependency, and once installed, the code read Chrome's "Download is starting"
+as a failure and discarded the download it had just got past the wall for.
+Lodged as #483; the Playwright fallback was retired there, and the browser
+rescue replaces it (`doc/developer/browser_rescue.md`). The survey's own probe
+script still uses Playwright.
 
 ## What came next
 

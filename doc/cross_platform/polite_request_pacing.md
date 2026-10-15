@@ -263,11 +263,13 @@ rather than pacing itself: `pubmed/search_client.py`, `europepmc.py`,
 
 Two named exceptions, so this stays an "every" that is actually true:
 
-- `pdf_discovery.py`'s `BrowserSession` drives Chromium through Playwright,
-  which does not go through `requests`, so no mounted adapter can pace it.
-  It calls `limiter_for(host).acquire()` itself before navigating, sharing
-  the same per-host budget — it reaches the same publisher hosts, and it is
-  invoked exactly when one has already refused us.
+- The desktop's browser rescue (`browser_rescue.py`, `gui/browser_rescue_service.py`)
+  drives an embedded QtWebEngine page, which does not go through `requests`,
+  so no mounted adapter can pace it. It claims its slot with
+  `limiter_for(host).claim()` without sleeping and schedules the visit for
+  then (`browser_rescue.rescue_delay_ms`), sharing the same per-host budget: it
+  reaches the same publisher hosts, and it is invoked exactly when one has
+  already challenged us. See `doc/developer/browser_rescue.md`.
 - The LLM clients (`llm/`) are deliberately unpaced: Anthropic is a paid
   API with its own rate limiting, and Ollama is normally loopback (rule 5).
 

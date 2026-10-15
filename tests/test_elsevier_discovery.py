@@ -176,7 +176,7 @@ class _Chain:
                 success=False, failure=RequestFailure(RequestFailureKind.HTTP_STATUS, 403)
             )
 
-        discoverer = discoverer or PDFDiscoverer(use_browser_fallback=False, elsevier=elsevier)
+        discoverer = discoverer or PDFDiscoverer(elsevier=elsevier)
         with patch.object(PDFDiscoverer, "_discover_sources", discover_sources), \
              patch.object(PDFDiscoverer, "_try_download", try_download):
             return discoverer.discover_and_download(
@@ -239,7 +239,7 @@ def test_a_served_pdf_is_named_by_its_article_url_without_the_key(tmp_path: Path
 
 def test_a_served_pdf_has_its_title_checked(tmp_path: Path) -> None:
     """As any downloaded PDF: a doubt about the title is a warning on the result."""
-    discoverer = PDFDiscoverer(use_browser_fallback=False, elsevier=_Elsevier(served=True))
+    discoverer = PDFDiscoverer(elsevier=_Elsevier(served=True))
     with patch.object(
         PDFDiscoverer, "_verify_pdf_content", return_value=(False, "Title match: 10%")
     ) as verify:
@@ -431,7 +431,7 @@ def test_another_publishers_doi_never_reaches_the_client(tmp_path: Path) -> None
 
 def test_without_a_key_nothing_is_asked_and_absence_settles(tmp_path: Path) -> None:
     """No key: no client, nothing recorded, the absence established as before."""
-    discoverer = FulltextDiscoverer(use_browser_fallback=False)  # conftest: no client
+    discoverer = FulltextDiscoverer()  # conftest: no client
     assert discoverer._elsevier is None
     result = _discover_fulltext_with(discoverer, tmp_path)
     assert all(f.service != SERVICE_ELSEVIER for f in result.lookups.failures)
@@ -478,7 +478,7 @@ def test_a_cancel_before_elsevier_means_it_is_never_asked(tmp_path: Path) -> Non
             discoverer.cancel()
 
     discoverer = PDFDiscoverer(
-        use_browser_fallback=False, elsevier=elsevier, progress_callback=progress
+        elsevier=elsevier, progress_callback=progress
     )
     chain = _Chain()
     result = chain.discover(None, tmp_path, discoverer=discoverer)
@@ -514,7 +514,7 @@ def test_the_discovery_cancel_reaches_the_client(tmp_path: Path) -> None:
             seen.append(cancelled())
             return ElsevierFetch.cancelled()
 
-    discoverer = PDFDiscoverer(use_browser_fallback=False, elsevier=_Asks())
+    discoverer = PDFDiscoverer(elsevier=_Asks())
     _Chain().discover(None, tmp_path, discoverer=discoverer)
     assert seen == [False, True]
 
@@ -580,7 +580,7 @@ def _discover_fulltext(
     elsevier: Any, tmp_path: Path, doi: str = DOI, core: Any = None, extracted: str = TEXT
 ) -> FulltextResult:
     """:func:`_discover_fulltext_with`, with this Elsevier and CORE."""
-    discoverer = FulltextDiscoverer(use_browser_fallback=False, elsevier=elsevier, core=core)
+    discoverer = FulltextDiscoverer(elsevier=elsevier, core=core)
     return _discover_fulltext_with(discoverer, tmp_path, doi=doi, extracted=extracted)
 
 
@@ -874,9 +874,7 @@ def _over_size_then(result: DiscoveryResult, tmp_path: Path) -> DiscoveryResult:
     copy = _refused_copy()
     with patch.object(PDFDiscoverer, "_discover_sources", lambda *a: ([copy], LookupRecord())), \
          patch.object(PDFDiscoverer, "_try_download", return_value=result):
-        return PDFDiscoverer(
-            use_browser_fallback=False, elsevier=_Elsevier(ElsevierFetch.refused_for_size())
-        ).discover_and_download(tmp_path / "a.pdf", doi=DOI)
+        return PDFDiscoverer(elsevier=_Elsevier(ElsevierFetch.refused_for_size())).discover_and_download(tmp_path / "a.pdf", doi=DOI)
 
 
 OVER_SIZE = SourceLookupSkipped(SERVICE_ELSEVIER, LookupSkipReason.OVER_SIZE_LIMIT, ARTICLE_URL)
@@ -921,7 +919,7 @@ def test_a_whole_pdf_is_served_even_if_a_cancel_follows(tmp_path: Path) -> None:
             discoverer.cancel()
             return fetch
 
-    discoverer = PDFDiscoverer(use_browser_fallback=False, elsevier=_ServesThenCancelled(served=True))
+    discoverer = PDFDiscoverer(elsevier=_ServesThenCancelled(served=True))
     result = _Chain().discover(None, tmp_path, discoverer=discoverer)
     assert result.success
     assert result.file_path == tmp_path / "a.pdf"

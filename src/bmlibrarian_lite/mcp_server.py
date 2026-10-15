@@ -47,6 +47,7 @@ from bmlibrarian_lite.analysis_failures import (
     analysis_failure_advice,
     with_analysis_shortfall_notice,
 )
+from bmlibrarian_lite.browser_rescue import RescueSubject, queue_challenged_copies
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.data_models import (
     AnalysisShortfall,
@@ -649,7 +650,20 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
         doi=doi,
     )
 
+    # Built from the identifiers asked with; also the ID a walled copy is
+    # queued under, which storage may not hold (#480, stage 2)
+    doc_id = f"pmid-{pmid}" if pmid else f"doi-{doi}" if doi else f"pmc-{pmc_id}"
+
     if not result.success or not result.markdown_content:
+        # The GUI's hidden browser tries the walled copies; a later request
+        # finds the PDF in the cache (#480, stage 2)
+        queue_challenged_copies(
+            ctx.storage,
+            RescueSubject(
+                doc_id, doi, pmid, result.article_info.title if result.article_info else ""
+            ),
+            result.lookups,
+        )
         # "Not available" is a claim about the article, and a calling agent
         # reads it as the literature's answer -- which is the harm #262 was
         # opened for. It may only be made where every lookup that could be
@@ -666,8 +680,6 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
             ),
         }
 
-    # Build a document ID from available identifiers
-    doc_id = f"pmid-{pmid}" if pmid else f"doi-{doi}" if doi else f"pmc-{pmc_id}"
     title = result.article_info.title if result.article_info else "Unknown"
 
     payload: dict[str, Any] = {
@@ -822,7 +834,6 @@ def _make_server(config: LiteConfig) -> tuple[Server, _AgentsContext]:
             # it (#435): it is the one the configuration advice names.
             unpaywall_email=config.discovery.unpaywall_email or config.pubmed.email,
             openalex_email=config.pubmed.email,
-            use_browser_fallback=False,
             core_api_key=config.discovery.core_api_key,
             elsevier_credentials=ElsevierCredentials.from_config(config.discovery),
         ),

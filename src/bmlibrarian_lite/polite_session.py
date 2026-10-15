@@ -26,6 +26,7 @@ The contract is ``doc/cross_platform/polite_request_pacing.md``.
 
 import ipaddress
 import logging
+from collections.abc import Mapping
 from typing import Any
 from urllib.parse import urlparse
 
@@ -69,26 +70,40 @@ def is_loopback_host(host: str) -> bool:
         return False
 
 
-def retry_after_seconds(response: requests.Response) -> float | None:
-    """How long the service asked us to wait, if it said.
+def retry_after_from_headers(headers: Mapping[str, str]) -> float | None:
+    """How long the service asked us to wait, from a response's headers.
 
     Only the numeric form is read. The HTTP-date form is valid but rare
     here, and a wrong parse would be worse than falling back to halving.
+    The name is matched without regard to case, as HTTP does.
 
     Args:
-        response: The throttled response.
+        headers: The response's headers.
 
     Returns:
         The seconds asked for, or ``None`` when the header is absent or is
         not a plain number.
     """
-    raw = response.headers.get("Retry-After")
+    raw = next((v for k, v in headers.items() if k.lower() == "retry-after"), None)
     if not raw:
         return None
     try:
         return float(raw)
     except ValueError:
         return None
+
+
+def retry_after_seconds(response: requests.Response) -> float | None:
+    """How long the service asked us to wait, if it said.
+
+    Args:
+        response: The throttled response.
+
+    Returns:
+        The seconds asked for, or ``None`` when the header is absent or is
+        not a plain number (see :func:`retry_after_from_headers`).
+    """
+    return retry_after_from_headers(response.headers)
 
 
 class PoliteAdapter(HTTPAdapter):

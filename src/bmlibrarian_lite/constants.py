@@ -1240,6 +1240,26 @@ ELSEVIER_INSTTOKEN_EXPLANATION = (
     "Optional. An institutional token from Elsevier lets the key use your "
     "institution's subscriptions away from its network."
 )
+BROWSER_RESCUE_EXPLANATION = (
+    "Some open-access PDFs sit behind a robot check that blocks the app's "
+    "downloads. With this on, while the app is open it later opens each such "
+    "PDF in a hidden built-in browser, saves it if it arrives, and re-checks "
+    "that article's transparency when the article is in your library. It "
+    "also opens the PDFs the app's MCP server queued. The page opens as in "
+    "any browser: it loads its own resources and runs the publisher's "
+    "scripts, and those of the robot check's provider (such as Google's "
+    "reCAPTCHA or Cloudflare), which is how the check is passed. Their "
+    "cookies, and a cache of what the pages loaded, are kept in the app's "
+    "own browser folder. The site learns which article is fetched, as it "
+    "did when the app first tried; your searches, documents and keys are "
+    "never sent."
+)
+#: Said when QtWebEngine could not start: in the status bar at start-up
+#: (while the setting is on) and beside the setting.
+BROWSER_RESCUE_UNAVAILABLE_NOTE = (
+    "The hidden browser could not start on this computer, so walled PDFs "
+    "are queued but not fetched. The log says why."
+)
 # The fields' placeholders when the value comes from the environment.
 ELSEVIER_API_KEY_FROM_ENVIRONMENT = (
     "Set by the ELSEVIER_API_KEY environment variable; a key here replaces it"
@@ -1260,6 +1280,16 @@ PDF_MAGIC_BYTES = b"%PDF"
 # is doc/cross_platform/fulltext_parity/challenge_detection.json.
 CHALLENGE_BODY_PREFIX_BYTES = 64 * 1024
 CHALLENGE_GONE_STATUSES = frozenset({404, 410})
+# The statuses of a page that shows no challenge marker and says "not now"
+# rather than "no": a throttle, a server fault (UNANSWERED_HTTP_STATUSES) or
+# a request timeout (HTTP_UNSETTLED_CLIENT_STATUSES). The hidden browser's
+# visit learnt nothing, so its entry stays pending (#480, stage 2).
+RESCUE_UNANSWERED_PAGE_STATUSES = frozenset(
+    {*UNANSWERED_HTTP_STATUSES, *HTTP_UNSETTLED_CLIENT_STATUSES}
+)
+# The main-frame answers that penalise the host's shared limiter, as the
+# polite adapter does for a throttle (429) or a shedding server (503).
+RESCUE_PENALISING_STATUSES = frozenset({429, 503})
 CLOUDFLARE_REFUSAL_STATUSES = frozenset({403, 503})
 CLOUDFLARE_SERVER = "cloudflare"
 # The whitespace HTTP allows around a header's value (RFC 9110's OWS): a space
@@ -1268,6 +1298,50 @@ HTTP_HEADER_WHITESPACE = " \t"
 # Appended to a PDF's cache path while its download is in progress; the file
 # is renamed into place only once the body has arrived whole (#478).
 PDF_PARTIAL_SUFFIX = ".part"
+
+# ---------------------------------------------------------------------------
+# Browser rescue (#480, stage 2): an open-access PDF a bot wall kept from our
+# client, fetched later by a real embedded browser driven from a queue --
+# never inline in a run.
+# ---------------------------------------------------------------------------
+
+#: How long a hidden visit waits for a download before it reads the page:
+#: the spike's 25 s, which passed PMC's wall 12 times in 12.
+RESCUE_HIDDEN_TIMEOUT_MS = 25_000
+#: A started download that receives nothing for this long is cancelled: the
+#: survey's IEEE download stalled for ever.
+RESCUE_DOWNLOAD_STALL_MS = 20_000
+#: How long a visit waits for the page it stayed on to hand over its HTML.
+RESCUE_PAGE_READ_GRACE_MS = 5_000
+#: Visits that failed in transit before an entry waits for a person, so no
+#: entry is retried for ever.
+MAX_RESCUE_ATTEMPTS = 3
+#: A visit that failed in transit is not retried sooner than this, so one
+#: network blip does not spend every attempt at once.
+RESCUE_RETRY_DELAY_SECONDS = 15 * 60
+#: How long after a visit's verdict could not be saved the save is tried
+#: again; the wait doubles with each further failure, up to
+#: RESCUE_RETRY_DELAY_SECONDS. The visit is never repeated for it: only the
+#: bookkeeping was lost, and a database lock usually clears in seconds.
+RESCUE_VERDICT_SAVE_RETRY_SECONDS = 30
+#: How often the queue is read for entries another process wrote (the MCP
+#: server) or that arrived while the hidden pass was off.
+RESCUE_POLL_INTERVAL_MS = 60_000
+#: The priority of an entry an analysis queued.
+RESCUE_PRIORITY_DEFAULT = 0
+#: The priority of an entry a reader is waiting on: visited before every
+#: default one. Used from stage 3's interrogation tab, not yet built.
+RESCUE_PRIORITY_WAITING = 1
+#: The browser's persistent profile, under the data directory: its cookies
+#: are kept, so a clearance or a person's tick carries over between pages
+#: and sessions.
+BROWSER_PROFILE_DIRNAME = "browser_profile"
+#: The profile's name; QtWebEngine keys its on-disk store by it.
+BROWSER_PROFILE_STORAGE_NAME = "browser-rescue"
+#: The profile's HTTP cache, inside the profile directory.
+BROWSER_PROFILE_CACHE_DIRNAME = "cache"
+#: Milliseconds in a second.
+MS_PER_SECOND = 1000
 
 # The Highwire Press meta tag a landing page declares its PDF in. Repositories
 # (DSpace, EPrints) and most publishers emit it for Google Scholar (#464).
@@ -1359,3 +1433,6 @@ SERVICE_PDF_DOWNLOAD = "the PDF download"
 # The statuses that mean "this is yours only if you pay or log in". They are
 # a genuine paywall signal, unlike a 5xx, which is the server being broken.
 PAYWALL_HTTP_STATUSES = (401, 403)
+# The statuses of a page that shows no marker but refuses us: the HTTP client
+# was walled at this address already, so the entry waits for a person.
+RESCUE_REFUSED_PAGE_STATUSES = frozenset(PAYWALL_HTTP_STATUSES)

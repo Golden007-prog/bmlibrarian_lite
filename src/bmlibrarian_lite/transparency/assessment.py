@@ -26,6 +26,7 @@ results for the same study. Nothing here imports Qt.
 import logging
 from typing import TYPE_CHECKING
 
+from ..browser_rescue import RescueSubject, queue_challenged_copies
 from ..constants import FALLBACK_CONTACT_EMAIL
 from ..elsevier_api import ElsevierCredentials
 from ..study_transparency_analyzer.study_transparency_analyzer import (
@@ -88,8 +89,8 @@ def create_background_analyzer(
 ) -> StudyTransparencyAnalyzer:
     """Build the analyser a background analysis runs.
 
-    Browser fallback is disabled, so no worker thread blocks on Playwright;
-    the API-based sources are enough for a transparency assessment.
+    No worker thread waits on a browser: a walled PDF is queued for the GUI's
+    embedded browser instead (#480).
 
     Args:
         email: Contact email for the literature sources.
@@ -107,7 +108,6 @@ def create_background_analyzer(
         email=email,
         pubmed_api_key=pubmed_api_key,
         unpaywall_email=unpaywall_email or email,
-        use_browser_fallback=False,
         auto_discover_fulltext=True,
         core_api_key=core_api_key,
         elsevier_credentials=elsevier_credentials,
@@ -236,7 +236,7 @@ def assess_document(
     doi: str | None,
     full_text: str | None = None,
 ) -> TransparencyResult:
-    """Analyse one document and store the result.
+    """Analyse one document, store the result, and queue its walled PDFs.
 
     Args:
         analyzer: The analyser to run.
@@ -258,4 +258,12 @@ def assess_document(
     report = analyzer.analyze(pmid=pmid, doi=doi, fulltext=full_text)
     result = build_transparency_result(document_id, report, settings)
     storage.save_transparency_result(result)
+    # Walled open-access copies go to the browser rescue queue, after the
+    # result is stored: a queue that cannot be written is logged and does
+    # not fail the analysis (#480, stage 2).
+    queue_challenged_copies(
+        storage,
+        RescueSubject(document_id, report.doi or doi, report.pmid or pmid, report.title or ""),
+        report.fulltext_lookups,
+    )
     return result

@@ -127,7 +127,7 @@ def _discover(
     sources: list[PDFSource], tmp_path: Path, session: Any = None
 ) -> DiscoveryResult:
     """Run the download loop over ``sources``, every lookup answered."""
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     discoverer._discover_sources = lambda doi, pmid, pmcid: (list(sources), LookupRecord())  # type: ignore[method-assign]
     if session is not None:
         discoverer._session = session  # type: ignore[assignment]
@@ -212,7 +212,7 @@ def test_control_without_a_tried_pdf_the_claim_is_qualified(tmp_path: Path) -> N
     The tried-sources statement replaces the claim only when it is said; a
     lookup-only record keeps today's wording.
     """
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     unasked = LookupRecord(failures=(
         SourceLookupFailure(SERVICE_UNPAYWALL, RequestFailure(RequestFailureKind.TIMEOUT)),
     ))
@@ -426,7 +426,7 @@ def test_a_pdf_that_could_not_be_saved_is_a_caching_note_not_absent(tmp_path: Pa
     """
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the cache directory should be")
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     discoverer._discover_sources = lambda doi, pmid, pmcid: ([_unpaywall(), _unpaywall(PUBLISHER_PDF)], LookupRecord())  # type: ignore[method-assign]
     session = _Session({UNPAYWALL_PDF: _response(200, PDF_BYTES, "application/pdf", UNPAYWALL_PDF)})
     discoverer._session = session  # type: ignore[assignment]
@@ -447,7 +447,7 @@ def _discover_unsaveable(
     """Run the download loop where the PDF is served but cannot be written."""
     blocker = tmp_path / "blocker"
     blocker.write_text("a file where the cache directory should be")
-    discoverer = PDFDiscoverer(unpaywall_email="test@example.com", use_browser_fallback=False)
+    discoverer = PDFDiscoverer(unpaywall_email="test@example.com")
     discoverer._discover_sources = lambda doi, pmid, pmcid: (list(sources), looked_up or LookupRecord())  # type: ignore[method-assign]
     discoverer._session = session  # type: ignore[assignment]
     return discoverer.discover_and_download(blocker / "a.pdf", doi="10.1/x")
@@ -571,3 +571,42 @@ def test_a_copy_not_saved_names_its_pdf() -> None:
         SourceLookupSkipped(SERVICE_UNPAYWALL_PDF, LookupSkipReason.NOT_SAVED)
     with pytest.raises(ValueError):
         SourceLookupSkipped(SERVICE_UNPAYWALL_PDF, LookupSkipReason.NOT_SAVED, "   ")
+
+
+CHALLENGED_SENTENCE = (
+    "Failed to obtain a PDF from the following tried sources: repo.example.org, "
+    "named by Unpaywall (the host asked for a robot check). A freely available "
+    "copy may exist. Whether this document is open access was not established."
+)
+
+
+@pytest.mark.parametrize(
+    ("status", "url"),
+    [
+        (403, UNPAYWALL_PDF),
+        (401, UNPAYWALL_PDF),
+        # A 200 page at an address the paywall sniff matches ("access")
+        (200, "https://repo.example.org/openaccess/a.pdf"),
+    ],
+)
+def test_a_challenged_copy_is_not_a_paywall(tmp_path: Path, status: int, url: str) -> None:
+    """The reader is told the copy could not be asked, and offered no login (#480, stage 2)."""
+    page = b"<html><title>Just a moment...</title></html>"
+    session = _Session({url: _response(status, page, "text/html", url)})
+
+    result = _discover([_unpaywall(url)], tmp_path, session)
+
+    assert not result.is_paywall
+    assert result.paywall_url is None
+    assert result.lookups == _pdf_failure(RequestFailure(RequestFailureKind.CHALLENGED, status), url)
+    assert result.error == CHALLENGED_SENTENCE
+
+
+def test_a_plain_refusal_is_still_a_paywall(tmp_path: Path) -> None:
+    """Control: a 403 that names no wall keeps the paywall branch."""
+    page = b"<html><title>Forbidden</title></html>"
+    session = _Session({UNPAYWALL_PDF: _response(403, page, "text/html", UNPAYWALL_PDF)})
+
+    result = _discover([_unpaywall()], tmp_path, session)
+
+    assert result.is_paywall

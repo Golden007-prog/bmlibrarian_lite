@@ -11,6 +11,28 @@ apps additionally carry their own store version tags (`swift_*`, `appstore_*`).
 
 ## [Unreleased]
 
+### Added
+
+- **A hidden built-in browser for bot-walled PDFs (#480).** An open-access PDF
+  whose host answers our downloads with a robot check is queued and fetched
+  later by a hidden QtWebEngine page while the app is open; a rescued PDF is
+  saved to the library and, when the article is in your library, its
+  transparency is re-checked. Switch it off under Settings with "Try bot-walled
+  PDFs in a hidden browser".
+
+### Changed
+
+- A copy behind a robot check is no longer reported as paywalled, so no
+  OpenAthens offer is made for it.
+
+### Removed
+
+- **The Playwright fallback (#483).** Removed with it: the public
+  `close_browser_session` export; the `use_browser_fallback` and
+  `browser_headless` parameters of `PDFDiscoverer`, `FulltextDiscoverer` and
+  `StudyTransparencyAnalyzer`; and the transparency CLI's `--no-browser` flag.
+  There is no compatibility shim.
+
 ## [0.5.0] - 2026-09-24
 
 ### Added

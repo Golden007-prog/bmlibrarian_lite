@@ -233,7 +233,7 @@ class TestTheAnalyzerUsesTheSharedFunction:
 
     def test_a_va_funded_report_is_government(self) -> None:
         """The user-visible half of #147, end to end."""
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1", pubmed_record_read=True)
         report._pubmed_grants = [
             {"agency": "U.S. Department of Veterans Affairs", "grant_id": "G1"}
@@ -246,7 +246,7 @@ class TestTheAnalyzerUsesTheSharedFunction:
 
     def test_an_industry_funded_report_is_still_industry(self) -> None:
         """The industry tiers must survive the rewiring."""
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1", pubmed_record_read=True)
         report._pubmed_grants = [{"agency": "Genentech Inc.", "grant_id": "G1"}]
 
@@ -263,7 +263,7 @@ class TestTheAnalyzerUsesTheSharedFunction:
         the majority outcome, so leaving it unqualified would put a confident
         label on most reports.
         """
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1", pubmed_record_read=True)
         report._pubmed_grants = [{"agency": "Fondation Zzyzx", "grant_id": "G1"}]
 
@@ -275,7 +275,7 @@ class TestTheAnalyzerUsesTheSharedFunction:
 
     def test_a_recognised_funder_is_not_warned_about(self) -> None:
         """The warning must be specific to the fallback, not attached to every report."""
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1", pubmed_record_read=True)
         report._pubmed_grants = [{"agency": "National Institutes of Health", "grant_id": "G1"}]
 
@@ -294,7 +294,7 @@ class TestTheAnalyzerUsesTheSharedFunction:
         finding of dual funding — the case where an unverified classification is
         most consequential, not least.
         """
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1", pubmed_record_read=True)
         report._pubmed_grants = [
             {"agency": "Fondation Zzyzx", "grant_id": "G1"},
@@ -317,7 +317,7 @@ class TestTheAnalyzerUsesTheSharedFunction:
         derived from nothing, plus a caveat reading "Funder names not recognised
         ()" — an empty parenthetical.
         """
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1", pubmed_record_read=True)
         report._pubmed_grants = [{"agency": agency, "grant_id": "G1"}]
 
@@ -333,7 +333,7 @@ class TestTheAnalyzerUsesTheSharedFunction:
         A registry DOI is authoritative where a name-stem match is a guess, so a
         study carrying both must report the registry's confidence.
         """
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1", pubmed_record_read=True)
         report._crossref_funders = [
             {"name": "Pfizer", "DOI": "10.13039/100004319"},
@@ -485,7 +485,7 @@ class TestTheAnalyzerUsesTheSharedUpgrade:
         Returns:
             An analyzer ready for ``_fetch_trial_info``.
         """
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         analyzer.clinicaltrials = _StubClinicalTrials(sponsor_class)
         return analyzer
 

@@ -25,6 +25,10 @@ env:
   # PySide6 widget tests construct a real QApplication; there is no display on
   # the runner, so Qt renders to an offscreen surface instead.
   QT_QPA_PLATFORM: offscreen
+  # Chromium's sandbox inside QtWebEngine needs unprivileged user namespaces,
+  # which the Ubuntu 24.04 runner's AppArmor forbids. CI only: the
+  # application keeps its sandbox (#480, stage 2).
+  QTWEBENGINE_DISABLE_SANDBOX: "1"
 
 jobs:
   tests:
@@ -43,7 +47,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
             libegl1 libgl1 libdbus-1-3 libfontconfig1 \
-            libxkbcommon0 libxkbcommon-x11-0
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libnss3 libxcomposite1 libxdamage1 libxrandr2 libxtst6 \
+            libxkbfile1 libasound2t64 libgbm1 libxshmfence1 libxi6 libxcursor1
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -61,15 +67,8 @@ jobs:
         # broken or missing Qt install would silently skip ~100 tests and leave
         # this job green. Constructing a QApplication here turns that into a
         # loud failure, and it checks the same thing the tests need rather than
-        # just that the package imports.
-        run: |
-          python - <<'PY'
-          from PySide6.QtWidgets import QApplication, QLabel
-
-          app = QApplication([])
-          QLabel("ci preflight")
-          print("Qt offscreen platform is usable")
-          PY
+        # just that the package imports. QtWebEngine included.
+        run: python .github/scripts/qt_preflight.py
 
       - name: Run tests
         # Integration tests are deselected: they call Europe PMC and PubMed over

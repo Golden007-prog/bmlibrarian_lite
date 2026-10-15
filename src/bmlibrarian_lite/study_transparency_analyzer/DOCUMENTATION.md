@@ -105,7 +105,7 @@ analyzer = StudyTransparencyAnalyzer(
 )
 
 # Analyze by DOI — automatically discovers full text via Europe PMC,
-# Unpaywall, PMC, cached PDFs, and optionally browser fallback
+# Unpaywall, PMC, and cached PDFs
 report = analyzer.analyze(doi="10.1056/NEJMoa2034577")
 
 # Analyze by PMID — also auto-discovers full text
@@ -115,12 +115,6 @@ report = analyzer.analyze(pmid="33301246")
 with open("article_fulltext.txt") as f:
     fulltext = f.read()
 report = analyzer.analyze(doi="10.1056/NEJMoa2034577", fulltext=fulltext)
-
-# Disable browser fallback (for mobile/CI environments)
-analyzer_no_browser = StudyTransparencyAnalyzer(
-    email="your.email@example.com",
-    use_browser_fallback=False,  # No Playwright
-)
 
 # Disable auto-discovery entirely (API metadata only)
 analyzer_api_only = StudyTransparencyAnalyzer(
@@ -156,10 +150,6 @@ print(json.dumps(report.to_dict(), indent=2))
 ```bash
 # Full analysis — auto-discovers full text from all available sources
 python study_transparency_analyzer.py --pmid 33301246 --email your@email.com
-
-# Without browser fallback (safe for CI/mobile/headless)
-python study_transparency_analyzer.py --pmid 33301246 --email your@email.com \
-    --no-browser
 
 # With manual full-text file (skips auto-discovery)
 python study_transparency_analyzer.py --doi "10.1056/NEJMoa2034577" \
@@ -533,9 +523,8 @@ By default, `analyze()` automatically attempts to retrieve full-text content whe
 | 3 | Europe PMC PDF | Free PDF from Europe PMC render endpoint |
 | 4 | Cached PDF | Previously downloaded PDF, text extracted |
 | 5 | PDF download | Unpaywall, PubMed Central, publisher HTTP, DOI resolution |
-| 6 | Browser fallback | Playwright/Chromium for bot-protected sites (optional) |
 
-**Disabling browser fallback:** Set `use_browser_fallback=False` in the constructor for environments without a browser (mobile apps, CI, headless servers). Sources 1-5 still work without a browser.
+The analyzer queues nothing itself: it records a walled open-access PDF in `report.fulltext_lookups`, and `assess_document` (the desktop's analyses) and the MCP server queue it for the desktop's embedded browser (see `doc/developer/browser_rescue.md`). Its command line queues nothing.
 
 **Disabling auto-discovery entirely:** Set `auto_discover_fulltext=False` to use only API metadata (equivalent to the old behaviour).
 
@@ -642,13 +631,6 @@ report = analyzer.analyze(
     doi="10.1016/S0140-6736(25)01578-8",
     fulltext=fulltext,
 )
-
-# Mobile/CI safe — no browser, but still tries API-based sources
-analyzer = StudyTransparencyAnalyzer(
-    email="your@email.com",
-    use_browser_fallback=False,
-)
-report = analyzer.analyze(doi="10.1016/S0140-6736(25)01578-8")
 ```
 
 ---
@@ -757,8 +739,6 @@ class StudyTransparencyAnalyzer:
         email: str,
         pubmed_api_key: Optional[str] = None,
         unpaywall_email: Optional[str] = None,
-        use_browser_fallback: bool = True,
-        browser_headless: bool = False,
         auto_discover_fulltext: bool = True,
     ):
         """
@@ -768,9 +748,6 @@ class StudyTransparencyAnalyzer:
             email: Contact email (required by APIs)
             pubmed_api_key: Optional NCBI API key for higher rate limits
             unpaywall_email: Email for Unpaywall API (defaults to email)
-            use_browser_fallback: If True, use Playwright browser for
-                bot-protected downloads. Set to False for mobile/CI.
-            browser_headless: If True, run browser without visible window
             auto_discover_fulltext: If True, automatically discover
                 full text when none is provided to analyze().
         """
@@ -786,8 +763,7 @@ class StudyTransparencyAnalyzer:
 
         When fulltext is not provided and auto_discover_fulltext is
         enabled, automatically tries: cached markdown, Europe PMC XML,
-        Europe PMC PDF, cached PDF, Unpaywall/PMC/publisher downloads,
-        and optionally browser fallback.
+        Europe PMC PDF, cached PDF, Unpaywall/PMC/publisher downloads.
 
         Args:
             doi: Digital Object Identifier
@@ -831,10 +807,6 @@ def extract_fulltext_sections(fulltext: str) -> Dict[str, str]:
 # Full analysis — auto-discovers full text from all sources
 python study_transparency_analyzer.py --pmid 33301246 --email you@email.com
 
-# Without browser fallback (safe for CI/mobile/headless servers)
-python study_transparency_analyzer.py --pmid 33301246 --email you@email.com \
-    --no-browser
-
 # With manual full-text file (skips auto-discovery)
 python study_transparency_analyzer.py --doi "10.1056/NEJMoa2034577" \
     --email you@email.com --fulltext article.txt
@@ -872,7 +844,6 @@ python study_transparency_analyzer.py --pmid 33301246 --email you@email.com \
 | `--api-key` | No | NCBI API key for higher rate limits |
 | `--fulltext` | No | Path to full-text file (skips auto-discovery) |
 | `--unpaywall-email` | No | Email for Unpaywall API (defaults to `--email`) |
-| `--no-browser` | No | Disable Playwright browser fallback (for CI/mobile) |
 | `--no-fulltext-discovery` | No | Skip auto full-text discovery entirely |
 | `--output` | No | Output format: `summary`, `text`, or `json` (default: `summary`) |
 | `--output-file` | No | Write output to file instead of stdout |

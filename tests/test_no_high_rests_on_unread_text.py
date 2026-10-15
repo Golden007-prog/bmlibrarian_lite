@@ -35,9 +35,9 @@ READ_WITH_END_MATTER = (
 
 @pytest.fixture
 def analyzer() -> StudyTransparencyAnalyzer:
-    """Build an analyzer with network and browser fallbacks disabled."""
+    """Build an analyzer with full-text discovery disabled."""
     return StudyTransparencyAnalyzer(
-        email="test@example.com", use_browser_fallback=False, auto_discover_fulltext=False
+        email="test@example.com", auto_discover_fulltext=False
     )
 
 

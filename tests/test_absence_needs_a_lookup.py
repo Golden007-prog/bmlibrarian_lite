@@ -261,9 +261,7 @@ class TestDiscoveryRecordsTheLookupItSkipped:
 
         from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
 
-        discoverer = PDFDiscoverer(
-            unpaywall_email=unpaywall_email, use_browser_fallback=False
-        )
+        discoverer = PDFDiscoverer(unpaywall_email=unpaywall_email)
         discoverer._discover_unpaywall = MagicMock(return_value=([], None))
         discoverer._discover_doi_direct = MagicMock(return_value=([], None))
         return discoverer
@@ -328,7 +326,7 @@ class TestDiscoveryDoesNotCallAFailureAnAbsence:
         """
         from bmlibrarian_lite.fulltext_discovery import FulltextDiscoverer
 
-        return FulltextDiscoverer(use_browser_fallback=False)
+        return FulltextDiscoverer()
 
     def test_a_cancelled_discovery_establishes_no_absence(self, tmp_path) -> None:
         """We stopped asking; the article did not stop having a full text."""
@@ -1260,7 +1258,7 @@ class TestTheGapsTheMutationSweepFound:
         from bmlibrarian_lite.europepmc import ArticleInfoFetch
         from bmlibrarian_lite.fulltext_discovery import FulltextDiscoverer
 
-        discoverer = FulltextDiscoverer(use_browser_fallback=False)
+        discoverer = FulltextDiscoverer()
 
         def _cancel_then_answer(*_args, **_kwargs):
             discoverer.cancel()
@@ -1415,7 +1413,7 @@ class TestTheGapsTheReviewFound:
 
         from bmlibrarian_lite import fulltext_discovery as fd
 
-        discoverer = fd.FulltextDiscoverer(use_browser_fallback=False)
+        discoverer = fd.FulltextDiscoverer()
         pdf_result = MagicMock(
             success=True,
             file_path="/tmp/x.pdf",
@@ -1448,7 +1446,7 @@ class TestTheGapsTheReviewFound:
 
         from bmlibrarian_lite import fulltext_discovery as fd
 
-        discoverer = fd.FulltextDiscoverer(use_browser_fallback=False)
+        discoverer = fd.FulltextDiscoverer()
         pdf_result = MagicMock(
             success=True,
             file_path="/tmp/x.pdf",
@@ -1492,7 +1490,7 @@ class TestTheGapsTheReviewFound:
             request_failure_from_exception,
         )
 
-        discoverer = FulltextDiscoverer(use_browser_fallback=False)
+        discoverer = FulltextDiscoverer()
         failure = request_failure_from_exception(
             requests.ConnectionError("refused")
         )
@@ -1570,7 +1568,7 @@ class TestTheGapsTheReviewFound:
         from bmlibrarian_lite.europepmc import ArticleInfoFetch
         from bmlibrarian_lite.fulltext_discovery import FulltextDiscoverer
 
-        discoverer = FulltextDiscoverer(use_browser_fallback=False)
+        discoverer = FulltextDiscoverer()
         discoverer._europepmc.fetch_article_info = (
             lambda *_a, **_k: ArticleInfoFetch.absent()
         )
@@ -1980,7 +1978,7 @@ class TestTheGapsTheReviewFound:
 
         from bmlibrarian_lite import fulltext_discovery as fd
 
-        discoverer = fd.FulltextDiscoverer(use_browser_fallback=False)
+        discoverer = fd.FulltextDiscoverer()
         discoverer._europepmc.fetch_article_info = lambda *_a, **_k: (
             __import__(
                 "bmlibrarian_lite.europepmc", fromlist=["ArticleInfoFetch"]
@@ -2007,7 +2005,7 @@ class TestTheGapsTheReviewFound:
         from bmlibrarian_lite import fulltext_discovery as fd
         from bmlibrarian_lite.europepmc import ArticleInfoFetch
 
-        discoverer = fd.FulltextDiscoverer(use_browser_fallback=False)
+        discoverer = fd.FulltextDiscoverer()
 
         # Europe PMC's own "no such record", not the live API: asked for
         # real, a throttled Europe PMC's 503 put a failure in the record and

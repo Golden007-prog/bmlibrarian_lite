@@ -135,3 +135,16 @@ Turnstile or PMC's reCAPTCHA. Re-running is cheap: build the release as
 above, then for each address in the 41-row sample (the hidden QtWebEngine
 rows list their DOIs) run mode A, falling back to B, and compare with these
 rows.
+
+## 4. The real service's hidden pass (`2026-10-13-browser-rescue-hidden.jsonl`)
+
+Stage 2's `BrowserRescueService`, production timeouts and pacing, a fresh
+profile, the same 41 addresses (2026-10-13):
+
+| | PMC | ScienceDirect | Other walls | Controls (no PDF) |
+|---|---|---|---|---|
+| Hidden | 12/12 | 0/10 (`needs_person`) | 12/14 (2 `needs_person`) | 5/5 `no_pdf` |
+
+The real service matched the spike's hidden row on PMC (12/12), ScienceDirect
+(0/10) and the controls, and recovered more of the other walls (12/14 against
+5/14), the whole run taking 8.6 minutes.

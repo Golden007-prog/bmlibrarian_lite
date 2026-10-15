@@ -208,8 +208,6 @@ class FulltextDiscoverer:
         unpaywall_email: Optional[str] = None,
         openathens_url: Optional[str] = None,
         progress_callback: Optional[Callable[[str, str], None]] = None,
-        use_browser_fallback: bool = True,
-        browser_headless: bool = False,
         pmc_open_data: PmcOpenDataClient | None = None,
         openalex_email: str | None = None,
         core_api_key: str | None = None,
@@ -224,8 +222,6 @@ class FulltextDiscoverer:
             unpaywall_email: Email for Unpaywall API
             openathens_url: OpenAthens institution URL
             progress_callback: Callback for progress updates (stage, status)
-            use_browser_fallback: If True, use browser for bot-protected downloads
-            browser_headless: If True, run browser without visible window
             pmc_open_data: The bucket client; tests pass a stub
             openalex_email: The contact email sent to OpenAlex (#480)
             core_api_key: The configured CORE key (#480, stage C); the
@@ -244,8 +240,6 @@ class FulltextDiscoverer:
         self.openalex_email = openalex_email
         self.openathens_url = openathens_url
         self.progress_callback = progress_callback
-        self.use_browser_fallback = use_browser_fallback
-        self.browser_headless = browser_headless
 
         self._europepmc = EuropePMCClient()
         self._pmc_open_data = pmc_open_data or PmcOpenDataClient()
@@ -980,8 +974,6 @@ class FulltextDiscoverer:
                 unpaywall_email=self.unpaywall_email,
                 openathens_url=self.openathens_url,
                 progress_callback=self.progress_callback,
-                use_browser_fallback=self.use_browser_fallback,
-                browser_headless=self.browser_headless,
                 openalex_email=self.openalex_email,
                 elsevier=self._elsevier,
             )

@@ -235,6 +235,22 @@ class RateLimiter:
                 if self._not_before <= departure:
                     return departure
 
+    def claim(self) -> float:
+        """Claim the next slot for this host without waiting for it.
+
+        For a caller that cannot sleep -- the browser rescue on the GUI
+        thread, which schedules its visit for the slot instead (#480, stage
+        2). The slot is taken from the same budget :meth:`acquire` spends.
+        Unlike :meth:`acquire`, a ``Retry-After`` that arrives after the claim
+        does not move it; the browser asks one address at a time, so at most
+        one visit departs into such a pause.
+
+        Returns:
+            Seconds until the claimed slot; 0 when it is now.
+        """
+        _, wait = self._claim_slot()
+        return wait
+
     def penalise(self, retry_after: float | None = None) -> None:
         """Yield: this host says it is being asked too fast.
 

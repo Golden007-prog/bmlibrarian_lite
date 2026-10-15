@@ -36,6 +36,7 @@ import stat
 import tempfile
 
 from .constants import (
+    BROWSER_PROFILE_DIRNAME,
     ENV_CORE_API_KEY,
     ENV_ELSEVIER_API_KEY,
     ENV_ELSEVIER_INSTTOKEN,
@@ -449,6 +450,10 @@ class DiscoveryConfig:
     # repr, as the other keys are.
     elsevier_api_key: str | None = field(default=None, repr=False)
     elsevier_insttoken: str | None = field(default=None, repr=False)
+    # Try bot-walled open-access PDFs in a hidden embedded browser (#480,
+    # stage 2). Off: entries still collect, for when it is on again (and for
+    # stage 3's review window, not yet built).
+    browser_rescue_hidden: bool = True
 
 
 @dataclass
@@ -536,6 +541,11 @@ class StorageConfig:
     def sqlite_path(self) -> Path:
         """Path to SQLite database file."""
         return self.data_dir / SQLITE_DATABASE_NAME
+
+    @property
+    def browser_profile_dir(self) -> Path:
+        """The embedded browser's persistent profile (#480, stage 2)."""
+        return self.data_dir / BROWSER_PROFILE_DIRNAME
 
     @property
     def reviews_dir(self) -> Path:
@@ -824,6 +834,14 @@ class LiteConfig:
 
         if "discovery" in data:
             discovery_data = data["discovery"]
+            hidden = discovery_data.get("browser_rescue_hidden", True)
+            if not isinstance(hidden, bool):
+                logger.warning(
+                    "discovery.browser_rescue_hidden is %r, not true or false; "
+                    "using the default, on",
+                    hidden,
+                )
+                hidden = True
             config.discovery = DiscoveryConfig(
                 unpaywall_email=discovery_data.get("unpaywall_email", ""),
                 core_api_key=_reject_redaction_placeholder(
@@ -841,6 +859,7 @@ class LiteConfig:
                     "discovery.elsevier_insttoken",
                     ENV_ELSEVIER_INSTTOKEN,
                 ),
+                browser_rescue_hidden=hidden,
             )
 
         if "europepmc" in data:
@@ -981,6 +1000,7 @@ class LiteConfig:
             },
             "discovery": {
                 "unpaywall_email": self.discovery.unpaywall_email,
+                "browser_rescue_hidden": self.discovery.browser_rescue_hidden,
             },
             "openathens": {
                 "enabled": self.openathens.enabled,

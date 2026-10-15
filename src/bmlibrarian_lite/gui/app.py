@@ -34,46 +34,48 @@ from typing import TYPE_CHECKING, Optional
 # This must be set before importing any HuggingFace/FastEmbed modules
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QLabel,
     QMainWindow,
+    QPushButton,
+    QStatusBar,
     QTabWidget,
     QVBoxLayout,
     QWidget,
-    QStatusBar,
-    QPushButton,
-    QLabel,
 )
-from PySide6.QtCore import QTimer
 
+from bmlibrarian_lite.llm.token_tracker import get_token_tracker
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 from bmlibrarian_lite.resources.styles.stylesheet_generator import StylesheetGenerator
-from bmlibrarian_lite.llm.token_tracker import get_token_tracker
 
+from ..analysis_failures import (
+    unreadable_assessment_caveat,
+    unreadable_assessments_clause,
+)
 from ..audit_records import (
     as_recorded_failure,
     recorded_extraction_failures,
     recorded_min_score,
 )
-from ..config import LiteConfig
-from ..constants import STATUS_MESSAGE_TIMEOUT_MS
-from ..exceptions import SQLiteError
-from ..storage import LiteStorage
-from ..analysis_failures import (
-    unreadable_assessment_caveat,
-    unreadable_assessments_clause,
-)
-from ..transparency import TransparencyUnassessed, stored_transparency_outcomes
-from .research_questions_tab import ResearchQuestionsTab, documents_text
-from .systematic_review_tab import SystematicReviewTab
-from .audit_trail_tab import AuditTrailTab
-from .report_tab import ReportTab
-from .document_interrogation_tab import DocumentInterrogationTab
-from .settings_dialog import SettingsDialog
-from .benchmark_results_dialog import BenchmarkResultsTab
-from .quality_benchmark_results_dialog import QualityBenchmarkResultsTab
 from ..benchmarking import BenchmarkRunner
 from ..benchmarking.display import benchmark_status_text
+from ..browser_rescue import RescueEntry, reanalyse_rescued
+from ..config import LiteConfig
+from ..constants import BROWSER_RESCUE_UNAVAILABLE_NOTE, STATUS_MESSAGE_TIMEOUT_MS
+from ..exceptions import SQLiteError
+from ..storage import LiteStorage
+from ..transparency import TransparencyUnassessed, stored_transparency_outcomes
+from .audit_trail_tab import AuditTrailTab
+from .benchmark_results_dialog import BenchmarkResultsTab
+from .document_interrogation_tab import DocumentInterrogationTab
+from .quality_benchmark_results_dialog import QualityBenchmarkResultsTab
+from .report_tab import ReportTab
+from .research_questions_tab import ResearchQuestionsTab, documents_text
+from .settings_dialog import SettingsDialog
+from .systematic_review_tab import SystematicReviewTab
+from .web_engine import prepare_web_engine
 
 if TYPE_CHECKING:
     from bmlibrarian_lite.data_models import (
@@ -81,6 +83,8 @@ if TYPE_CHECKING:
         LiteDocument,
         RetrievalShortfall,
     )
+
+    from .browser_rescue_service import BrowserRescueService
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +131,10 @@ class LiteMainWindow(QMainWindow):
         # Token tracker for usage display
         self._token_tracker = get_token_tracker()
         self._last_token_count = 0
+
+        self._rescue_service: BrowserRescueService | None = None
+        # False once the hidden browser could not start (#480, stage 2)
+        self._browser_rescue_available = True
 
         self._setup_ui()
         self._apply_styles()
@@ -298,7 +306,11 @@ class LiteMainWindow(QMainWindow):
 
     def _show_settings(self) -> None:
         """Show the settings dialog."""
-        dialog = SettingsDialog(self.config, parent=self)
+        dialog = SettingsDialog(
+            self.config,
+            parent=self,
+            browser_rescue_available=self._browser_rescue_available,
+        )
         saved = dialog.exec()
         # The window is the dialog's parent, so without this every opening
         # would live until the window does. Its threads are the keeper's now.
@@ -781,6 +793,127 @@ class LiteMainWindow(QMainWindow):
             logger.exception("Failed to load research question data")
             self.status_bar.showMessage(f"Error loading data: {e}", 5000)
 
+    def attach_rescue_service(self, service: "BrowserRescueService") -> None:
+        """Run the browser rescue beside this window (#480, stage 2).
+
+        A rescue re-analyses its document; an analysis's outcome wakes the
+        service, since an analysis is where walled PDFs are queued.
+
+        Args:
+            service: The service, not yet started.
+        """
+        self._rescue_service = service
+        service.rescued.connect(self._on_pdf_rescued)
+        self.systematic_review_tab.transparency_outcome_ready.connect(service.wake)
+        self.research_questions_tab.transparency_outcome_ready.connect(service.wake)
+
+    def browser_rescue_unavailable(self) -> None:
+        """Say the hidden browser could not start, here and in Settings (#480, stage 2).
+
+        Walled PDFs are still queued; only while the setting is on does the
+        reader expect them fetched, so only then is the status bar used.
+        """
+        self._browser_rescue_available = False
+        if self.config.discovery.browser_rescue_hidden:
+            self.status_bar.showMessage(BROWSER_RESCUE_UNAVAILABLE_NOTE, STATUS_MESSAGE_TIMEOUT_MS)
+
+    def _on_pdf_rescued(self, entry: RescueEntry) -> None:
+        """Re-analyse a document whose walled PDF the browser fetched, and say so.
+
+        Args:
+            entry: The rescued entry.
+        """
+        asked = False
+        failed = False
+        try:
+            asked = reanalyse_rescued(
+                entry,
+                self.storage.get_document,
+                self.systematic_review_tab.reanalyse_transparency,
+            )
+        except (sqlite3.Error, SQLiteError) as e:
+            failed = True
+            logger.error(
+                "The transparency of %s could not be re-checked after its PDF was rescued: %s",
+                entry.request.doi, e,
+            )
+        title = entry.request.title or entry.request.doi
+        self.status_bar.showMessage(
+            rescued_pdf_message(title, asked, failed), STATUS_MESSAGE_TIMEOUT_MS
+        )
+
+
+def rescued_pdf_message(title: str, rechecking: bool, recheck_failed: bool) -> str:
+    """What the status bar says when the hidden browser fetched a PDF.
+
+    Args:
+        title: The article's title, or its DOI.
+        rechecking: Whether its transparency is being re-checked.
+        recheck_failed: Whether the re-check could not be started.
+
+    Returns:
+        The message.
+    """
+    fetched = f"Fetched the PDF of \u201c{title}\u201d in the hidden browser"
+    if recheck_failed:
+        return fetched + "; its transparency could not be re-checked."
+    if rechecking:
+        return fetched + "; re-checking its transparency."
+    return fetched + "."
+
+
+def prepare_browser_rescue() -> bool:
+    """Prepare QtWebEngine before the ``QApplication`` exists, if it can load.
+
+    Returns:
+        ``True`` when the hidden browser can be used; ``False`` when
+        QtWebEngine cannot load (logged as a warning), so the app runs
+        without the hidden pass (#480, stage 2).
+    """
+    try:
+        prepare_web_engine()
+    except (ImportError, OSError, RuntimeError) as e:
+        logger.warning(
+            "The hidden browser is unavailable, so walled PDFs are not retried: %s: %s",
+            type(e).__name__, e,
+        )
+        return False
+    return True
+
+
+def start_browser_rescue(
+    window: LiteMainWindow, app: QApplication
+) -> "BrowserRescueService | None":
+    """Start the hidden browser beside the window, if the service can load.
+
+    The service is imported here, not at module level, so that importing
+    this module never loads QtWebEngine.
+
+    Args:
+        window: The main window.
+        app: The application; the service stops before its event loop ends.
+
+    Returns:
+        The service, started once the event loop runs; ``None`` when the
+        hidden browser is unavailable (logged as a warning).
+    """
+    try:
+        from .browser_rescue_service import BrowserRescueService
+
+        rescue = BrowserRescueService(
+            window.storage, window.config, window.config.storage.browser_profile_dir
+        )
+    except (ImportError, OSError, RuntimeError) as e:
+        logger.warning(
+            "The hidden browser is unavailable, so walled PDFs are not retried: %s: %s",
+            type(e).__name__, e,
+        )
+        return None
+    window.attach_rescue_service(rescue)
+    app.aboutToQuit.connect(rescue.shutdown)
+    QTimer.singleShot(0, rescue.start)
+    return rescue
+
 
 def run_lite_app() -> int:
     """
@@ -789,11 +922,18 @@ def run_lite_app() -> int:
     Returns:
         Application exit code
     """
+    browser_ready = prepare_browser_rescue()
     app = QApplication(sys.argv)
     app.setApplicationName("BMLibrarian Lite")
     app.setOrganizationName("BMLibrarian")
 
     window = LiteMainWindow()
     window.show()
+
+    # The hidden browser starts once the window is shown, and stops before
+    # the event loop ends: its pages go before its profile (#480, stage 2)
+    rescue = start_browser_rescue(window, app) if browser_ready else None
+    if rescue is None:
+        window.browser_rescue_unavailable()
 
     return app.exec()

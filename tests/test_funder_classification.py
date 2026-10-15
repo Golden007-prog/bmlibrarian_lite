@@ -634,7 +634,7 @@ class TestFunderExtractionWiring:
 
     def test_pubmed_grant_agencies_reach_the_same_classifier(self) -> None:
         """The second funder source, which is easy to leave behind on a fix."""
-        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL, use_browser_fallback=False)
+        analyzer = StudyTransparencyAnalyzer(self.CONTACT_EMAIL)
         report = TransparencyReport(pmid="1")
         report._pubmed_grants = [{"agency": "Department of Biotechnology", "grant_id": "G1"}]
 

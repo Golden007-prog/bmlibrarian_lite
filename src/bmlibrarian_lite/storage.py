@@ -40,11 +40,16 @@ import logging
 import sqlite3
 import struct
 import uuid
+from collections.abc import Iterable, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Generator, Optional
 
 import sqlite_vec
+
+from . import rescue_queue_store
+from .browser_rescue import RescueEntry, RescueRequest, RescueState, RescueVerdict
+from .rescue_queue_store import RecordedVerdict
 
 # Register adapters/converters for datetime to avoid Python 3.12 deprecation warning
 # The default converter expects space-separated format, but we use ISO format with 'T'
@@ -60,6 +65,7 @@ from .constants import (
     BENCHMARK_QUESTION_HASH_LENGTH,
     DEFAULT_EMBEDDING_DIMENSIONS,
     PUBMED_CACHE_TTL_SECONDS,
+    RESCUE_PRIORITY_DEFAULT,
 )
 from .data_models import (
     BenchmarkRun,
@@ -216,6 +222,8 @@ class LiteStorage:
         try:
             with self._sqlite_connection() as conn:
                 conn.executescript(self._get_sqlite_schema())
+                # The browser rescue queue (#480, stage 2), kept beside its SQL
+                conn.executescript(rescue_queue_store.SCHEMA)
                 # Create sqlite-vec virtual tables for document and chunk embeddings
                 conn.execute(
                     f"""
@@ -3965,6 +3973,72 @@ class LiteStorage:
             cursor = conn.execute(query, (document_id,))
             conn.commit()
             return cursor.rowcount > 0
+
+    # =========================================================================
+    # Browser Rescue Queue Operations (#480, stage 2)
+    # =========================================================================
+
+    def enqueue_rescues(
+        self,
+        requests: Sequence[RescueRequest],
+        priority: int = RESCUE_PRIORITY_DEFAULT,
+    ) -> int:
+        """Queue walled PDFs for the embedded browser, idempotently.
+
+        Args:
+            requests: What to queue.
+            priority: Their priority; a higher one raises an open entry's.
+
+        Returns:
+            How many entries were added or raised.
+        """
+        with self._sqlite_connection() as conn:
+            changed = rescue_queue_store.enqueue(
+                conn, requests, priority, datetime.now(UTC)
+            )
+            conn.commit()
+        return changed
+
+    def next_rescue_entry(self) -> RescueEntry | None:
+        """The entry the hidden browser visits next.
+
+        Returns:
+            The due pending entry with the highest priority, then the
+            oldest; ``None`` when none is due.
+        """
+        with self._sqlite_connection() as conn:
+            return rescue_queue_store.next_pending(conn, datetime.now(UTC))
+
+    def record_rescue_verdict(
+        self, entry_id: int, verdict: RescueVerdict
+    ) -> RecordedVerdict:
+        """Apply one browser visit's verdict to its entry.
+
+        Args:
+            entry_id: The entry visited.
+            verdict: What the visit concluded.
+
+        Returns:
+            The entry as it now stands (``None`` when it is gone or its state
+            is a newer build's), and whether the verdict was applied: not
+            when the entry was no longer open.
+        """
+        with self._sqlite_connection() as conn:
+            return rescue_queue_store.record_verdict(
+                conn, entry_id, verdict, datetime.now(UTC)
+            )
+
+    def rescue_entries(self, states: Iterable[RescueState]) -> list[RescueEntry]:
+        """The queue's entries in the given states.
+
+        Args:
+            states: The states wanted.
+
+        Returns:
+            Highest priority first, then oldest.
+        """
+        with self._sqlite_connection() as conn:
+            return rescue_queue_store.entries(conn, states)
 
     # =========================================================================
     # Benchmark Run Operations
