@@ -15,6 +15,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -443,6 +444,25 @@ def service_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
     config.discovery.browser_rescue_hidden = True
     result["back_on"] = run_until(app, lambda: "doc-e" in rescued, SCENARIO_LIMIT_SECONDS)
 
+    # A person's visit through the service: shown in a view, its PDF recorded
+    view = QWebEngineView()
+    view.show()
+    storage.enqueue_rescues([request("doc-g", "/walled?g")])
+    run_until(app, lambda: entry_of("?g").state is RescueState.NEEDS_PERSON, SCENARIO_LIMIT_SECONDS)
+    # Point the entry's address at a PDF, as a person's tick would clear the wall
+    walled_g = entry_of("?g")
+    person_entry = replace(walled_g, request=replace(walled_g.request, address=base + "/pdf?g"))
+    ended: list[Any] = []
+    service.shown_visit_ended.connect(lambda e, v: ended.append(v))
+    service.visit_shown(person_entry, view)
+    result["shown"] = {
+        "ended": run_until(app, lambda: bool(ended), SCENARIO_LIMIT_SECONDS),
+        "verdict": ended[0].to_dict() if ended and ended[0] else None,
+        "state": entry_of("?g").state.value,
+        "rescued": "doc-g" in rescued,
+    }
+    service.end_shown_visit()
+
     # Quit mid-visit: the entry stays pending, its attempts unchanged
     storage.enqueue_rescues([request("doc-f", "/abstract?f")])
     result["visiting"] = run_until(app, lambda: "/abstract?f" in Handler.visits, SCENARIO_LIMIT_SECONDS)
@@ -450,7 +470,40 @@ def service_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
     pump(app, 0.5)
     quit_entry = entry_of("?f")
     result["quit"] = {"state": quit_entry.state.value, "attempts": quit_entry.attempts}
+    Shiboken.delete(view)
     return result
+
+
+def shown_quit_scenario(app: QApplication, base: str, root: Path) -> dict[str, Any]:
+    """Quit while a person's visit is shown: the entry is unchanged, the page goes first.
+
+    Its own storage and service, with the hidden pass off: a shown visit
+    holds the hidden pass, so in ``service_scenarios`` it would keep the
+    hidden quit scenario's entry from ever being visited.
+    """
+    config = LiteConfig()
+    config.storage.data_dir = root / "shown-quit-data"
+    config.discovery.browser_rescue_hidden = False
+    storage = LiteStorage(config)
+    storage.enqueue_rescues([RescueRequest("doc-h", "10.1/doc-h", None, "Title doc-h",
+                                           base + "/abstract?h", "127.0.0.1", SERVICE_UNPAYWALL_PDF)])
+    service = BrowserRescueService(
+        storage, config, root / "shown-quit-profile",
+        pdf_path_for=lambda e: root / "shown-quit.pdf",
+        timeout_ms=TIMEOUT_MS, stall_ms=STALL_MS, poll_ms=POLL_MS, max_pdf_bytes=MAX_PDF_BYTES,
+    )
+    view = QWebEngineView()
+    view.show()
+    service.start()
+    (entry,) = storage.rescue_entries([RescueState.PENDING])
+    service.visit_shown(entry, view)
+    visiting = run_until(app, lambda: "/abstract?h" in Handler.visits, SCENARIO_LIMIT_SECONDS)
+    service.shutdown()
+    pump(app, 0.5)
+    Shiboken.delete(view)
+    after = storage.rescue_entry(entry.id)
+    return {"visiting": visiting, "state": after.state.value if after else None,
+            "attempts": after.attempts if after else None}
 
 
 def main() -> int:
@@ -466,6 +519,7 @@ def main() -> int:
             "attempts": attempt_scenarios(app, base, root),
             "shown": shown_scenarios(app, base, root),
             "service": service_scenarios(app, base, root),
+            "shown_quit": shown_quit_scenario(app, base, root),
         }
     print(json.dumps(output))
     return 0

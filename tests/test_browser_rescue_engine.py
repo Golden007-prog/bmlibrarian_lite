@@ -259,7 +259,7 @@ def test_a_person_s_page_is_left_unjudged_until_they_leave(harness: dict[str, An
 
 
 def test_a_new_window_opens_in_the_person_s_page(harness: dict[str, Any]) -> None:
-    """createWindow returns the page itself (D3)."""
+    """A new window's page is the person's page itself (D3)."""
     assert harness["out"]["shown"]["new_window_here"] is True
 
 
@@ -268,3 +268,18 @@ def test_a_walk_judges_the_shown_page(harness: dict[str, Any]) -> None:
     result = _shown(harness, "walk_walled")
     assert result["finished"]
     assert result["verdict"] == {"outcome": "challenge", "http_status": 403, "markers": ["cloudflare"]}
+
+
+def test_a_person_s_visit_through_the_service_rescues_the_entry(harness: dict[str, Any]) -> None:
+    """visit_shown records the person's PDF on a needs_person entry and announces it."""
+    shown = harness["out"]["service"]["shown"]
+    assert shown["ended"] and shown["verdict"]["outcome"] == "pdf"
+    assert shown["state"] == "rescued" and shown["rescued"]
+
+
+def test_quit_during_a_shown_visit_releases_the_page_first(harness: dict[str, Any]) -> None:
+    """Review focus 1: the shown entry stays as it was; no profile-release warning."""
+    quit_ = harness["out"]["shown_quit"]
+    assert quit_["visiting"]
+    assert (quit_["state"], quit_["attempts"]) == ("pending", 0)
+    assert PROFILE_RELEASE_WARNING not in harness["stderr"]

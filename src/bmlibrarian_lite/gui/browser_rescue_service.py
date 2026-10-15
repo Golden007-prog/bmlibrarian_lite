@@ -1,12 +1,13 @@
-"""The browser rescue's hidden pass: works the queue on the GUI thread (#480, stage 2).
+"""The browser rescue's visits, hidden and shown, on the GUI thread (#480, stages 2 and 3).
 
-One visit at a time, unattended, in a page with no view. Driven by signals
-and timers only: no thread waits on it, and a run never waits for it
-(decisions 1 and 4 of
-``docs/superpowers/specs/2026-10-12-browser-rescue-design.md``). Each visit
-takes its host's pacing slot first, from the limiter our requests use. A
-rescue is announced with ``rescued``, and the main window re-analyses that
-document when storage holds it.
+One visit at a time: the hidden pass's, unattended in a page with no view,
+or one the review queue window shows in its view. While the window has a
+visit asked for, the hidden pass takes no entry. Driven by signals and
+timers only: no thread waits on it, and a run never waits for it (decisions
+1 and 4 of ``docs/superpowers/specs/2026-10-12-browser-rescue-design.md``).
+Each visit takes its host's pacing slot first, from the limiter our requests
+use. A rescue is announced with ``rescued``, and the main window re-analyses
+that document when storage holds it.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import logging
 import sqlite3
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -38,11 +40,14 @@ from ..constants import (
     RESCUE_POLL_INTERVAL_MS,
     RESCUE_RETRY_DELAY_SECONDS,
     RESCUE_VERDICT_SAVE_RETRY_SECONDS,
+    RESCUE_VISIBLE_TIMEOUT_MS,
 )
 from ..exceptions import SQLiteError
 from .rescue_attempt import RescueAttempt, rescue_profile
 
 if TYPE_CHECKING:
+    from PySide6.QtWebEngineWidgets import QWebEngineView
+
     from ..config import LiteConfig
     from ..storage import LiteStorage
 
@@ -61,14 +66,48 @@ def _default_pdf_path(entry: RescueEntry) -> Path:
     return rescue_pdf_path(entry.request.doi)
 
 
+@dataclass
+class _ShownVisit:
+    """A visit the review queue window asked for.
+
+    Attributes:
+        entry: The entry shown.
+        view: The window's view.
+        judge_pages: Whether its page is judged (a walk) or a person's (D2).
+        token: Which request this is; a start scheduled for an earlier one
+            does nothing.
+        attempt: The visit, once it has started.
+        scheduled: Whether its start has been scheduled.
+    """
+
+    entry: RescueEntry
+    view: QWebEngineView
+    judge_pages: bool
+    token: int
+    attempt: RescueAttempt | None = None
+    scheduled: bool = False
+
+
 class BrowserRescueService(QObject):
-    """Visits queued walled PDFs one at a time, hidden and unattended.
+    """Visits queued walled PDFs one at a time: hidden, or shown in the window.
 
     Signals:
         rescued: A :class:`RescueEntry` whose PDF arrived and was saved.
+        entry_changed: A :class:`RescueEntry` a verdict changed, hidden or
+            shown, as it now stands.
+        shown_visit_started: The :class:`RescueEntry` whose page now opens in
+            the window's view.
+        shown_visit_ended: The window's visit ended: its entry, and its
+            :class:`RescueVerdict`, or ``None`` when it was left without one.
+        shown_visit_failed: The :class:`RescueEntry` whose page could not be
+            opened (logged); ``shown_visit_ended(entry, None)`` precedes it.
     """
 
     rescued = Signal(object)
+    entry_changed = Signal(object)
+    shown_visit_started = Signal(object)
+    shown_visit_ended = Signal(object, object)
+    shown_visit_failed = Signal(object)
 
     def __init__(
         self,
@@ -78,6 +117,7 @@ class BrowserRescueService(QObject):
         *,
         pdf_path_for: Callable[[RescueEntry], Path] | None = None,
         timeout_ms: int = RESCUE_HIDDEN_TIMEOUT_MS,
+        visible_timeout_ms: int = RESCUE_VISIBLE_TIMEOUT_MS,
         stall_ms: int = RESCUE_DOWNLOAD_STALL_MS,
         poll_ms: int = RESCUE_POLL_INTERVAL_MS,
         max_pdf_bytes: int = MAX_PDF_SIZE,
@@ -94,7 +134,8 @@ class BrowserRescueService(QObject):
             profile_dir: The browser's persistent profile.
             pdf_path_for: Where an entry's PDF is saved; the reader's library
                 by default.
-            timeout_ms: How long a visit waits for a download.
+            timeout_ms: How long a hidden visit waits for a download.
+            visible_timeout_ms: How long a walk's visit waits for a download.
             stall_ms: How long a download may receive nothing.
             poll_ms: How often the queue is read for entries written
                 elsewhere.
@@ -108,6 +149,7 @@ class BrowserRescueService(QObject):
         self._profile_dir = profile_dir
         self._pdf_path_for = pdf_path_for or _default_pdf_path
         self._timeout_ms = timeout_ms
+        self._visible_timeout_ms = visible_timeout_ms
         self._stall_ms = stall_ms
         self._max_pdf_bytes = max_pdf_bytes
         self._clock = clock
@@ -130,6 +172,10 @@ class BrowserRescueService(QObject):
         self._poll = QTimer(self)
         self._poll.setInterval(poll_ms)
         self._poll.timeout.connect(self.wake)
+        # The window's visit, asked for or under way; while set, the hidden
+        # pass takes no entry (#480, stage 3)
+        self._shown: _ShownVisit | None = None
+        self._shown_token = 0
 
     @property
     def busy(self) -> bool:
@@ -178,6 +224,7 @@ class BrowserRescueService(QObject):
         if self._stopped:
             return
         self._stopped = True
+        self._shown = None
         self._poll.stop()
         self._save_retry.stop()
         if self._unsaved is not None:
@@ -189,6 +236,124 @@ class BrowserRescueService(QObject):
         profile, self._profile = self._profile, None
         if profile is not None:
             Shiboken.delete(profile)
+
+    @property
+    def shown_entry_id(self) -> int | None:
+        """The entry the window has a visit asked for or under way.
+
+        Returns:
+            Its ID; ``None`` when the window shows none.
+        """
+        return self._shown.entry.id if self._shown is not None else None
+
+    def visit_shown(self, entry: RescueEntry, view: QWebEngineView) -> None:
+        """Show an entry's page to the reader, in the window's view.
+
+        A person's visit (D2): judged only by what it downloads. It replaces
+        any visit the window had. It starts once no other visit is under
+        way, at its host's pacing slot.
+
+        Args:
+            entry: An open entry.
+            view: The window's view.
+        """
+        self._ask_shown(entry, view, judge_pages=False)
+
+    def end_shown_visit(self) -> None:
+        """Leave the window's visit with no verdict: its entry stays as it was."""
+        shown, self._shown = self._shown, None
+        if shown is None:
+            return
+        attempt = shown.attempt
+        if attempt is not None:
+            if self._attempt is attempt:
+                self._attempt = None
+            attempt.abort()
+            attempt.deleteLater()
+        self.shown_visit_ended.emit(shown.entry, None)
+        self.wake()
+
+    def _ask_shown(self, entry: RescueEntry, view: QWebEngineView, *, judge_pages: bool) -> None:
+        """Replace the window's visit with one of ``entry``.
+
+        Args:
+            entry: The entry.
+            view: The window's view.
+            judge_pages: Whether its page is judged (a walk).
+        """
+        if self._stopped:
+            return
+        self.end_shown_visit()
+        self._shown_token += 1
+        self._shown = _ShownVisit(entry, view, judge_pages, self._shown_token)
+        self._start_shown_when_free()
+
+    def _start_shown_when_free(self) -> None:
+        """Schedule the window's visit, once no visit is under way and no verdict waits to be saved."""
+        shown = self._shown
+        if shown is None or shown.scheduled or self._stopped:
+            return
+        if self._attempt is not None or self._unsaved is not None:
+            return
+        shown.scheduled = True
+        token = shown.token
+        try:
+            delay = rescue_delay_ms(shown.entry.request.host)
+        except Exception:
+            logger.exception("No pacing slot for %s; opening it now", shown.entry.request.host)
+            delay = 0
+        QTimer.singleShot(delay, self, lambda: self._begin_shown(token))
+
+    def _begin_shown(self, token: int) -> None:
+        """Start the window's visit, unless the reader has moved on.
+
+        A visit that cannot start is logged and reported as failed, with no
+        verdict: a person's visit counts no attempt.
+
+        Args:
+            token: Which request scheduled this start.
+        """
+        shown = self._shown
+        if self._stopped or shown is None or shown.token != token or self._attempt is not None:
+            return
+        try:
+            attempt = RescueAttempt(
+                self._ensure_profile(), shown.entry.request.address, self._pdf_path_for(shown.entry),
+                self._visible_timeout_ms, self._stall_ms, self._max_pdf_bytes, parent=self,
+                view=shown.view, judge_pages=shown.judge_pages,
+            )
+            attempt.finished.connect(lambda verdict: self._on_shown_finished(token, verdict))
+            shown.attempt = attempt
+            self._attempt = attempt
+            logger.info("Showing a walled PDF at %s in the review queue", shown.entry.request.host)
+            attempt.start()
+        except Exception:
+            logger.exception("The review queue could not open the page at %s", shown.entry.request.host)
+            self.end_shown_visit()
+            self.shown_visit_failed.emit(shown.entry)
+            return
+        self.shown_visit_started.emit(shown.entry)
+
+    def _on_shown_finished(self, token: int, verdict: RescueVerdict) -> None:
+        """Record the window's visit's verdict, and say it ended.
+
+        Args:
+            token: Which request the visit was for.
+            verdict: What it concluded.
+        """
+        shown = self._shown
+        if shown is None or shown.token != token:
+            return
+        self._shown = None
+        attempt, self._attempt = self._attempt, None
+        if attempt is not None:
+            attempt.deleteLater()
+        logger.info("The review queue's visit to %s: %s", shown.entry.request.host, verdict.outcome.value)
+        try:
+            self._save(shown.entry, verdict)
+        finally:
+            self.shown_visit_ended.emit(shown.entry, verdict)
+            self.wake()
 
     def _tick(self) -> None:
         """Take the next due entry and schedule its visit for its host's slot.
@@ -211,6 +376,8 @@ class BrowserRescueService(QObject):
         finally:
             if not scheduled:
                 self._busy = False
+        # A shown visit held back by an unsaved verdict starts once it is saved
+        self._start_shown_when_free()
 
     def _next_entry(self) -> RescueEntry | None:
         """The next due entry, when the hidden pass is on.
@@ -228,6 +395,9 @@ class BrowserRescueService(QObject):
         if self._unsaved is not None:
             if self._clock() < self._save_retry_at or not self._save(*self._unsaved):
                 return None
+        if self._shown is not None:
+            # The window drives the browser: the hidden pass pauses
+            return None
         if not self._config.discovery.browser_rescue_hidden:
             return None
         try:
@@ -254,7 +424,8 @@ class BrowserRescueService(QObject):
             return
         started = False
         try:
-            if not self._config.discovery.browser_rescue_hidden:
+            if self._shown is not None or not self._config.discovery.browser_rescue_hidden:
+                # The window asked for a visit meanwhile, or the pass was switched off
                 return
             try:
                 profile = self._ensure_profile()
@@ -326,6 +497,7 @@ class BrowserRescueService(QObject):
         finally:
             # Whatever announcing a rescue raised, the pass is not left busy
             self._busy = False
+        self._start_shown_when_free()
         if saved:
             self.wake()
 
@@ -375,6 +547,8 @@ class BrowserRescueService(QObject):
         self._unsaved = None
         self._save_wait = float(RESCUE_VERDICT_SAVE_RETRY_SECONDS)
         updated = recorded.entry
+        if recorded.applied and updated is not None:
+            self.entry_changed.emit(updated)
         if (
             announce
             and recorded.applied

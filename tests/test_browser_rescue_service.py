@@ -12,12 +12,14 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from bmlibrarian_lite.browser_rescue import RescueOutcome, RescueState, RescueVerdict
 from bmlibrarian_lite.constants import (
     RESCUE_RETRY_DELAY_SECONDS,
     RESCUE_VERDICT_SAVE_RETRY_SECONDS,
 )
+from bmlibrarian_lite.gui import browser_rescue_service as service_module
 from bmlibrarian_lite.gui.browser_rescue_service import BrowserRescueService
 from bmlibrarian_lite.rescue_queue_store import RecordedVerdict
 
@@ -66,7 +68,7 @@ def _service(tmp_path: Path, storage: _Storage, now: list[float]) -> BrowserResc
 def _entry() -> Any:
     return SimpleNamespace(
         id=1,
-        request=SimpleNamespace(host="example.org", address="https://example.org/a.pdf"),
+        request=SimpleNamespace(host="example.org", address="https://example.org/a.pdf", doi="10.1/a"),
     )
 
 
@@ -217,10 +219,22 @@ def test_a_rescue_another_process_recorded_first_is_not_announced_again(
     storage = _Storage(entry, failures=0, applied=False)
     service = _service(tmp_path, storage, [1_000.0])
     rescued: list[Any] = []
+    changed: list[Any] = []
     service.rescued.connect(rescued.append)
+    service.entry_changed.connect(changed.append)
     _finish_visit(service, entry)
-    assert rescued == []
+    assert rescued == [] and changed == []
     assert not service.busy
+
+
+def test_an_applied_verdict_says_the_entry_changed(qapp, tmp_path: Path) -> None:
+    """Control: a verdict that applied emits entry_changed once, for the window and the tab."""
+    entry = _entry()
+    service = _service(tmp_path, _Storage(entry, failures=0), [1_000.0])
+    changed: list[Any] = []
+    service.entry_changed.connect(changed.append)
+    _finish_visit(service, entry)
+    assert len(changed) == 1 and changed[0].id == entry.id
 
 
 def test_a_visit_switched_off_while_it_waited_for_its_slot_is_not_made(
@@ -315,3 +329,203 @@ def _raise(error: Exception) -> Any:
         raise error
 
     return raiser
+
+
+# -- shown visits (#480, stage 3) -----------------------------------------------
+
+
+class _FakeAttempt(QObject):
+    """Stands in for RescueAttempt: records how it was made and driven."""
+
+    finished = Signal(object)
+    made: list["_FakeAttempt"] = []
+
+    def __init__(self, profile: Any, address: str, pdf_path: Path, timeout_ms: int, stall_ms: int,
+                 max_pdf_bytes: int, parent: Any = None, *, view: Any = None, judge_pages: bool = True) -> None:
+        """Record the arguments."""
+        super().__init__()
+        self.address, self.timeout_ms, self.view, self.judge_pages = address, timeout_ms, view, judge_pages
+        self.started = False
+        self.aborted = False
+        _FakeAttempt.made.append(self)
+
+    def start(self) -> None:
+        """Record the start."""
+        self.started = True
+
+    def abort(self) -> None:
+        """Record the abort."""
+        self.aborted = True
+
+
+@pytest.fixture
+def shown(monkeypatch: pytest.MonkeyPatch) -> list[tuple[int, Any]]:
+    """Fake attempts and profile; scheduled starts are recorded, not run."""
+    _FakeAttempt.made = []
+    monkeypatch.setattr(service_module, "RescueAttempt", _FakeAttempt)
+    monkeypatch.setattr(BrowserRescueService, "_ensure_profile", lambda self: object())
+    scheduled: list[tuple[int, Any]] = []
+
+    class _RecordingTimer(QTimer):
+        """A real QTimer for the service's own timers; one-shot starts are recorded."""
+
+        @staticmethod
+        def singleShot(delay: int, _context: Any, fn: Any) -> None:  # noqa: N802
+            scheduled.append((delay, fn))
+
+    monkeypatch.setattr(service_module, "QTimer", _RecordingTimer)
+    return scheduled
+
+
+def _started_service(tmp_path: Path, storage: Any) -> BrowserRescueService:
+    """A service as start() leaves it, without its timers running."""
+    service = _service(tmp_path, storage, [0.0])
+    service._started = True
+    return service
+
+
+def _run_scheduled(scheduled: list[tuple[int, Any]]) -> None:
+    """Run what was scheduled, as the event loop would."""
+    while scheduled:
+        _delay, fn = scheduled.pop(0)
+        fn()
+
+
+def _other() -> Any:
+    return SimpleNamespace(
+        id=2, request=SimpleNamespace(host="b.example", address="https://b.example/2.pdf", doi="10.1/b")
+    )
+
+
+def test_a_person_s_visit_is_made_in_their_view_unjudged(qapp, tmp_path: Path, shown: list) -> None:
+    """visit_shown makes one attempt, in the view, with no page judgement (D2)."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    view = object()
+    started: list[Any] = []
+    service.shown_visit_started.connect(started.append)
+    service.visit_shown(_entry(), view)
+    _run_scheduled(shown)
+    (attempt,) = _FakeAttempt.made
+    assert attempt.started and attempt.view is view and attempt.judge_pages is False
+    assert service.shown_entry_id == 1
+    assert len(started) == 1
+
+
+def test_the_hidden_pass_takes_no_entry_while_a_shown_visit_is_asked_for(qapp, tmp_path: Path, shown: list) -> None:
+    """While the window drives its view, the hidden pass pauses."""
+    storage = _Storage(_entry(), failures=0)
+    service = _started_service(tmp_path, storage)
+    service.visit_shown(_entry(), object())
+    service._tick()
+    assert storage.reads == 0
+
+
+def test_a_shown_visit_waits_for_the_hidden_visit_under_way(qapp, tmp_path: Path, shown: list) -> None:
+    """One visit at a time: the shown one starts when the hidden one ends (D1)."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    service._attempt = _FakeAttempt(None, "h", tmp_path, 0, 0, 0)  # type: ignore[assignment]
+    _FakeAttempt.made = []
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    assert _FakeAttempt.made == []
+    service._busy = True
+    service._on_finished(_entry(), PDF)
+    _run_scheduled(shown)
+    assert len(_FakeAttempt.made) == 1 and _FakeAttempt.made[0].started
+
+
+def test_a_shown_visit_s_verdict_is_recorded_announced_and_reported(qapp, tmp_path: Path, shown: list) -> None:
+    """A person's PDF is saved as the hidden pass's is: recorded, rescued, entry_changed."""
+    storage = _Storage(_entry(), failures=0)
+    service = _started_service(tmp_path, storage)
+    rescued: list[Any] = []
+    changed: list[Any] = []
+    ended: list[tuple[Any, Any]] = []
+    service.rescued.connect(rescued.append)
+    service.entry_changed.connect(changed.append)
+    service.shown_visit_ended.connect(lambda e, v: ended.append((e, v)))
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    _FakeAttempt.made[0].finished.emit(PDF)
+    assert storage.writes == [(1, PDF)]
+    assert len(rescued) == 1 and len(changed) == 1
+    assert ended[0][1] == PDF
+    assert service.shown_entry_id is None
+
+
+def test_leaving_a_shown_visit_records_nothing(qapp, tmp_path: Path, shown: list) -> None:
+    """The entry stays as it was; no attempt is counted (D2)."""
+    storage = _Storage(_entry(), failures=0)
+    service = _started_service(tmp_path, storage)
+    ended: list[tuple[Any, Any]] = []
+    service.shown_visit_ended.connect(lambda e, v: ended.append((e, v)))
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    service.end_shown_visit()
+    assert _FakeAttempt.made[0].aborted
+    assert storage.writes == []
+    assert ended[0][1] is None
+
+
+def test_choosing_another_entry_leaves_the_first_without_a_verdict(qapp, tmp_path: Path, shown: list) -> None:
+    """One visit at a time; the one left is aborted, not judged."""
+    storage = _Storage(_entry(), failures=0)
+    service = _started_service(tmp_path, storage)
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    service.visit_shown(_other(), object())
+    _run_scheduled(shown)
+    first, second = _FakeAttempt.made
+    assert first.aborted and second.started and service.shown_entry_id == 2
+    assert storage.writes == []
+
+
+def test_a_start_scheduled_for_an_entry_the_reader_left_does_nothing(qapp, tmp_path: Path, shown: list) -> None:
+    """Review focus 4: a quick click-through starts only the last entry's visit."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    service.visit_shown(_entry(), object())
+    service.visit_shown(_other(), object())
+    _run_scheduled(shown)
+    assert [a.address for a in _FakeAttempt.made] == ["https://b.example/2.pdf"]
+
+
+def test_a_shown_visit_that_cannot_start_ends_without_a_verdict(
+    qapp, tmp_path: Path, shown: list, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No profile folder: logged, reported as failed and ended, nothing recorded for a person's visit."""
+    def no_profile(self: Any) -> Any:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(BrowserRescueService, "_ensure_profile", no_profile)
+    storage = _Storage(_entry(), failures=0)
+    service = _started_service(tmp_path, storage)
+    # Off, so the hidden pass, woken once the shown visit ends, does not visit
+    # the same entry (its own failure to start is a stage 2 test)
+    service._config.discovery.browser_rescue_hidden = False  # type: ignore[attr-defined]
+    ended: list[tuple[Any, Any]] = []
+    failed: list[Any] = []
+    service.shown_visit_ended.connect(lambda e, v: ended.append((e, v)))
+    service.shown_visit_failed.connect(failed.append)
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    assert ended and ended[0][1] is None and len(failed) == 1
+    assert storage.writes == [] and service.shown_entry_id is None
+
+
+def test_a_shown_visit_waits_while_a_verdict_is_unsaved(qapp, tmp_path: Path, shown: list) -> None:
+    """The next write would most likely fail too: no visit starts until the save succeeds."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    service._unsaved = (_entry(), PDF)
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    assert _FakeAttempt.made == []
+
+
+def test_shutdown_aborts_a_shown_visit(qapp, tmp_path: Path, shown: list, no_flush: None) -> None:
+    """Quit: the shown visit ends with no verdict, its entry as it was."""
+    storage = _Storage(_entry(), failures=0)
+    service = _started_service(tmp_path, storage)
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    service.shutdown()
+    assert _FakeAttempt.made[0].aborted and storage.writes == []
