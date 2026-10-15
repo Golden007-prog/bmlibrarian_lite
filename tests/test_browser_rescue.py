@@ -203,6 +203,7 @@ def test_only_the_first_64_kib_of_a_download_are_read_for_markers() -> None:
         (RescueOutcome.GONE, RescueState.GONE),
         (RescueOutcome.TOO_LARGE, RescueState.TOO_LARGE),
         (RescueOutcome.WRONG_PDF, RescueState.NEEDS_PERSON),
+        (RescueOutcome.UNREADABLE_PDF, RescueState.NEEDS_PERSON),
     ],
 )
 @pytest.mark.parametrize("state", sorted(OPEN_RESCUE_STATES, key=lambda s: s.value))
@@ -736,20 +737,77 @@ def test_a_request_a_browser_cannot_trust_is_refused(address: str, host: str, do
 
 
 @pytest.mark.parametrize(
-    ("check", "outcome"),
+    ("check", "verdict"),
     [
-        (TitleCheck(TitleCheckOutcome.MATCHES, 1.0), RescueOutcome.PDF),
-        (TitleCheck(TitleCheckOutcome.NO_TITLE), RescueOutcome.PDF),
-        (TitleCheck(TitleCheckOutcome.NO_TEXT), RescueOutcome.PDF),
-        (TitleCheck(TitleCheckOutcome.MISMATCH, 0.1), RescueOutcome.WRONG_PDF),
-        (TitleCheck(TitleCheckOutcome.UNREADABLE), RescueOutcome.TRANSPORT),
+        (TitleCheck(TitleCheckOutcome.MATCHES, 1.0), RescueVerdict(RescueOutcome.PDF)),
+        (
+            TitleCheck(TitleCheckOutcome.NO_TITLE),
+            RescueVerdict(RescueOutcome.PDF, title_unchecked=TitleCheckOutcome.NO_TITLE),
+        ),
+        (
+            TitleCheck(TitleCheckOutcome.NO_TEXT),
+            RescueVerdict(RescueOutcome.PDF, title_unchecked=TitleCheckOutcome.NO_TEXT),
+        ),
+        (
+            TitleCheck(TitleCheckOutcome.TRANSLATED_TITLE),
+            RescueVerdict(RescueOutcome.PDF, title_unchecked=TitleCheckOutcome.TRANSLATED_TITLE),
+        ),
+        (TitleCheck(TitleCheckOutcome.MISMATCH, 0.1), RescueVerdict(RescueOutcome.WRONG_PDF)),
+        (TitleCheck(TitleCheckOutcome.UNREADABLE), RescueVerdict(RescueOutcome.UNREADABLE_PDF)),
     ],
 )
 def test_a_pdf_is_kept_only_when_it_is_not_another_article_s(
-    check: TitleCheck, outcome: RescueOutcome
+    check: TitleCheck, verdict: RescueVerdict
 ) -> None:
-    """A mismatch is not kept; what the check cannot judge is; an unreadable file learnt nothing."""
-    assert title_checked_verdict(check) == RescueVerdict(outcome)
+    """A mismatch is not kept; what the check cannot judge is, saying so; an unopened file is not."""
+    assert title_checked_verdict(check) == verdict
+
+
+def test_a_pdf_kept_unchecked_is_never_a_checked_one() -> None:
+    """Unparsed is not matched: the stored verdict tells them apart."""
+    unchecked = title_checked_verdict(TitleCheck(TitleCheckOutcome.NO_TEXT))
+    assert unchecked != title_checked_verdict(TitleCheck(TitleCheckOutcome.MATCHES, 1.0))
+    assert RescueVerdict.from_dict(unchecked.to_dict()) == unchecked
+
+
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        (RescueOutcome.WRONG_PDF, TitleCheckOutcome.NO_TEXT),
+        (RescueOutcome.PDF, TitleCheckOutcome.MATCHES),
+        (RescueOutcome.PDF, TitleCheckOutcome.MISMATCH),
+        (RescueOutcome.PDF, TitleCheckOutcome.UNREADABLE),
+    ],
+)
+def test_only_a_pdf_is_kept_unchecked_for_want_of_something_to_judge(
+    outcome: RescueOutcome, reason: TitleCheckOutcome
+) -> None:
+    """A verdict no visit can reach is refused."""
+    with pytest.raises(ValueError):
+        RescueVerdict(outcome, title_unchecked=reason)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"outcome": "pdf", "title_unchecked": "teleported"},
+        {"outcome": "pdf", "title_unchecked": "matches"},
+        {"outcome": "pdf", "title_unchecked": 3},
+        {"outcome": "wrong_pdf", "title_unchecked": "no_text"},
+        {"outcome": "pdf"},
+    ],
+)
+def test_a_stored_reason_it_cannot_vouch_for_is_dropped(data: dict[str, object]) -> None:
+    """A newer build's reason, damage, or one on another outcome: the outcome stands alone."""
+    verdict = RescueVerdict.from_dict(data)
+    assert verdict is not None and verdict.title_unchecked is None
+
+
+def test_an_unreadable_pdf_waits_for_a_person_and_round_trips() -> None:
+    """The host's answer, retried for nothing: a person may be served another copy."""
+    verdict = RescueVerdict(RescueOutcome.UNREADABLE_PDF)
+    assert next_state(RescueState.PENDING, verdict, 1) is RescueState.NEEDS_PERSON
+    assert RescueVerdict.from_dict(verdict.to_dict()) == verdict
 
 
 def test_every_title_check_has_a_verdict() -> None:

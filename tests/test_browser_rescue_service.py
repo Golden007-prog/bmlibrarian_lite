@@ -15,6 +15,7 @@ import pytest
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from bmlibrarian_lite.browser_rescue import (
+    HeldPdfKeep,
     RescueOutcome,
     RescueState,
     RescueVerdict,
@@ -364,8 +365,10 @@ class _FakeAttempt(QObject):
     """Stands in for RescueAttempt: records how it was made and driven."""
 
     finished = Signal(object)
+    download_started = Signal()
     download_ignored = Signal()
     download_mismatched = Signal()
+    download_unreadable = Signal()
     made: list["_FakeAttempt"] = []
 
     def __init__(self, profile: Any, address: str, pdf_path: Path, timeout_ms: int, stall_ms: int,
@@ -380,10 +383,10 @@ class _FakeAttempt(QObject):
         self.kept = 0
         _FakeAttempt.made.append(self)
 
-    def keep_held_pdf(self) -> bool:
-        """Record the keep; a held PDF is assumed."""
+    def keep_held_pdf(self) -> HeldPdfKeep:
+        """Record the keep; a held PDF is assumed, and saved."""
         self.kept += 1
-        return True
+        return HeldPdfKeep.KEPT
 
     def start(self) -> None:
         """Record the start."""
@@ -952,30 +955,48 @@ def test_a_shown_visit_checks_against_its_entry_s_title(qapp, tmp_path: Path, sh
     assert attempt.title == "An article"
 
 
-def test_a_person_s_pdf_that_is_not_the_article_s_is_said_for_their_visit_only(
-    qapp, tmp_path: Path, shown: list
+@pytest.mark.parametrize(
+    ("said", "relayed"),
+    [
+        ("download_mismatched", "shown_download_mismatched"),
+        ("download_unreadable", "shown_download_unreadable"),
+        ("download_started", "shown_download_started"),
+    ],
+)
+def test_what_a_person_s_download_met_is_said_for_their_visit_only(
+    qapp, tmp_path: Path, shown: list, said: str, relayed: str
 ) -> None:
     """Relayed while the visit is the window's; one the reader left says nothing."""
     service = _started_service(tmp_path, _Storage(_entry(), failures=0))
-    mismatched: list[Any] = []
-    service.shown_download_mismatched.connect(mismatched.append)
+    heard: list[Any] = []
+    getattr(service, relayed).connect(heard.append)
     service.visit_shown(_entry(), object())
     _run_scheduled(shown)
     first = _FakeAttempt.made[0]
-    first.download_mismatched.emit()
-    assert [e.id for e in mismatched] == [1]
+    getattr(first, said).emit()
+    assert [e.id for e in heard] == [1]
     service.visit_shown(_other(), object())
     _run_scheduled(shown)
-    first.download_mismatched.emit()
-    assert [e.id for e in mismatched] == [1]
+    getattr(first, said).emit()
+    assert [e.id for e in heard] == [1]
 
 
 def test_keeping_the_held_pdf_asks_the_window_s_visit(qapp, tmp_path: Path, shown: list) -> None:
     """The person's word goes to the visit that holds the PDF; with none, nothing is kept."""
     service = _started_service(tmp_path, _Storage(_entry(), failures=0))
-    assert service.keep_shown_pdf() is False
+    assert service.keep_shown_pdf() is HeldPdfKeep.NOTHING_HELD
     service.visit_shown(_entry(), object())
     _run_scheduled(shown)
     (attempt,) = _FakeAttempt.made
-    assert service.keep_shown_pdf() is True
+    assert service.keep_shown_pdf() is HeldPdfKeep.KEPT
     assert attempt.kept == 1
+
+
+def test_keeping_before_the_window_s_visit_started_keeps_nothing(
+    qapp, tmp_path: Path, shown: list
+) -> None:
+    """Asked for, not yet started (its host's slot): no attempt to ask, and no error."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    service.visit_shown(_entry(), object())
+    assert service.shown_entry_id == 1 and _FakeAttempt.made == []
+    assert service.keep_shown_pdf() is HeldPdfKeep.NOTHING_HELD

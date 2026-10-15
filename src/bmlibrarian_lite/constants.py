@@ -1299,11 +1299,13 @@ HTTP_HEADER_WHITESPACE = " \t"
 # is renamed into place only once the body has arrived whole (#478).
 PDF_PARTIAL_SUFFIX = ".part"
 # Appended to a PDF's cache path while a person decides whether to keep a PDF
-# the browser rescue's title check doubted (#532). A name of its own, so the
-# next download, or discovery writing the partial file, never touches it.
+# the browser rescue's title check doubted (#532). A name of its own, out of
+# the partial file's way: discovery writes ``<pdf>.part`` too, from another
+# thread. The person's next download in the visit does discard it.
 PDF_HELD_SUFFIX = ".held"
-# A PDF is taken as an article's when its first page carries at least this
-# share of the title's adjacent word pairs, in order (#532). Measured on 500
+# A PDF is taken as an article's when its first page with text carries at
+# least this share of the title's adjacent word pairs (each pair in the
+# title's word order, found anywhere on the page) (#532). Measured on 500
 # PDFs of the knowledgebase against their own titles and against the most
 # similar other title in the sample: 9 of 499 right PDFs fell below (scans,
 # broken OCR, preprints retitled between versions), 3 of 500 wrong titles
@@ -1314,8 +1316,9 @@ PDF_HELD_SUFFIX = ".held"
 # random title. A bar of 0.6 let 4 and 2 through, and refused 5 and 3 more
 # right PDFs. The wrong PDFs found in a real library scored 0.3 at most.
 PDF_TITLE_MIN_PAIR_SHARE = 0.5
-# The pages read for the title. A second page adds body text and references,
-# which matched other articles' titles more often in the same survey.
+# The pages with text read for the title; pages with none before them (an
+# image-only cover) are passed over. A second page adds body text and
+# references, which matched other articles' titles more often in the survey.
 PDF_TITLE_PAGES_READ = 1
 
 # ---------------------------------------------------------------------------

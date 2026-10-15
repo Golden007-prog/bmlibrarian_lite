@@ -14,6 +14,12 @@ import pytest
 from PySide6.QtCore import QObject, Signal
 
 from bmlibrarian_lite.browser_rescue import RescueOutcome, RescueState, RescueVerdict
+from bmlibrarian_lite.browser_rescue_text import (
+    REVIEW_QUEUE_OFFER_PDF_NOT_KEPT_TITLE,
+    REVIEW_QUEUE_OFFER_TITLE,
+    QueueOffer,
+    review_queue_offer,
+)
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.constants import RESCUE_PRIORITY_WAITING, SERVICE_UNPAYWALL_PDF
 from bmlibrarian_lite.data_models import (
@@ -107,6 +113,7 @@ class Harness:
         self.abstracts: list[str | None] = []
         self.pdfs: list[tuple[Path, str]] = []
         self.offers: list[bool] = []
+        self.offer_titles: list[str] = []
         self.queued: list[bool] = []
         self.requested: list[int] = []
 
@@ -148,8 +155,13 @@ def make(qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
                             lambda _c, degradation=None: harness.abstracts.append(degradation))
         monkeypatch.setattr(tab, "_load_citation_pdf",
                             lambda path, _c, label: harness.pdfs.append((path, label)))
-        monkeypatch.setattr(tab_module, "ask_to_open_review_queue",
-                            lambda _parent: harness.offers.append(True) or accept_offer)
+        def offer(_parent: Any, shown: QueueOffer) -> bool:
+            """Record the offer shown; the reader's answer is ``accept_offer``."""
+            harness.offers.append(True)
+            harness.offer_titles.append(shown.title)
+            return accept_offer
+
+        monkeypatch.setattr(tab_module, "ask_to_open_review_queue", offer)
         tab.rescue_queued.connect(lambda: harness.queued.append(True))
         tab.review_queue_requested.connect(harness.requested.append)
         tab.set_hidden_pass_check(lambda: hidden)
@@ -197,6 +209,28 @@ def test_a_wall_the_hidden_pass_could_not_pass_offers_the_queue(make: Any) -> No
     assert h.abstracts == [FULLTEXT_WALLED]
     assert h.offers == [True]
     assert h.requested == [h.entries()[0].id]
+
+
+@pytest.mark.parametrize("outcome", [RescueOutcome.WRONG_PDF, RescueOutcome.UNREADABLE_PDF])
+def test_a_pdf_the_hidden_browser_did_not_keep_names_no_robot_check(
+    make: Any, outcome: RescueOutcome
+) -> None:
+    """Another document's PDF, or one that would not open (#532): said as such, still offered."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    h.verdict(ADDRESS, RescueVerdict(outcome))
+    assert h.abstracts == [review_queue_offer(RescueVerdict(outcome)).cause]
+    assert h.abstracts != [FULLTEXT_WALLED]
+    assert h.offer_titles == [REVIEW_QUEUE_OFFER_PDF_NOT_KEPT_TITLE]
+    assert h.entries()[0].state is RescueState.NEEDS_PERSON
+
+
+def test_a_robot_check_is_offered_as_one(make: Any) -> None:
+    """The control: a wall met is named."""
+    h = make()
+    h.fail_with(_walled(ADDRESS))
+    h.verdict(ADDRESS, RescueVerdict(RescueOutcome.CHALLENGE, 403, ("cloudflare",)))
+    assert h.offer_titles == [REVIEW_QUEUE_OFFER_TITLE]
 
 
 def test_a_declined_offer_opens_nothing(make: Any) -> None:
@@ -464,7 +498,11 @@ def test_the_offer_says_whether_the_reader_chose_the_queue(
     """The offer is True only for its "Open the review queue" button."""
     from PySide6.QtWidgets import QMessageBox, QWidget
 
+    shown: list[str] = []
+
     def click(box: QMessageBox) -> int:
+        # Its text only: macOS ignores a message box's window title
+        shown.append(box.text())
         wanted = tab_module.REVIEW_QUEUE_OFFER_OPEN if choose_open else tab_module.REVIEW_QUEUE_OFFER_LATER
         button = next(b for b in box.buttons() if b.text() == wanted)
         button.click()
@@ -472,5 +510,8 @@ def test_the_offer_says_whether_the_reader_chose_the_queue(
 
     monkeypatch.setattr(QMessageBox, "exec", click)
     parent = QWidget()
-    assert tab_module.ask_to_open_review_queue(parent) is choose_open
+    offer = review_queue_offer(RescueVerdict(RescueOutcome.WRONG_PDF))
+    assert tab_module.ask_to_open_review_queue(parent, offer) is choose_open
+    # The offer it is given, word for word
+    assert shown == [offer.text]
     parent.deleteLater()

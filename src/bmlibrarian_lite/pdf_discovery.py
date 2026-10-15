@@ -112,7 +112,7 @@ from .pdf_download import (
     partial_download_path,
     read_body_prefix,
 )
-from .pdf_title_check import TitleCheckOutcome, check_pdf_title
+from .pdf_title_check import TitleCheck, TitleCheckOutcome, check_pdf_title
 from .polite_session import mount_politely
 from .search_failures import request_failure_from_exception
 
@@ -131,8 +131,8 @@ _ID_CONVERTER_ERROR_STATUS = "error"
 # ``email=<the user's address>`` (the same leak as #196/#330).
 #
 # The download path (``_try_download``) does NOT yet
-# follow it -- it still puts ``str(e)`` into the reader-facing ``error`` and
-# ``verification_warning`` fields. Those URLs are publisher and PMC ones
+# follow it -- it still puts ``str(e)`` into the reader-facing ``error``
+# field. Those URLs are publisher and PMC ones
 # rather than the credential-bearing lookups, so no secret leaks today, but
 # the migration is unfinished: see #350 before adding another handler there.
 
@@ -539,6 +539,58 @@ class _CoreFallback:
         fetch, self._fetch = self._fetch, None
         outcome = fetch(self._doi)
         return outcome.text, outcome.lookups()
+
+
+def verification_status(check: TitleCheck) -> str:
+    """A downloaded PDF's title check as the discovery's progress reports it.
+
+    Args:
+        check: The check.
+
+    Returns:
+        ``"success"`` for a match, ``"mismatch"`` for a mismatch, and
+        ``"unchecked"`` when nothing could be judged or the file could not
+        be read: never called a mismatch, nor a success.
+    """
+    match check.outcome:
+        case TitleCheckOutcome.MATCHES:
+            return "success"
+        case TitleCheckOutcome.MISMATCH:
+            return "mismatch"
+        case (
+            TitleCheckOutcome.NO_TITLE
+            | TitleCheckOutcome.NO_TEXT
+            | TitleCheckOutcome.TRANSLATED_TITLE
+            | TitleCheckOutcome.UNREADABLE
+        ):
+            return "unchecked"
+        case unknown:
+            assert_never(unknown)
+
+
+def verification_warning(check: TitleCheck) -> str | None:
+    """What a downloaded PDF's title check doubted, for the reader.
+
+    Args:
+        check: The check.
+
+    Returns:
+        ``None`` for a match, and where nothing in the title could be
+        judged against the PDF (no title words, a translated title); a
+        sentence for a mismatch, with its share, a PDF with no text, and
+        one that could not be read.
+    """
+    match check.outcome:
+        case TitleCheckOutcome.MATCHES | TitleCheckOutcome.NO_TITLE | TitleCheckOutcome.TRANSLATED_TITLE:
+            return None
+        case TitleCheckOutcome.MISMATCH:
+            return f"PDF content may not match expected document. Title match: {check.share:.0%}"
+        case TitleCheckOutcome.NO_TEXT:
+            return "PDF contains no extractable text"
+        case TitleCheckOutcome.UNREADABLE:
+            return "The PDF could not be read to check it against the title"
+        case unknown:
+            assert_never(unknown)
 
 
 class PDFDiscoverer:
@@ -961,9 +1013,9 @@ class PDFDiscoverer:
         if not expected_title:
             return None
         self._emit_progress("verification", "starting")
-        is_valid, warning = self._verify_pdf_content(pdf_path, expected_title)
-        self._emit_progress("verification", "success" if is_valid else "mismatch")
-        return None if is_valid else warning
+        check = self._verify_pdf_content(pdf_path, expected_title)
+        self._emit_progress("verification", verification_status(check))
+        return verification_warning(check)
 
     def _ask_core(self, core: _CoreFallback) -> tuple[str | None, LookupRecord]:
         """Ask CORE at a no-PDF exit, unless the discovery was cancelled.
@@ -2068,33 +2120,14 @@ class PDFDiscoverer:
         """
         return body_prefix.startswith(PDF_MAGIC_BYTES)
 
-    def _verify_pdf_content(
-        self,
-        pdf_path: Path,
-        expected_title: str,
-    ) -> tuple[bool, str | None]:
-        """Check that a downloaded PDF's first page carries the expected title (#532).
+    def _verify_pdf_content(self, pdf_path: Path, expected_title: str) -> TitleCheck:
+        """Check that a downloaded PDF's first page with text carries the expected title (#532).
 
         Args:
             pdf_path: Path to PDF file
             expected_title: Expected document title
 
         Returns:
-            Tuple of (is_valid, warning_message). A title with no words is
-            not checked, so it is valid.
+            The check (``verification_warning`` says what it doubted).
         """
-        check = check_pdf_title(pdf_path, expected_title)
-        match check.outcome:
-            case TitleCheckOutcome.MATCHES | TitleCheckOutcome.NO_TITLE:
-                return True, None
-            case TitleCheckOutcome.MISMATCH:
-                return False, (
-                    "PDF content may not match expected document. "
-                    f"Title match: {check.share or 0.0:.0%}"
-                )
-            case TitleCheckOutcome.NO_TEXT:
-                return False, "PDF contains no extractable text"
-            case TitleCheckOutcome.UNREADABLE:
-                return False, "The PDF could not be read to check it against the title"
-            case unknown:
-                assert_never(unknown)
+        return check_pdf_title(pdf_path, expected_title)

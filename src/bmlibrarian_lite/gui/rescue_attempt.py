@@ -7,7 +7,8 @@ protocol (no impersonation, decision 5 of
 profile's PDF viewer is off, so a PDF arrives as a download. It is written
 as a partial file beside ``pdf_path`` in the PDF library, and renamed into
 place only once it is whole, within the size limit, begins with ``%PDF``,
-and carries the article's title on its first page (#532).
+opens, and is not found to lack the article's title on its first page with
+text (#532).
 """
 
 from __future__ import annotations
@@ -29,6 +30,7 @@ from PySide6.QtWebEngineCore import (
 from shiboken6 import Shiboken
 
 from ..browser_rescue import (
+    HeldPdfKeep,
     RescueOutcome,
     RescueVerdict,
     download_verdict,
@@ -43,10 +45,9 @@ from ..constants import (
     CHALLENGE_BODY_PREFIX_BYTES,
     CHALLENGE_GONE_STATUSES,
     CONFIG_DIR_PERMISSIONS,
-    PDF_HELD_SUFFIX,
     RESCUE_PAGE_READ_GRACE_MS,
 )
-from ..pdf_download import discard_partial_download, partial_download_path
+from ..pdf_download import discard_partial_download, held_download_path, partial_download_path
 from ..pdf_title_check import check_pdf_title
 
 if TYPE_CHECKING:
@@ -160,23 +161,32 @@ class RescueAttempt(QObject):
     a supplement) is not the article's answer: it is discarded, said with
     ``download_ignored``, and the page stays open for the PDF.
 
-    A PDF whose first page does not carry the title is not kept (#532). A
-    judged visit ends with ``WRONG_PDF``. A person's is held, said with
-    ``download_mismatched``, and the page stays open: :meth:`keep_held_pdf`
-    keeps it (the check misreads scans and retitled preprints), and the next
-    download, leaving or the visit's end discards it.
+    A PDF whose first page with text does not carry the title is not kept
+    (#532). A judged visit ends with ``WRONG_PDF``. A person's is held, said
+    with ``download_mismatched``, and the page stays open:
+    :meth:`keep_held_pdf` keeps it (the check misreads scans with garbled
+    text and retitled preprints), and the next download, leaving or the
+    visit's end discards it. A PDF that cannot be opened ends a judged visit
+    with ``UNREADABLE_PDF``; a person's is discarded, said with
+    ``download_unreadable``, and the page stays open.
 
     Signals:
         finished: The visit's :class:`RescueVerdict`, emitted once, and never
             after :meth:`abort`.
+        download_started: A person's download began; a PDF held for them
+            is gone.
         download_ignored: A person's download was not a PDF; the visit goes on.
         download_mismatched: A person's PDF does not carry the title; it is
             held, and the visit goes on.
+        download_unreadable: A person's PDF could not be opened; the visit
+            goes on.
     """
 
     finished = Signal(object)
+    download_started = Signal()
     download_ignored = Signal()
     download_mismatched = Signal()
+    download_unreadable = Signal()
 
     def __init__(
         self,
@@ -300,6 +310,8 @@ class RescueAttempt(QObject):
         request.isFinishedChanged.connect(self._on_download_finished)
         request.accept()
         self._stall.start()
+        if not self._judge_pages:
+            self.download_started.emit()
 
     def abort(self) -> None:
         """End the visit with no verdict (quit, or the reader leaving a shown visit): its entry stays as it was."""
@@ -314,34 +326,35 @@ class RescueAttempt(QObject):
         self._drop_held()
         self._release_page(at_once=True)
 
-    def keep_held_pdf(self) -> bool:
+    def keep_held_pdf(self) -> HeldPdfKeep:
         """Keep the PDF held for the person, which does not carry the title, as the article's.
 
         The person has seen it and says it is the article: the check misreads
-        scans and preprints retitled between versions.
+        scans with garbled text and preprints retitled between versions.
 
         Returns:
-            Whether a PDF was held: the visit then ends, with ``PDF`` when it
-            was renamed into place, else ``TRANSPORT`` (logged).
+            ``KEPT`` when it was renamed into place, and the visit ended with
+            ``PDF``; ``NOTHING_HELD`` when none was held; ``NOT_SAVED`` when
+            it could not be renamed (logged): it is still held, and the
+            visit goes on, so the person's choice is not lost.
         """
         held = self._held
         if held is None:
-            # Nothing held: none arrived, or the visit is over (it drops one)
-            return False
-        self._held = None
+            # Nothing held: none arrived, a newer download replaced it, or
+            # the visit is over (it drops one)
+            return HeldPdfKeep.NOTHING_HELD
         try:
             held.replace(self._pdf_path)
         except OSError as e:
             logger.error("The PDF kept for %s could not be saved: %s", self._pdf_path.name, e)
-            discard_partial_download(held)
-            self._finish(RescueVerdict(RescueOutcome.TRANSPORT))
-            return True
+            return HeldPdfKeep.NOT_SAVED
+        self._held = None
         logger.info(
             "Kept a PDF from %s that does not carry its article's title, as the reader asked",
             self._address,
         )
         self._finish(RescueVerdict(RescueOutcome.PDF))
-        return True
+        return HeldPdfKeep.KEPT
 
     def _drop_held(self) -> None:
         """Discard the PDF held for the person, if any."""
@@ -435,7 +448,11 @@ class RescueAttempt(QObject):
             self._download.cancel()
 
     def _on_download_finished(self) -> None:
-        """Keep a whole PDF; anything else ends the visit without one, but a person's file that is no PDF."""
+        """Keep a whole PDF; anything else ends the visit without one.
+
+        A person's visit goes on past a file that is no PDF, a PDF that
+        does not carry the title (held) and one that cannot be opened.
+        """
         request = self._download
         if self._done or request is None or not request.isFinished():
             return
@@ -463,14 +480,23 @@ class RescueAttempt(QObject):
             self._download = None
             self.download_mismatched.emit()
             return
+        if not self._judge_pages and verdict.outcome is RescueOutcome.UNREADABLE_PDF:
+            # A person's PDF that cannot be opened: the download worked, and
+            # another copy on the page may open (#532)
+            logger.info("A PDF from %s could not be opened; the page stays open", self._address)
+            self._stall.stop()
+            self._download = None
+            self.download_unreadable.emit()
+            return
         self._finish(verdict)
 
     def _settle(self, written: Path) -> RescueVerdict:
         """Rename a finished download into place if it is the article's PDF, within the limit.
 
-        A PDF whose first page does not carry the title is not renamed into
-        place: a judged visit discards it (``WRONG_PDF``), and a person's is
-        moved beside it, held for them (``_held``).
+        A PDF whose first page with text does not carry the title is not
+        renamed into place: a judged visit discards it (``WRONG_PDF``), and a
+        person's is moved beside it, held for them (``_held``). One that
+        cannot be opened is discarded (``UNREADABLE_PDF``).
 
         Args:
             written: Where QtWebEngine wrote it.
@@ -487,12 +513,19 @@ class RescueAttempt(QObject):
                 verdict = download_verdict(f.read(CHALLENGE_BODY_PREFIX_BYTES))
             if verdict.outcome is not RescueOutcome.PDF:
                 return verdict
-            verdict = title_checked_verdict(check_pdf_title(written, self._title))
+            check = check_pdf_title(written, self._title)
+            # The share and the outcome, so a PDF refused, or kept unchecked,
+            # can be explained later
+            logger.info(
+                "The title check of a PDF from %s: %s (share %s)",
+                self._address, check.outcome.value, check.share,
+            )
+            verdict = title_checked_verdict(check)
             if verdict.outcome is RescueOutcome.PDF:
                 written.replace(self._pdf_path)
             elif verdict.outcome is RescueOutcome.WRONG_PDF and not self._judge_pages:
                 # Out of the partial file's way: discovery writes it too
-                held = self._pdf_path.with_name(self._pdf_path.name + PDF_HELD_SUFFIX)
+                held = held_download_path(self._pdf_path)
                 written.replace(held)
                 self._held = held
             return verdict

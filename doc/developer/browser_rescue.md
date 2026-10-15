@@ -68,7 +68,7 @@ tick the robot check (stage 3).
                   +--> no_pdf       (page loaded, unchallenged, no PDF)
 pending --visit-->+--> gone         (404 or 410)
    ^              +--> too_large    (PDF over MAX_PDF_SIZE)
-   |              +--> needs_person (still a challenge, or wrong_pdf)
+   |              +--> needs_person (still a challenge, wrong_pdf, unreadable_pdf)
    +--transport---+
    |
    +--transport, attempts >= cap--> needs_person
@@ -108,16 +108,29 @@ back off together. The hidden page is muted.
 - **Spec D2.** `too_large` is its own state: the PDF is real, the application
   just does not download that much.
 - **A PDF must carry the article's title (#532).** Before a PDF is renamed
-  into place, `pdf_title_check.check_pdf_title` reads its first page and asks
-  for at least `PDF_TITLE_MIN_PAIR_SHARE` of the title's adjacent word pairs
-  (single words are not enough: an article on the same subject shares them;
-  the survey is in the constant's comment). `title_checked_verdict` maps the
-  check: a mismatch is `wrong_pdf`, which waits for a person (the right PDF
-  may still be on the page, so it is never an absence); a title with no words
-  or a first page with no text (a scan) keeps the PDF; a file PyMuPDF cannot
-  open is transport. Each visit is checked against its entry's
-  `request.title`. The HTTP download paths' `verification_warning` shares the
-  same check.
+  into place, `pdf_title_check.check_pdf_title` reads its first page with
+  text (pages with none before it, an image-only cover, are passed over) and
+  asks for at least `PDF_TITLE_MIN_PAIR_SHARE` of the title's adjacent word
+  pairs (single words are not enough: an article on the same subject shares
+  them; the survey is in the constant's comment). Markup inside a word
+  (`H<sub>2</sub>O<sub>2</sub>`) is read both as a break and as none.
+  `title_checked_verdict` maps the check:
+  - a mismatch is `wrong_pdf`, which waits for a person (the right PDF may
+    still be on the page, so it is never an absence);
+  - a title with no words, a PDF with no text on any page (a scan), or a
+    title PubMed translated (wholly in square brackets) that the page does
+    not carry keeps the PDF, and the verdict says so (`title_unchecked`, shown
+    as "its title could not be checked");
+  - a file PyMuPDF cannot open, or one with no pages, is `unreadable_pdf`,
+    which waits for a person: retrying would fetch the same file. Any error
+    PyMuPDF raises is caught; one that is no file error (`ImportError`, an
+    `AttributeError` from a changed API) is logged at ERROR as a code fault.
+
+  Each check is logged with its outcome and share. Each visit is checked
+  against its entry's `request.title`. The HTTP download paths share the same
+  check: `verification_warning` warns of a mismatch, no text and an unreadable
+  file, and the progress status says `unchecked`, never `mismatch`, for what
+  could not be judged.
 - **Spec D3.** A transport failure is retried no sooner than
   `RESCUE_RETRY_DELAY_SECONDS` (15 minutes) later. After `MAX_RESCUE_ATTEMPTS`
   (3) the entry becomes `needs_person` and waits for the review queue window.
@@ -160,18 +173,21 @@ error in the pass's slots is logged and never leaves the pass busy (#525).
   It ends on a finished download or a renderer crash. A finished download
   that is neither a PDF nor a wall (a citation export, a supplement), which
   would be `no_pdf`, is discarded instead: `download_ignored` is emitted, the
-  page stays open, and the next download is taken. A PDF that does not
-  carry the title is held (moved to `<pdf>.held`, out of the way of the
-  partial file, which discovery also writes), `download_mismatched`
-  is emitted, and the window shows *Keep this PDF*:
-  `BrowserRescueService.keep_shown_pdf` → `RescueAttempt.keep_held_pdf`
-  renames it into place and ends the visit as a rescue, since the check
-  misreads scans and preprints retitled between versions. The next download,
-  leaving, or the visit's end discards it. Any error PyMuPDF raises reading
-  the file (an encrypted PDF raises `ValueError`) is `UNREADABLE`.
-  Leaving it (another
-  entry, *Dismiss*, closing the window, quit) is `abort()`: no verdict, no
-  attempt counted.
+  page stays open, and the next download is taken. A PDF that cannot be
+  opened (one that needs a password, damage) is discarded the same way, with
+  `download_unreadable`. A PDF that does not carry the title is held (moved
+  to `held_download_path`, `<pdf>.held`, out of the way of the partial file,
+  which discovery also writes), `download_mismatched` is emitted, and the
+  window shows *Keep this PDF*: `BrowserRescueService.keep_shown_pdf` →
+  `RescueAttempt.keep_held_pdf` renames it into place and ends the visit as
+  a rescue, since the check misreads scans with garbled text and preprints
+  retitled between versions. It returns `HeldPdfKeep`: `KEPT`,
+  `NOTHING_HELD`, or `NOT_SAVED` when the rename fails, in which case the
+  file stays held and the visit goes on; the window says each. The next
+  download (`download_started`, which hides the button), leaving, or the
+  visit's end discards it.
+  Leaving the visit (another entry, *Dismiss*, closing the window, quit) is
+  `abort()`: no verdict, no attempt counted.
 - **New windows open in the same page (D3).** `_ShownPage.createWindow`
   returns the page, so a `target=_blank` "Download PDF" link arrives as this
   visit's download. `JavascriptCanOpenWindows` stays off.
@@ -280,8 +296,13 @@ a **subprocess**, against a loopback publisher. Pumping the suite's shared
 `tests/test_browser_rescue_engine.py` runs the harness once and asserts on its
 JSON. Stage 3 adds `shown_scenarios`, a shown case in `service_scenarios`, and
 `shown_quit_scenario`:
+- a hidden visit served another article's PDF (`wrong_pdf`) or one that
+  cannot be opened (`unreadable_pdf`): nothing is left in the folder. The
+  harness serves real PDFs, checked against `ARTICLE_TITLE`;
 - a person's visit in a `QWebEngineView`: the PDF is saved, and a gone page or
   an abstract stays unjudged until it is left;
+- a person's visit served another article's PDF: held as `article.pdf.held`,
+  then kept with *Keep this PDF*, and the visit ends as a rescue;
 - `createWindow`;
 - a walk's judged visit;
 - a person's visit through the real service (`service_scenarios`);
@@ -312,8 +333,14 @@ a skip would leave CI green with the feature untested. CI sets
   holds up every other host's entries meanwhile (#531).
 - The title check cannot tell an article from its own supplement, or from a
   whole issue, when either carries the title on its first page. A same-subject
-  title passes about 2% of the time (COVID-19 reviews sharing boilerplate),
-  and a reader's *Keep this PDF* is believed.
+  title passes up to 2% of the time (3, 10 and 9 of 500 in the survey; COVID-19
+  reviews sharing boilerplate), and a reader's *Keep this PDF* is believed.
+  Errata, generic titles, stopword-heavy titles and stamped scans are #543.
+- A PDF with a translated title (PubMed's square brackets) that does not
+  print the English title is kept unchecked: the PDF is in the article's own
+  language, and nothing in the title can be judged against it.
+- A `.held` file left by a crash, the title check on the GUI thread, and a
+  disk error on arrival said as `transport` are #544.
 - An entry is unique by document ID and address, and the MCP server queues
   under its own IDs, so one address can be queued twice (#533).
 - A rescue that lands after the interrogation tab's wait ended is not loaded

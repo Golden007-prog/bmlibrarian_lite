@@ -14,7 +14,7 @@ import sqlite3
 from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import Enum, IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, assert_never
 
 from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from ..browser_rescue import (
     OPEN_RESCUE_STATES,
     DismissOutcome,
+    HeldPdfKeep,
     RescueEntry,
     RescueOutcome,
     RescueState,
@@ -52,11 +53,15 @@ from ..browser_rescue_text import (
     REVIEW_QUEUE_NOT_OPEN,
     REVIEW_QUEUE_UNREADABLE,
     REVIEW_QUEUE_UNWRITABLE,
+    SHOWN_VISIT_DOWNLOADING,
+    SHOWN_VISIT_HELD_NOT_SAVED,
     SHOWN_VISIT_LOADING,
     SHOWN_VISIT_NOT_A_PDF,
     SHOWN_VISIT_NOT_STARTED,
+    SHOWN_VISIT_NOTHING_HELD,
     SHOWN_VISIT_OPENING,
     SHOWN_VISIT_SETTLED_MEANWHILE,
+    SHOWN_VISIT_UNREADABLE_PDF,
     SHOWN_VISIT_WRONG_PDF,
     SYSTEM_BROWSER_FAILED,
     SYSTEM_BROWSER_REFUSED,
@@ -161,8 +166,10 @@ class ReviewQueueDialog(QDialog):
             service.shown_visit_started.connect(self._on_visit_started)
             service.shown_visit_ended.connect(self._on_visit_ended)
             service.shown_visit_failed.connect(self._on_visit_failed)
+            service.shown_download_started.connect(self._on_download_started)
             service.shown_download_ignored.connect(self._on_download_ignored)
             service.shown_download_mismatched.connect(self._on_download_mismatched)
+            service.shown_download_unreadable.connect(self._on_download_unreadable)
             service.entry_changed.connect(self.refresh)
             service.walk_ended.connect(self._on_walk_ended)
         self.refresh()
@@ -228,7 +235,8 @@ class ReviewQueueDialog(QDialog):
         self.walk_button = QPushButton(WALK_LABEL)
         self.walk_button.clicked.connect(self._toggle_walk)
         self.walk_button.setEnabled(self._service is not None and self.view is not None)
-        # Shown only while the visit holds a PDF that does not carry the title
+        # Shown from a held PDF's notice (a PDF that does not carry the
+        # title) until the visit's next download starts, or it ends
         self.keep_pdf_button = QPushButton(KEEP_HELD_PDF_LABEL)
         self.keep_pdf_button.clicked.connect(self._keep_held_pdf)
         self.keep_pdf_button.setVisible(False)
@@ -423,6 +431,11 @@ class ReviewQueueDialog(QDialog):
         if entry.id == self.selected_entry_id():
             self.status_label.setText(SHOWN_VISIT_NOT_STARTED)
 
+    def _on_download_started(self, _entry: RescueEntry) -> None:
+        """A person's download began: a PDF held for them is gone."""
+        self.keep_pdf_button.setVisible(False)
+        self.status_label.setText(SHOWN_VISIT_DOWNLOADING)
+
     def _on_download_ignored(self, _entry: RescueEntry) -> None:
         """A person's download was no PDF; the page stays open."""
         self.keep_pdf_button.setVisible(False)
@@ -433,11 +446,31 @@ class ReviewQueueDialog(QDialog):
         self.status_label.setText(SHOWN_VISIT_WRONG_PDF)
         self.keep_pdf_button.setVisible(True)
 
-    def _keep_held_pdf(self) -> None:
-        """Keep the held PDF as the article's; the visit then ends as a rescue."""
+    def _on_download_unreadable(self, _entry: RescueEntry) -> None:
+        """A person's PDF could not be opened; the page stays open (#532)."""
         self.keep_pdf_button.setVisible(False)
-        if self._service is not None:
-            self._service.keep_shown_pdf()
+        self.status_label.setText(SHOWN_VISIT_UNREADABLE_PDF)
+
+    def _keep_held_pdf(self) -> None:
+        """Keep the held PDF as the article's; the visit then ends as a rescue.
+
+        One no longer held, or that could not be saved, is said; the latter
+        stays held, and the button with it.
+        """
+        self.keep_pdf_button.setVisible(False)
+        if self._service is None:
+            return
+        match self._service.keep_shown_pdf():
+            case HeldPdfKeep.KEPT:
+                # The visit's end says the rest (_on_visit_ended)
+                pass
+            case HeldPdfKeep.NOTHING_HELD:
+                self.status_label.setText(SHOWN_VISIT_NOTHING_HELD)
+            case HeldPdfKeep.NOT_SAVED:
+                self.status_label.setText(SHOWN_VISIT_HELD_NOT_SAVED)
+                self.keep_pdf_button.setVisible(True)
+            case unknown:
+                assert_never(unknown)
 
     def _select_next_waiting(self, after: int) -> None:
         """Select the first listed open entry other than ``after``, from the top of the list.

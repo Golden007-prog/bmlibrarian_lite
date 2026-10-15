@@ -7,6 +7,7 @@ what the browser saw into a verdict are pinned without pumping the suite's
 shared QApplication.
 """
 
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -15,11 +16,11 @@ import fitz
 import pytest
 from PySide6.QtWebEngineCore import QWebEngineLoadingInfo
 
-from bmlibrarian_lite.browser_rescue import RescueOutcome, RescueVerdict
-from bmlibrarian_lite.constants import PDF_HELD_SUFFIX
+from bmlibrarian_lite.browser_rescue import HeldPdfKeep, RescueOutcome, RescueVerdict
 from bmlibrarian_lite.gui import rescue_attempt
 from bmlibrarian_lite.gui.rescue_attempt import RescueAttempt
-from bmlibrarian_lite.pdf_download import partial_download_path
+from bmlibrarian_lite.pdf_download import held_download_path, partial_download_path
+from bmlibrarian_lite.pdf_title_check import TitleCheckOutcome
 
 Domain = QWebEngineLoadingInfo.ErrorDomain
 Status = QWebEngineLoadingInfo.LoadStatus
@@ -46,6 +47,8 @@ def _pdf(text: str) -> bytes:
 #: The article's PDF, and another article's, as the title check reads them (#532).
 ARTICLE_PDF = _pdf(f"{TITLE}\n\nA. Author, B. Author")
 OTHER_PDF = _pdf("Using effect size, or why the P value is not enough\n\nG. Sullivan")
+#: A file that begins as a PDF and that no reader can open (truncated, damaged).
+BROKEN_PDF = b"%PDF-1.4\n" + b"0" * 100
 
 
 @pytest.fixture
@@ -475,27 +478,40 @@ def test_another_article_s_pdf_is_not_kept(qapp, tmp_path: Path) -> None:
     verdict, pdf_path, written = _settled(tmp_path, OTHER_PDF)
     assert verdict == RescueVerdict(RescueOutcome.WRONG_PDF)
     assert not pdf_path.exists() and not written.exists()
+    # A judged visit holds nothing for a person
+    assert not held_download_path(pdf_path).exists()
 
 
-def test_a_pdf_no_reader_can_open_learnt_nothing(qapp, tmp_path: Path) -> None:
-    """Begins with %PDF and is no PDF (truncated, damaged): unreadable is not absent."""
-    verdict, pdf_path, written = _settled(tmp_path, b"%PDF-1.4\n" + b"0" * 100)
-    assert verdict == RescueVerdict(RescueOutcome.TRANSPORT)
+def test_a_pdf_no_reader_can_open_is_not_kept(qapp, tmp_path: Path) -> None:
+    """Begins with %PDF and is no PDF (truncated, damaged): said as such, never an absence."""
+    verdict, pdf_path, written = _settled(tmp_path, BROKEN_PDF)
+    assert verdict == RescueVerdict(RescueOutcome.UNREADABLE_PDF)
     assert not pdf_path.exists() and not written.exists()
 
 
-def test_a_scan_is_kept(qapp, tmp_path: Path) -> None:
-    """A first page with no text cannot be checked, and feeds no rating."""
+def test_a_scan_is_kept_saying_its_title_was_not_checked(qapp, tmp_path: Path) -> None:
+    """No text on any page cannot be checked, and feeds no rating: kept, and said so."""
     verdict, pdf_path, _written = _settled(tmp_path, _pdf(""))
-    assert verdict == RescueVerdict(RescueOutcome.PDF)
+    assert verdict == RescueVerdict(RescueOutcome.PDF, title_unchecked=TitleCheckOutcome.NO_TEXT)
     assert pdf_path.read_bytes().startswith(b"%PDF")
 
 
 def test_an_entry_with_no_title_keeps_what_arrives(qapp, tmp_path: Path) -> None:
     """With nothing to check against, a PDF is kept as before #532: it is not even opened."""
-    verdict, pdf_path, _written = _settled(tmp_path, b"%PDF-1.4\n" + b"0" * 100, title="")
-    assert verdict == RescueVerdict(RescueOutcome.PDF)
+    verdict, pdf_path, _written = _settled(tmp_path, BROKEN_PDF, title="")
+    assert verdict == RescueVerdict(RescueOutcome.PDF, title_unchecked=TitleCheckOutcome.NO_TITLE)
     assert pdf_path.exists()
+
+
+def test_the_title_check_is_logged_with_its_share(
+    qapp, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A PDF refused, or kept unchecked, can be explained from the log."""
+    with caplog.at_level(logging.INFO, logger=rescue_attempt.__name__):
+        _settled(tmp_path, OTHER_PDF)
+    logged = [r.getMessage() for r in caplog.records if "title check" in r.getMessage()]
+    assert len(logged) == 1
+    assert ADDRESS in logged[0] and "mismatch" in logged[0] and "share 0.0" in logged[0]
 
 
 def test_a_hidden_visit_s_wrong_pdf_ends_it(qapp, tmp_path: Path) -> None:
@@ -511,7 +527,7 @@ def test_a_hidden_visit_s_wrong_pdf_ends_it(qapp, tmp_path: Path) -> None:
 
 def _held_path(tmp_path: Path) -> Path:
     """Where a person's visit holds a PDF that does not carry the title."""
-    return tmp_path / ("article.pdf" + PDF_HELD_SUFFIX)
+    return held_download_path(tmp_path / "article.pdf")
 
 
 def _person_held(tmp_path: Path) -> tuple[RescueAttempt, list[RescueVerdict], list[bool]]:
@@ -536,7 +552,7 @@ def test_a_person_s_wrong_pdf_is_held_and_the_page_stays_open(qapp, tmp_path: Pa
 def test_a_person_keeps_a_held_pdf(qapp, tmp_path: Path) -> None:
     """The check misreads scans and retitled preprints: the person's word keeps it."""
     attempt, verdicts, _mismatched = _person_held(tmp_path)
-    assert attempt.keep_held_pdf() is True
+    assert attempt.keep_held_pdf() is HeldPdfKeep.KEPT
     assert verdicts == [RescueVerdict(RescueOutcome.PDF)]
     assert (tmp_path / "article.pdf").read_bytes() == OTHER_PDF
     assert not _held_path(tmp_path).exists()
@@ -549,7 +565,7 @@ def test_a_person_s_next_download_replaces_the_held_pdf(qapp, tmp_path: Path) ->
     assert verdicts == [RescueVerdict(RescueOutcome.PDF)]
     assert (tmp_path / "article.pdf").read_bytes() == ARTICLE_PDF
     assert attempt._held is None and not _held_path(tmp_path).exists()
-    assert attempt.keep_held_pdf() is False
+    assert attempt.keep_held_pdf() is HeldPdfKeep.NOTHING_HELD
 
 
 def test_a_person_s_next_file_that_is_no_pdf_replaces_the_held_pdf(qapp, tmp_path: Path) -> None:
@@ -559,7 +575,7 @@ def test_a_person_s_next_file_that_is_no_pdf_replaces_the_held_pdf(qapp, tmp_pat
     assert verdicts == []
     assert not partial_download_path(tmp_path / "article.pdf").exists()
     assert not _held_path(tmp_path).exists()
-    assert attempt.keep_held_pdf() is False
+    assert attempt.keep_held_pdf() is HeldPdfKeep.NOTHING_HELD
     assert not (tmp_path / "article.pdf").exists()
 
 
@@ -588,7 +604,7 @@ def test_discovery_writing_the_partial_file_leaves_the_held_pdf_alone(qapp, tmp_
     """Discovery downloads to the same partial file: keeping still keeps what the person saw."""
     attempt, verdicts, _mismatched = _person_held(tmp_path)
     partial_download_path(tmp_path / "article.pdf").write_bytes(b"%PDF-1.4\nhalf-written")
-    assert attempt.keep_held_pdf() is True
+    assert attempt.keep_held_pdf() is HeldPdfKeep.KEPT
     assert verdicts == [RescueVerdict(RescueOutcome.PDF)]
     assert (tmp_path / "article.pdf").read_bytes() == OTHER_PDF
     assert partial_download_path(tmp_path / "article.pdf").read_bytes() == b"%PDF-1.4\nhalf-written"
@@ -597,14 +613,60 @@ def test_discovery_writing_the_partial_file_leaves_the_held_pdf_alone(qapp, tmp_
 def test_keeping_with_nothing_held_does_nothing(qapp, tmp_path: Path) -> None:
     """No PDF held: no verdict, and the visit goes on."""
     attempt, verdicts = _person_attempt(tmp_path)
-    assert attempt.keep_held_pdf() is False
+    assert attempt.keep_held_pdf() is HeldPdfKeep.NOTHING_HELD
     assert verdicts == []
 
 
-def test_a_held_pdf_that_cannot_be_kept_learnt_nothing(qapp, tmp_path: Path) -> None:
-    """The rename fails: the visit ends with nothing saved, and the held file goes."""
+def test_a_held_pdf_that_cannot_be_saved_stays_held(qapp, tmp_path: Path) -> None:
+    """The rename fails: the person's choice is not lost, and the visit goes on."""
     attempt, verdicts, _mismatched = _person_held(tmp_path)
     (tmp_path / "article.pdf").mkdir()  # a folder where the PDF should go
-    assert attempt.keep_held_pdf() is True
-    assert verdicts == [RescueVerdict(RescueOutcome.TRANSPORT)]
-    assert not _held_path(tmp_path).exists()
+    assert attempt.keep_held_pdf() is HeldPdfKeep.NOT_SAVED
+    assert verdicts == []
+    assert _held_path(tmp_path).read_bytes() == OTHER_PDF
+    # Once the PDF library can take it, keeping again saves it
+    (tmp_path / "article.pdf").rmdir()
+    assert attempt.keep_held_pdf() is HeldPdfKeep.KEPT
+    assert verdicts == [RescueVerdict(RescueOutcome.PDF)]
+    assert (tmp_path / "article.pdf").read_bytes() == OTHER_PDF
+
+
+def test_a_person_s_pdf_that_cannot_be_opened_keeps_the_page_open(qapp, tmp_path: Path) -> None:
+    """The download worked: said, discarded, and another copy is taken."""
+    attempt, verdicts = _person_attempt(tmp_path)
+    unreadable: list[bool] = []
+    attempt.download_unreadable.connect(lambda: unreadable.append(True))
+    _finish_download(attempt, BROKEN_PDF, tmp_path)
+    assert verdicts == [] and unreadable == [True]
+    assert not (tmp_path / "article.pdf").exists()
+    assert not partial_download_path(tmp_path / "article.pdf").exists()
+    _finish_download(attempt, ARTICLE_PDF, tmp_path)
+    assert verdicts == [RescueVerdict(RescueOutcome.PDF)]
+
+
+def test_a_hidden_visit_s_pdf_that_cannot_be_opened_ends_it(qapp, tmp_path: Path) -> None:
+    """Control: an unattended visit's unopened PDF is its answer, not said as a person's."""
+    attempt, verdicts = _attempt(tmp_path)
+    unreadable: list[bool] = []
+    attempt.download_unreadable.connect(lambda: unreadable.append(True))
+    _finish_download(attempt, BROKEN_PDF, tmp_path)
+    assert verdicts == [RescueVerdict(RescueOutcome.UNREADABLE_PDF)] and unreadable == []
+
+
+def test_a_person_s_download_starting_is_said(qapp, tmp_path: Path) -> None:
+    """The window hides *Keep this PDF* then: the held PDF goes with the next download."""
+    attempt, _verdicts, _mismatched = _person_held(tmp_path)
+    started: list[bool] = []
+    attempt.download_started.connect(lambda: started.append(True))
+    attempt.accept_download(_Request(attempt._page))  # type: ignore[arg-type]
+    assert started == [True]
+    assert attempt.keep_held_pdf() is HeldPdfKeep.NOTHING_HELD
+
+
+def test_a_hidden_visit_s_download_starting_is_not_said(qapp, tmp_path: Path) -> None:
+    """Control: no window listens, and nothing is held."""
+    attempt, _verdicts = _attempt(tmp_path)
+    started: list[bool] = []
+    attempt.download_started.connect(lambda: started.append(True))
+    attempt.accept_download(_Request(attempt._page))  # type: ignore[arg-type]
+    assert started == []

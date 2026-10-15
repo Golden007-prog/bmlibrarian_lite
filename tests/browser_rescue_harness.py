@@ -90,6 +90,8 @@ def _pdf(text: str) -> bytes:
 PDF_BODY = _pdf(ARTICLE_TITLE)
 #: Another article's PDF: served whole, and not this article's (#532).
 OTHER_PDF_BODY = _pdf("Why the P value is not enough")
+#: Begins as a PDF, and no reader can open it (#532).
+BROKEN_PDF_BODY = b"%PDF-1.4\n" + b"0" * 100
 OVERSIZE_BODY = b"%PDF-1.4\n" + b"0" * 4_096
 CHALLENGE_PAGE = (
     b"<html><head><title>Just a moment...</title></head><body><script>"
@@ -138,6 +140,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "application/pdf", PDF_BODY)
         elif route == "/otherpdf":
             self._send(200, "application/pdf", OTHER_PDF_BODY)
+        elif route == "/brokenpdf":
+            self._send(200, "application/pdf", BROKEN_PDF_BODY)
         elif route == "/challenge":
             if "cleared=1" in (self.headers.get("Cookie") or ""):
                 self.send_response(302)
@@ -229,6 +233,7 @@ def closed_port() -> int:
 ATTEMPTS = {
     "pdf": "/pdf",
     "otherpdf": "/otherpdf",
+    "brokenpdf": "/brokenpdf",
     "challenge": "/challenge",
     "walled": "/walled",
     "gone": "/gone",
@@ -382,6 +387,33 @@ def shown_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any]:
         return result
 
     results["pdf"] = person("pdf", "/pdf?shown", SCENARIO_LIMIT_SECONDS)
+
+    # Another article's PDF is held for the person, who keeps it (#532)
+    out = root / "shown" / "held"
+    out.mkdir(parents=True)
+    held_verdicts: list[RescueVerdict] = []
+    mismatched: list[bool] = []
+    attempt = RescueAttempt(profile, base + "/otherpdf?shown", out / "article.pdf", TIMEOUT_MS,
+                            STALL_MS, MAX_PDF_BYTES, title=ARTICLE_TITLE, view=view, judge_pages=False)
+    attempt.finished.connect(held_verdicts.append)
+    attempt.download_mismatched.connect(lambda: mismatched.append(True))
+    current[:] = [attempt]
+    attempt.start()
+    held = run_until(app, lambda: bool(mismatched), SCENARIO_LIMIT_SECONDS)
+    held_before_keep = sorted(p.name for p in out.iterdir())
+    kept = attempt.keep_held_pdf().value
+    results["held"] = {
+        "held": held,
+        "held_before_keep": held_before_keep,
+        "kept": kept,
+        "verdict": held_verdicts[0].to_dict() if held_verdicts else None,
+        "saved_other": (out / "article.pdf").is_file()
+        and (out / "article.pdf").read_bytes() == OTHER_PDF_BODY,
+        "left": sorted(p.name for p in out.iterdir() if p.name != "article.pdf"),
+    }
+    pump(app, 0.2)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    attempt.deleteLater()
     # Neither a gone page nor an abstract ends a person's visit; leaving it does
     results["gone"] = person("gone", "/gone?shown", PERSON_WAIT_SECONDS)
     results["abstract"] = person("abstract", "/abstract?shown", PERSON_WAIT_SECONDS)
