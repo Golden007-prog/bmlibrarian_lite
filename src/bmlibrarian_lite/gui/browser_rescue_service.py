@@ -124,6 +124,9 @@ class BrowserRescueService(QObject):
             opened (logged); ``shown_visit_ended(entry, None)`` precedes it.
         shown_download_ignored: The :class:`RescueEntry` of a person's visit
             whose download was no PDF; the page stays open.
+        shown_download_mismatched: The :class:`RescueEntry` of a person's
+            visit whose PDF does not carry the article's title (#532); it is
+            held for :meth:`keep_shown_pdf`, and the page stays open.
         walk_ended: *Walk the queue* is over: its :class:`WalkEnd`.
     """
 
@@ -133,6 +136,7 @@ class BrowserRescueService(QObject):
     shown_visit_ended = Signal(object, object)
     shown_visit_failed = Signal(object)
     shown_download_ignored = Signal(object)
+    shown_download_mismatched = Signal(object)
     walk_ended = Signal(object)
 
     def __init__(
@@ -376,6 +380,20 @@ class BrowserRescueService(QObject):
             return
         self._leave_shown()
 
+    def keep_shown_pdf(self) -> bool:
+        """Keep the PDF the window's visit holds, as the article's (#532).
+
+        The person has looked at a PDF that does not carry the title and
+        says it is the article. The visit then ends as any rescue does.
+
+        Returns:
+            Whether the window's visit held a PDF.
+        """
+        shown = self._shown
+        if shown is None or shown.attempt is None:
+            return False
+        return shown.attempt.keep_held_pdf()
+
     def _leave_shown(self) -> None:
         """Leave the window's visit with no verdict, whether or not a walk runs."""
         shown, self._shown = self._shown, None
@@ -456,10 +474,11 @@ class BrowserRescueService(QObject):
             attempt = RescueAttempt(
                 self._ensure_profile(), current.request.address, self._pdf_path_for(current),
                 self._visible_timeout_ms, self._stall_ms, self._max_pdf_bytes, parent=self,
-                view=shown.view, judge_pages=shown.judge_pages,
+                title=current.request.title, view=shown.view, judge_pages=shown.judge_pages,
             )
             attempt.finished.connect(lambda verdict: self._on_shown_finished(token, verdict))
             attempt.download_ignored.connect(lambda: self._on_shown_download_ignored(token))
+            attempt.download_mismatched.connect(lambda: self._on_shown_download_mismatched(token))
             shown.attempt = attempt
             self._attempt = attempt
             logger.info("Showing a walled PDF at %s in the review queue", current.request.host)
@@ -499,6 +518,16 @@ class BrowserRescueService(QObject):
         shown = self._shown
         if shown is not None and shown.token == token:
             self.shown_download_ignored.emit(shown.entry)
+
+    def _on_shown_download_mismatched(self, token: int) -> None:
+        """A person's PDF does not carry the title; say so, if the visit is still the window's.
+
+        Args:
+            token: Which request the visit was for.
+        """
+        shown = self._shown
+        if shown is not None and shown.token == token:
+            self.shown_download_mismatched.emit(shown.entry)
 
     def _on_shown_finished(self, token: int, verdict: RescueVerdict) -> None:
         """Record the window's visit's verdict, and say it ended.
@@ -619,6 +648,7 @@ class BrowserRescueService(QObject):
             attempt = RescueAttempt(
                 profile, entry.request.address, pdf_path,
                 self._timeout_ms, self._stall_ms, self._max_pdf_bytes, parent=self,
+                title=entry.request.title,
             )
             attempt.finished.connect(lambda verdict: self._on_finished(entry, verdict))
             self._attempt = attempt

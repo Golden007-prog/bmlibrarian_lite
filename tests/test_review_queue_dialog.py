@@ -54,6 +54,7 @@ class FakeService(QObject):
     shown_visit_ended = Signal(object, object)
     shown_visit_failed = Signal(object)
     shown_download_ignored = Signal(object)
+    shown_download_mismatched = Signal(object)
     entry_changed = Signal(object)
     walk_ended = Signal(object)
     rescued = Signal(object)
@@ -88,6 +89,11 @@ class FakeService(QObject):
             self.walk_ended.emit(self.walk_ends_at_once)
             return
         self.walking = True
+
+    def keep_shown_pdf(self) -> bool:
+        """Record keeping the held PDF."""
+        self.calls.append(("keep", self.shown_entry_id))
+        return True
 
     def stop_walk(self) -> None:
         """Record stopping the walk, which says it ended."""
@@ -555,4 +561,37 @@ def test_closing_the_window_leaves_nothing_selected(qapp, storage: LiteStorage) 
     dialog.table.selectRow(0)
     dialog.done(0)
     assert dialog.selected_entry_id() is None
+    dialog.deleteLater()
+
+
+def test_a_pdf_that_is_not_the_article_s_is_said_and_can_be_kept(qapp, storage: LiteStorage) -> None:
+    """Said, with a button to keep it anyway (#532); keeping hides the button."""
+    service = FakeService()
+    dialog = _dialog(storage, service)
+    assert dialog.keep_pdf_button.isHidden()
+    dialog.table.selectRow(0)
+    service.shown_download_mismatched.emit(storage.rescue_entry(dialog.selected_entry_id()))
+    assert dialog.status_label.text() == dialog_module.SHOWN_VISIT_WRONG_PDF
+    assert not dialog.keep_pdf_button.isHidden()
+    dialog.keep_pdf_button.click()
+    assert ("keep", dialog.selected_entry_id()) in service.calls
+    assert dialog.keep_pdf_button.isHidden()
+    dialog.deleteLater()
+
+
+@pytest.mark.parametrize("how", ["ended", "ignored", "started"])
+def test_the_keep_button_goes_when_the_held_pdf_does(qapp, storage: LiteStorage, how: str) -> None:
+    """A visit's end, a next download that was no PDF, or another visit: nothing is held."""
+    service = FakeService()
+    dialog = _dialog(storage, service)
+    dialog.table.selectRow(0)
+    entry = storage.rescue_entry(dialog.selected_entry_id())
+    service.shown_download_mismatched.emit(entry)
+    if how == "ended":
+        service.shown_visit_ended.emit(entry, None)
+    elif how == "ignored":
+        service.shown_download_ignored.emit(entry)
+    else:
+        service.shown_visit_started.emit(entry)
+    assert dialog.keep_pdf_button.isHidden()
     dialog.deleteLater()

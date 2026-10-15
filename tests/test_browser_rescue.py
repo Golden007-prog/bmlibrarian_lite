@@ -29,6 +29,7 @@ from bmlibrarian_lite.browser_rescue import (
     rescue_pdf_path,
     rescue_requests,
     stamp,
+    title_checked_verdict,
     wait_outcome,
     wait_watch,
 )
@@ -45,6 +46,7 @@ from bmlibrarian_lite.data_models import (
     SourceLookupFailure,
 )
 from bmlibrarian_lite.exceptions import SQLiteError
+from bmlibrarian_lite.pdf_title_check import TitleCheck, TitleCheckOutcome
 from bmlibrarian_lite.rescue_queue_store import RecordedVerdict
 
 DOI = "10.1000/xyz"
@@ -200,6 +202,7 @@ def test_only_the_first_64_kib_of_a_download_are_read_for_markers() -> None:
         (RescueOutcome.NO_PDF, RescueState.NO_PDF),
         (RescueOutcome.GONE, RescueState.GONE),
         (RescueOutcome.TOO_LARGE, RescueState.TOO_LARGE),
+        (RescueOutcome.WRONG_PDF, RescueState.NEEDS_PERSON),
     ],
 )
 @pytest.mark.parametrize("state", sorted(OPEN_RESCUE_STATES, key=lambda s: s.value))
@@ -727,3 +730,42 @@ def test_a_request_a_browser_cannot_trust_is_refused(address: str, host: str, do
     """A browser goes to the address, pacing goes by the host, and the DOI names the PDF."""
     with pytest.raises(ValueError):
         RescueRequest("doc-1", doi, None, "T", address, host, SERVICE_UNPAYWALL_PDF)
+
+
+# -- a PDF checked against the title (#532) ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("check", "outcome"),
+    [
+        (TitleCheck(TitleCheckOutcome.MATCHES, 1.0), RescueOutcome.PDF),
+        (TitleCheck(TitleCheckOutcome.NO_TITLE), RescueOutcome.PDF),
+        (TitleCheck(TitleCheckOutcome.NO_TEXT), RescueOutcome.PDF),
+        (TitleCheck(TitleCheckOutcome.MISMATCH, 0.1), RescueOutcome.WRONG_PDF),
+        (TitleCheck(TitleCheckOutcome.UNREADABLE), RescueOutcome.TRANSPORT),
+    ],
+)
+def test_a_pdf_is_kept_only_when_it_is_not_another_article_s(
+    check: TitleCheck, outcome: RescueOutcome
+) -> None:
+    """A mismatch is not kept; what the check cannot judge is; an unreadable file learnt nothing."""
+    assert title_checked_verdict(check) == RescueVerdict(outcome)
+
+
+def test_every_title_check_has_a_verdict() -> None:
+    """No outcome of the check falls through."""
+    for outcome in TitleCheckOutcome:
+        share = 0.5 if outcome in {TitleCheckOutcome.MATCHES, TitleCheckOutcome.MISMATCH} else None
+        assert isinstance(title_checked_verdict(TitleCheck(outcome, share)), RescueVerdict)
+
+
+def test_a_wrong_pdf_waits_for_a_person_and_is_never_an_absence() -> None:
+    """The right PDF may still be on the page: the entry stays open."""
+    for state in OPEN_RESCUE_STATES:
+        assert next_state(state, RescueVerdict(RescueOutcome.WRONG_PDF), 1) in OPEN_RESCUE_STATES
+
+
+def test_a_wrong_pdf_verdict_round_trips() -> None:
+    """Stored as its value, and read back."""
+    verdict = RescueVerdict(RescueOutcome.WRONG_PDF)
+    assert RescueVerdict.from_dict(verdict.to_dict()) == verdict

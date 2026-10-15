@@ -43,7 +43,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, assert_never
 from urllib.parse import quote, urlparse
 
 import requests
@@ -112,6 +112,7 @@ from .pdf_download import (
     partial_download_path,
     read_body_prefix,
 )
+from .pdf_title_check import TitleCheckOutcome, check_pdf_title
 from .polite_session import mount_politely
 from .search_failures import request_failure_from_exception
 
@@ -2071,55 +2072,29 @@ class PDFDiscoverer:
         self,
         pdf_path: Path,
         expected_title: str,
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Verify that downloaded PDF matches expected content.
+    ) -> tuple[bool, str | None]:
+        """Check that a downloaded PDF's first page carries the expected title (#532).
 
         Args:
             pdf_path: Path to PDF file
             expected_title: Expected document title
 
         Returns:
-            Tuple of (is_valid, warning_message)
+            Tuple of (is_valid, warning_message). A title with no words is
+            not checked, so it is valid.
         """
-        try:
-            import fitz  # PyMuPDF
-
-            doc = fitz.open(str(pdf_path))
-            if doc.page_count == 0:
-                return False, "PDF has no pages"
-
-            # Extract text from first page
-            first_page = doc[0]
-            text = first_page.get_text()
-            doc.close()
-
-            if not text.strip():
+        check = check_pdf_title(pdf_path, expected_title)
+        match check.outcome:
+            case TitleCheckOutcome.MATCHES | TitleCheckOutcome.NO_TITLE:
+                return True, None
+            case TitleCheckOutcome.MISMATCH:
+                return False, (
+                    "PDF content may not match expected document. "
+                    f"Title match: {check.share or 0.0:.0%}"
+                )
+            case TitleCheckOutcome.NO_TEXT:
                 return False, "PDF contains no extractable text"
-
-            # Check if title appears in first page (fuzzy match)
-            title_words = self._extract_title_words(expected_title)
-            text_lower = text.lower()
-
-            matched_words = sum(1 for word in title_words if word in text_lower)
-            match_ratio = matched_words / len(title_words) if title_words else 0
-
-            if match_ratio < 0.5:  # Less than 50% of title words found
-                return False, f"PDF content may not match expected document. Title match: {match_ratio:.0%}"
-
-            return True, None
-
-        except Exception as e:
-            logger.warning(f"PDF verification failed: {e}")
-            return True, f"Could not verify PDF content: {e}"
-
-    def _extract_title_words(self, title: str) -> List[str]:
-        """Extract significant words from title for matching."""
-        # Remove common words and punctuation
-        stop_words = {
-            "a", "an", "the", "and", "or", "but", "in", "on", "at", "to",
-            "for", "of", "with", "by", "from", "as", "is", "was", "are",
-            "were", "been", "be", "have", "has", "had", "do", "does", "did",
-        }
-        words = re.findall(r"\b\w+\b", title.lower())
-        return [w for w in words if len(w) > 2 and w not in stop_words]
+            case TitleCheckOutcome.UNREADABLE:
+                return False, "The PDF could not be read to check it against the title"
+            case unknown:
+                assert_never(unknown)

@@ -78,6 +78,16 @@ SHOWN_VISIT_NOT_A_PDF = (
     "That file was not a PDF, so it was not kept. The page stays open: "
     "download the article's own PDF."
 )
+#: Said when a person's PDF does not carry the article's title (#532); it is
+#: held, and the page stays open.
+SHOWN_VISIT_WRONG_PDF = (
+    "That PDF's first page does not carry this article's title, so it was not "
+    "kept: it may be a supplement or another article. The page stays open: "
+    "download the article's own PDF. If this one is the article (a scan, or a "
+    "preprint retitled since), choose “Keep this PDF”."
+)
+#: The button that keeps a held PDF as the article's.
+KEEP_HELD_PDF_LABEL = "Keep this PDF"
 #: Said when a visit's result could not be saved yet.
 VERDICT_UNSAVED = (
     "The visit's result could not be saved yet; the app keeps trying, and "
@@ -95,13 +105,14 @@ SYSTEM_BROWSER_FAILED = "The system's browser could not be opened."
 BROWSER_RESCUE_WAITING = "Trying the publisher's page in a browser…"
 REVIEW_QUEUE_OFFER_TITLE = "Robot check"
 #: True whatever led here: a check the hidden browser met, a hidden browser
-#: that is off, busy or slower than the wait, or a page it could not reach.
+#: that is off, busy or slower than the wait, a page it could not reach, or
+#: a PDF it fetched that was not the article's (#532).
 REVIEW_QUEUE_OFFER = (
     "The publisher's copy of this article is behind a robot check and could "
     "not be fetched automatically, so what the app already had (usually the "
     "abstract) is loaded for now. In the "
-    "review queue you can open the page and tick the box; the PDF is then "
-    "saved, and opening the citation again loads it."
+    "review queue you can open the page, tick the box if it asks, and download "
+    "the article's PDF; it is then saved, and opening the citation again loads it."
 )
 REVIEW_QUEUE_OFFER_OPEN = "Open the review queue"
 REVIEW_QUEUE_OFFER_LATER = "Not now"
@@ -180,6 +191,8 @@ def verdict_text(verdict: RescueVerdict | None) -> str:
             return _with_status("Not found", verdict)
         case RescueOutcome.TOO_LARGE:
             return "The PDF is larger than the app downloads"
+        case RescueOutcome.WRONG_PDF:
+            return "A PDF arrived whose first page does not carry this article's title; it was not kept"
         case RescueOutcome.TRANSPORT:
             return _with_status("Nothing was learnt: the page or its download failed", verdict)
         case unknown:

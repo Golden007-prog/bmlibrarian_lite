@@ -45,6 +45,13 @@ def test_a_direct_pdf_is_saved_whole(harness: dict[str, Any]) -> None:
     assert result["saved"] and result["left"] == []
 
 
+def test_another_article_s_pdf_is_not_kept(harness: dict[str, Any]) -> None:
+    """A whole PDF whose first page does not carry the title (#532): not saved, nothing left."""
+    result = _attempt(harness, "otherpdf")
+    assert result["verdict"] == {"outcome": "wrong_pdf", "http_status": None, "markers": []}
+    assert not result["saved"] and result["left"] == []
+
+
 def test_a_javascript_challenge_is_passed_to_the_pdf(harness: dict[str, Any]) -> None:
     """A cookie-and-reload challenge passes in the hidden page."""
     result = _attempt(harness, "challenge")

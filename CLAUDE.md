@@ -62,6 +62,7 @@ keyed_service_session.py # KeyedServiceSession: a keyed service's 429 pause, ref
 bot_walls.py          # Bot-wall challenge pages recognised from an answer (#480): WALL_MARKERS, challenge_markers
 pdf_download.py       # PDF download helpers: body prefix, .part file, MAX_PDF_SIZE
 pdf_discovery.py      # PDF source discovery
+pdf_title_check.py    # Is a PDF the article? Its first page's share of the title's word pairs (#532)
 browser_rescue.py     # Walled PDFs queued for the embedded browser: states, verdicts, what is queued
 browser_rescue_text.py # What the reader reads about the rescue queue: labels, sentences
 rescue_queue_store.py # The browser rescue queue's table

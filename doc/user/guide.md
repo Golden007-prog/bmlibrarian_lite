@@ -124,6 +124,10 @@ reCAPTCHA or Cloudflare), which is how the check is passed. Those sites learn
 which article is fetched, as the publisher did when the app first tried. Your
 searches, documents and keys are never sent.
 
+A PDF the hidden browser fetches is saved only when its first page carries the
+article's title; one that does not (a supplement, another article) is not
+kept, and the entry waits for you in the review queue.
+
 Rescued PDFs are saved in your PDF library, and a rescued article's
 transparency badge is re-checked, so it may change once the full text has been
 read. The browser keeps the sites' cookies and a cache of what the pages loaded
@@ -144,11 +148,12 @@ choose **Tools → Walled PDFs…** (which works at a count of 0 too).
 - **Select an entry** to open its page in the window's built-in browser. If
   the page asks for a robot check, tick the box. When the PDF arrives it is
   saved, the article's transparency is re-checked, and the next entry opens.
-  The page is yours to read and navigate. The first PDF you download there
-  is saved as the article's PDF and is not yet checked against its title, so
-  download the article itself, not a supplement. A file that is not a PDF
-  (a citation export, say) is not kept: the window says so and the page
-  stays open. Selecting an entry that is already settled shows only how its
+  The page is yours to read and navigate. A PDF you download there is saved
+  as the article's when its first page carries the article's title. One that
+  does not (a supplement, another article) is not kept: the window says so,
+  the page stays open, and **Keep this PDF** saves it anyway, for a scan or a
+  preprint whose title changed. A file that is not a PDF (a citation export,
+  say) is not kept either: the window says so and the page stays open. Selecting an entry that is already settled shows only how its
   last visit ended.
 - **Walk the queue** opens each waiting entry in turn and waits up to a minute
   for its PDF. Many robot checks (Cloudflare's, in testing) pass on their own

@@ -68,7 +68,7 @@ tick the robot check (stage 3).
                   +--> no_pdf       (page loaded, unchallenged, no PDF)
 pending --visit-->+--> gone         (404 or 410)
    ^              +--> too_large    (PDF over MAX_PDF_SIZE)
-   |              +--> needs_person (still a challenge)
+   |              +--> needs_person (still a challenge, or wrong_pdf)
    +--transport---+
    |
    +--transport, attempts >= cap--> needs_person
@@ -84,7 +84,8 @@ was rescued) are reached outside a visit. `pending` and
 A **transport** outcome learnt nothing about the article, so the entry stays
 `pending` (unreachable is not absent). Transport covers: a network error, a
 renderer crash, a stalled or interrupted download, an empty download, a PDF
-that arrived and could not be kept, a visit that could not start (no profile
+that arrived and could not be kept or read (a `%PDF` body PyMuPDF cannot
+open), a visit that could not start (no profile
 or PDF folder), a visit with no main-frame answer before
 `RESCUE_HIDDEN_TIMEOUT_MS` (`page_verdict` with no status), a page read while a
 navigation it started is still open (the page in view is the one being left;
@@ -106,6 +107,17 @@ back off together. The hidden page is muted.
 
 - **Spec D2.** `too_large` is its own state: the PDF is real, the application
   just does not download that much.
+- **A PDF must carry the article's title (#532).** Before a PDF is renamed
+  into place, `pdf_title_check.check_pdf_title` reads its first page and asks
+  for at least `PDF_TITLE_MIN_PAIR_SHARE` of the title's adjacent word pairs
+  (single words are not enough: an article on the same subject shares them;
+  the survey is in the constant's comment). `title_checked_verdict` maps the
+  check: a mismatch is `wrong_pdf`, which waits for a person (the right PDF
+  may still be on the page, so it is never an absence); a title with no words
+  or a first page with no text (a scan) keeps the PDF; a file PyMuPDF cannot
+  open is transport. Each visit is checked against its entry's
+  `request.title`. The HTTP download paths' `verification_warning` shares the
+  same check.
 - **Spec D3.** A transport failure is retried no sooner than
   `RESCUE_RETRY_DELAY_SECONDS` (15 minutes) later. After `MAX_RESCUE_ATTEMPTS`
   (3) the entry becomes `needs_person` and waits for the review queue window.
@@ -148,7 +160,16 @@ error in the pass's slots is logged and never leaves the pass busy (#525).
   It ends on a finished download or a renderer crash. A finished download
   that is neither a PDF nor a wall (a citation export, a supplement), which
   would be `no_pdf`, is discarded instead: `download_ignored` is emitted, the
-  page stays open, and the next download is taken. Leaving it (another
+  page stays open, and the next download is taken. A PDF that does not
+  carry the title is held (moved to `<pdf>.held`, out of the way of the
+  partial file, which discovery also writes), `download_mismatched`
+  is emitted, and the window shows *Keep this PDF*:
+  `BrowserRescueService.keep_shown_pdf` → `RescueAttempt.keep_held_pdf`
+  renames it into place and ends the visit as a rescue, since the check
+  misreads scans and preprints retitled between versions. The next download,
+  leaving, or the visit's end discards it. Any error PyMuPDF raises reading
+  the file (an encrypted PDF raises `ValueError`) is `UNREADABLE`.
+  Leaving it (another
   entry, *Dismiss*, closing the window, quit) is `abort()`: no verdict, no
   attempt counted.
 - **New windows open in the same page (D3).** `_ShownPage.createWindow`
@@ -289,10 +310,10 @@ a skip would leave CI green with the feature untested. CI sets
   saw ("could not be asked"). Lodged as #524.
 - Only one visit runs at a time, so a host whose pacing slot is minutes away
   holds up every other host's entries meanwhile (#531).
-- A fetched PDF is checked for `%PDF` and its size, not against the article's
-  title (#532). A person's visit makes this likelier: the reader may navigate
-  and download a supplement or another article's PDF, which is then saved as
-  this article's.
+- The title check cannot tell an article from its own supplement, or from a
+  whole issue, when either carries the title on its first page. A same-subject
+  title passes about 2% of the time (COVID-19 reviews sharing boilerplate),
+  and a reader's *Keep this PDF* is believed.
 - An entry is unique by document ID and address, and the MCP server queues
   under its own IDs, so one address can be queued twice (#533).
 - A rescue that lands after the interrogation tab's wait ended is not loaded

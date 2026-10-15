@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, assert_never
 from urllib.parse import urlparse
 
 from .bot_walls import challenge_markers
@@ -46,6 +46,7 @@ from .constants import (
 )
 from .data_models import LookupRecord, RequestFailureKind
 from .exceptions import SQLiteError
+from .pdf_title_check import TitleCheck, TitleCheckOutcome
 from .pdf_utils import generate_pdf_path
 from .polite_session import is_loopback_host, retry_after_from_headers
 from .rate_limit import limiter_for
@@ -73,8 +74,8 @@ class RescueState(Enum):
     #: Waiting for the hidden browser.
     PENDING = "pending"
     #: Waits for a person (stage 3's window): still a challenge after a visit,
-    #: a refusal (401, 403) with no marker, or a transport failure on the last
-    #: of ``MAX_RESCUE_ATTEMPTS``.
+    #: a refusal (401, 403) with no marker, a PDF that was not the article's
+    #: (#532), or a transport failure on the last of ``MAX_RESCUE_ATTEMPTS``.
     NEEDS_PERSON = "needs_person"
     #: The PDF arrived and was saved.
     RESCUED = "rescued"
@@ -103,8 +104,13 @@ class RescueOutcome(Enum):
     NO_PDF = "no_pdf"
     GONE = "gone"
     TOO_LARGE = "too_large"
+    #: A PDF arrived whose first page does not carry the article's title, so
+    #: it was not kept (#532). The right PDF may still be on the page, so the
+    #: entry waits for a person rather than settling as an absence.
+    WRONG_PDF = "wrong_pdf"
     #: The visit learnt nothing: a network error, a renderer crash, a stalled
-    #: or interrupted download, or a PDF that arrived and could not be kept.
+    #: or interrupted download, or a PDF that arrived and could not be kept
+    #: or read.
     TRANSPORT = "transport"
 
 
@@ -116,10 +122,11 @@ _SETTLED_BY: dict[RescueOutcome, RescueState] = {
     RescueOutcome.NO_PDF: RescueState.NO_PDF,
     RescueOutcome.GONE: RescueState.GONE,
     RescueOutcome.TOO_LARGE: RescueState.TOO_LARGE,
+    RescueOutcome.WRONG_PDF: RescueState.NEEDS_PERSON,
 }
 
-# Every outcome but TRANSPORT settles an entry in a state of its own; a test
-# holds this (an import-time assert would vanish under ``python -O``)
+# Every outcome but TRANSPORT settles an entry; a test holds this (an
+# import-time assert would vanish under ``python -O``)
 
 
 def http_status_or_none(value: object) -> int | None:
@@ -385,6 +392,31 @@ def download_verdict(first_bytes: bytes) -> RescueVerdict:
     if markers:
         return RescueVerdict(RescueOutcome.CHALLENGE, None, markers)
     return RescueVerdict(RescueOutcome.NO_PDF)
+
+
+def title_checked_verdict(check: TitleCheck) -> RescueVerdict:
+    """What a visit concluded from a PDF that arrived, once checked against the title (#532).
+
+    A PDF that does not carry the title is not kept: its text would feed
+    the article's rating. One the check could not judge is kept: with no
+    title there is nothing to check against, and a page with no text (a
+    scan) feeds no rating. A file that is no readable PDF learnt nothing.
+
+    Args:
+        check: The PDF checked against the entry's title.
+
+    Returns:
+        ``PDF``, ``WRONG_PDF``, or ``TRANSPORT`` for an unreadable file.
+    """
+    match check.outcome:
+        case TitleCheckOutcome.MATCHES | TitleCheckOutcome.NO_TITLE | TitleCheckOutcome.NO_TEXT:
+            return RescueVerdict(RescueOutcome.PDF)
+        case TitleCheckOutcome.MISMATCH:
+            return RescueVerdict(RescueOutcome.WRONG_PDF)
+        case TitleCheckOutcome.UNREADABLE:
+            return RescueVerdict(RescueOutcome.TRANSPORT)
+        case unknown:
+            assert_never(unknown)
 
 
 def _stripped_or_none(value: str | None) -> str | None:

@@ -46,6 +46,7 @@ from ..browser_rescue import (
     fetchable_host,
 )
 from ..browser_rescue_text import (
+    KEEP_HELD_PDF_LABEL,
     REVIEW_QUEUE_HELP,
     REVIEW_QUEUE_NO_BROWSER,
     REVIEW_QUEUE_NOT_OPEN,
@@ -56,6 +57,7 @@ from ..browser_rescue_text import (
     SHOWN_VISIT_NOT_STARTED,
     SHOWN_VISIT_OPENING,
     SHOWN_VISIT_SETTLED_MEANWHILE,
+    SHOWN_VISIT_WRONG_PDF,
     SYSTEM_BROWSER_FAILED,
     SYSTEM_BROWSER_REFUSED,
     VERDICT_UNSAVED,
@@ -160,6 +162,7 @@ class ReviewQueueDialog(QDialog):
             service.shown_visit_ended.connect(self._on_visit_ended)
             service.shown_visit_failed.connect(self._on_visit_failed)
             service.shown_download_ignored.connect(self._on_download_ignored)
+            service.shown_download_mismatched.connect(self._on_download_mismatched)
             service.entry_changed.connect(self.refresh)
             service.walk_ended.connect(self._on_walk_ended)
         self.refresh()
@@ -225,7 +228,13 @@ class ReviewQueueDialog(QDialog):
         self.walk_button = QPushButton(WALK_LABEL)
         self.walk_button.clicked.connect(self._toggle_walk)
         self.walk_button.setEnabled(self._service is not None and self.view is not None)
-        for button in (self.reload_button, self.system_browser_button, self.dismiss_button):
+        # Shown only while the visit holds a PDF that does not carry the title
+        self.keep_pdf_button = QPushButton(KEEP_HELD_PDF_LABEL)
+        self.keep_pdf_button.clicked.connect(self._keep_held_pdf)
+        self.keep_pdf_button.setVisible(False)
+        for button in (
+            self.reload_button, self.system_browser_button, self.dismiss_button, self.keep_pdf_button
+        ):
             buttons.addWidget(button)
         buttons.addStretch(1)
         buttons.addWidget(self.walk_button)
@@ -372,6 +381,7 @@ class ReviewQueueDialog(QDialog):
 
     def _on_visit_started(self, _entry: RescueEntry) -> None:
         """A visit's page is opening in the view."""
+        self.keep_pdf_button.setVisible(False)
         walking = self._service is not None and self._service.walking
         self.status_label.setText(WALK_RUNNING if walking else SHOWN_VISIT_LOADING)
 
@@ -383,6 +393,7 @@ class ReviewQueueDialog(QDialog):
                 before its page opened.
             verdict: Its verdict; ``None`` when it was left without one.
         """
+        self.keep_pdf_button.setVisible(False)
         walking = self._service is not None and self._service.walking
         unsaved = self._service is not None and self._service.holds_unsaved_verdict
         self.refresh()
@@ -414,7 +425,19 @@ class ReviewQueueDialog(QDialog):
 
     def _on_download_ignored(self, _entry: RescueEntry) -> None:
         """A person's download was no PDF; the page stays open."""
+        self.keep_pdf_button.setVisible(False)
         self.status_label.setText(SHOWN_VISIT_NOT_A_PDF)
+
+    def _on_download_mismatched(self, _entry: RescueEntry) -> None:
+        """A person's PDF does not carry the title: held, theirs to keep (#532)."""
+        self.status_label.setText(SHOWN_VISIT_WRONG_PDF)
+        self.keep_pdf_button.setVisible(True)
+
+    def _keep_held_pdf(self) -> None:
+        """Keep the held PDF as the article's; the visit then ends as a rescue."""
+        self.keep_pdf_button.setVisible(False)
+        if self._service is not None:
+            self._service.keep_shown_pdf()
 
     def _select_next_waiting(self, after: int) -> None:
         """Select the first listed open entry other than ``after``, from the top of the list.

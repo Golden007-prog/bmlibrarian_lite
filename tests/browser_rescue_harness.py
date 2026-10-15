@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+import fitz
+
 from bmlibrarian_lite.gui.web_engine import prepare_web_engine
 
 prepare_web_engine()
@@ -53,7 +55,6 @@ SLOW_ANSWER_SECONDS = 5
 TRICKLE_CHUNKS = 10
 # How long a person's visit is left open before it is left: past the hidden timeout
 PERSON_WAIT_SECONDS = 2 * TIMEOUT_MS / 1000
-TRICKLE_CHUNK_BYTES = 100
 TRICKLE_PAUSE_SECONDS = 0.4
 # How long after /trickle sent its headers the server calls the download begun,
 # which gives QtWebEngine time to turn the response into a download
@@ -73,7 +74,22 @@ REPLACING_PAGE = (
     b"setTimeout(poll,200);"
     b"</script></html>"
 )
-PDF_BODY = b"%PDF-1.4\n" + b"0" * 500
+#: The title every visit checks a PDF against (#532), which PDF_BODY carries.
+ARTICLE_TITLE = "Coffee and blood pressure"
+
+
+def _pdf(text: str) -> bytes:
+    """A real one-page PDF carrying ``text``, small enough for MAX_PDF_BYTES."""
+    document = fitz.open()
+    document.new_page().insert_text((50, 72), text)
+    body = document.tobytes(garbage=4, deflate=True)
+    document.close()
+    return body
+
+
+PDF_BODY = _pdf(ARTICLE_TITLE)
+#: Another article's PDF: served whole, and not this article's (#532).
+OTHER_PDF_BODY = _pdf("Why the P value is not enough")
 OVERSIZE_BODY = b"%PDF-1.4\n" + b"0" * 4_096
 CHALLENGE_PAGE = (
     b"<html><head><title>Just a moment...</title></head><body><script>"
@@ -120,6 +136,8 @@ class Handler(BaseHTTPRequestHandler):
         route = self.path.split("?")[0]
         if route == "/pdf":
             self._send(200, "application/pdf", PDF_BODY)
+        elif route == "/otherpdf":
+            self._send(200, "application/pdf", OTHER_PDF_BODY)
         elif route == "/challenge":
             if "cleared=1" in (self.headers.get("Cookie") or ""):
                 self.send_response(302)
@@ -175,14 +193,17 @@ class Handler(BaseHTTPRequestHandler):
         elif route == "/trickle":
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
-            self.send_header("Content-Length", str(len(b"%PDF-1.4\n") + TRICKLE_CHUNKS * TRICKLE_CHUNK_BYTES))
+            self.send_header("Content-Length", str(len(PDF_BODY)))
             self.end_headers()
             Handler.trickle_headers_sent = time.monotonic()
-            self.wfile.write(b"%PDF-1.4\n")
-            for _ in range(TRICKLE_CHUNKS):
+            # The article's real PDF (#532), its head at once, the rest in
+            # TRICKLE_CHUNKS pieces
+            size = -(-len(PDF_BODY) // (TRICKLE_CHUNKS + 1))
+            self.wfile.write(PDF_BODY[:size])
+            for i in range(1, TRICKLE_CHUNKS + 1):
                 self.wfile.flush()
                 time.sleep(TRICKLE_PAUSE_SECONDS)
-                self.wfile.write(b"0" * TRICKLE_CHUNK_BYTES)
+                self.wfile.write(PDF_BODY[i * size:(i + 1) * size])
         else:
             self._send(404, "text/html", b"no such route")
 
@@ -207,6 +228,7 @@ def closed_port() -> int:
 
 ATTEMPTS = {
     "pdf": "/pdf",
+    "otherpdf": "/otherpdf",
     "challenge": "/challenge",
     "walled": "/walled",
     "gone": "/gone",
@@ -266,7 +288,7 @@ def run_attempt(
         was left in the folder.
     """
     verdicts: list[RescueVerdict] = []
-    attempt = RescueAttempt(profile, address, pdf_path, TIMEOUT_MS, STALL_MS, MAX_PDF_BYTES)
+    attempt = RescueAttempt(profile, address, pdf_path, TIMEOUT_MS, STALL_MS, MAX_PDF_BYTES, title=ARTICLE_TITLE)
     attempt.finished.connect(verdicts.append)
     current[:] = [attempt]
     started = time.monotonic()
@@ -337,7 +359,7 @@ def shown_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any]:
         out.mkdir(parents=True)
         verdicts: list[RescueVerdict] = []
         attempt = RescueAttempt(profile, base + path, out / "article.pdf", TIMEOUT_MS, STALL_MS,
-                                MAX_PDF_BYTES, view=view, judge_pages=False)
+                                MAX_PDF_BYTES, title=ARTICLE_TITLE, view=view, judge_pages=False)
         attempt.finished.connect(verdicts.append)
         current[:] = [attempt]
         attempt.start()
@@ -375,7 +397,7 @@ def shown_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any]:
     out.mkdir(parents=True)
     verdicts: list[RescueVerdict] = []
     attempt = RescueAttempt(profile, base + "/walled?shown", out / "article.pdf", TIMEOUT_MS,
-                            STALL_MS, MAX_PDF_BYTES, view=view, judge_pages=True)
+                            STALL_MS, MAX_PDF_BYTES, title=ARTICLE_TITLE, view=view, judge_pages=True)
     attempt.finished.connect(verdicts.append)
     current[:] = [attempt]
     attempt.start()
@@ -400,7 +422,7 @@ def service_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
     out = root / "service-pdfs"
 
     def request(doc: str, path: str) -> RescueRequest:
-        return RescueRequest(doc, f"10.1/{doc}", None, f"Title {doc}", base + path, "127.0.0.1",
+        return RescueRequest(doc, f"10.1/{doc}", None, ARTICLE_TITLE, base + path, "127.0.0.1",
                              SERVICE_UNPAYWALL_PDF)
 
     def states() -> dict[str, str]:
@@ -491,7 +513,7 @@ def shown_quit_scenario(app: QApplication, base: str, root: Path) -> dict[str, A
     config.storage.data_dir = root / "shown-quit-data"
     config.discovery.browser_rescue_hidden = False
     storage = LiteStorage(config)
-    storage.enqueue_rescues([RescueRequest("doc-h", "10.1/doc-h", None, "Title doc-h",
+    storage.enqueue_rescues([RescueRequest("doc-h", "10.1/doc-h", None, ARTICLE_TITLE,
                                            base + "/abstract?h", "127.0.0.1", SERVICE_UNPAYWALL_PDF)])
     service = BrowserRescueService(
         storage, config, root / "shown-quit-profile",

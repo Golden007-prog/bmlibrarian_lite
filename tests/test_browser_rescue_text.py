@@ -57,6 +57,10 @@ def test_the_services_are_named_as_the_reader_knows_them() -> None:
         (RescueVerdict(RescueOutcome.NO_PDF), "The page served no PDF"),
         (RescueVerdict(RescueOutcome.GONE, 404), "Not found (HTTP 404)"),
         (RescueVerdict(RescueOutcome.TOO_LARGE), "The PDF is larger than the app downloads"),
+        (
+            RescueVerdict(RescueOutcome.WRONG_PDF),
+            "A PDF arrived whose first page does not carry this article's title; it was not kept",
+        ),
         (RescueVerdict(RescueOutcome.TRANSPORT, 503), "Nothing was learnt: the page or its download failed (HTTP 503)"),
         (RescueVerdict(RescueOutcome.TRANSPORT), "Nothing was learnt: the page or its download failed"),
     ],
@@ -127,3 +131,6 @@ def test_the_offer_claims_no_attempt_that_may_not_have_been_made() -> None:
     assert "could not pass" not in REVIEW_QUEUE_OFFER
     assert "hidden browser" not in REVIEW_QUEUE_OFFER
     assert "robot check" in REVIEW_QUEUE_OFFER
+    # After a PDF that was not the article's (#532) there may be no box to tick
+    assert "tick the box if it asks" in REVIEW_QUEUE_OFFER
+    assert "download the article's PDF" in REVIEW_QUEUE_OFFER
