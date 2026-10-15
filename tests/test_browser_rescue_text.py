@@ -76,3 +76,12 @@ def test_a_held_back_entry_says_when_it_is_tried_again() -> None:
 def test_no_retry_time_says_nothing(retry_after: str | None) -> None:
     """None, or a stored value this build cannot read, says nothing rather than guessing."""
     assert retry_text(_pending(retry_after)) == ""
+
+
+def test_the_offer_claims_no_attempt_that_may_not_have_been_made() -> None:
+    """The offer also follows a hidden pass that was off, too slow, or unreachable: it never says it tried."""
+    from bmlibrarian_lite.browser_rescue_text import REVIEW_QUEUE_OFFER
+
+    assert "could not pass" not in REVIEW_QUEUE_OFFER
+    assert "hidden browser" not in REVIEW_QUEUE_OFFER
+    assert "robot check" in REVIEW_QUEUE_OFFER

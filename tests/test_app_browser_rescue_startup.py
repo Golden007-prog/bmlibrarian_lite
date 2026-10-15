@@ -212,3 +212,25 @@ def test_a_rescue_is_said_without_hidden() -> None:
     assert app_module.rescued_pdf_message("T", True, False) == (
         "Fetched the PDF of \u201cT\u201d in the built-in browser; re-checking its transparency."
     )
+
+
+@pytest.mark.parametrize(
+    "shown, walking, free",
+    [(None, False, True), (7, False, False), (None, True, False)],
+)
+def test_the_tab_waits_only_when_the_window_leaves_the_hidden_pass_free(
+    shown: int | None, walking: bool, free: bool
+) -> None:
+    """A visit or a walk in the review queue holds the hidden pass, so the tab must not wait on it."""
+    window = _wired_window()
+    window._rescue_service = SimpleNamespace(shown_entry_id=shown, walking=walking)
+    window._hidden_pass_runs = lambda: True
+    assert app_module.LiteMainWindow._hidden_pass_free(window) is free  # type: ignore[arg-type]
+
+
+def test_the_tab_is_given_the_free_check() -> None:
+    """The interrogation tab's wait uses the check that sees the window's hold."""
+    import inspect
+
+    setup = inspect.getsource(app_module.LiteMainWindow._setup_ui)
+    assert "set_hidden_pass_check(self._hidden_pass_free)" in setup

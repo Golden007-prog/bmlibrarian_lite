@@ -203,8 +203,8 @@ class LiteMainWindow(QMainWindow):
         )
         self.tab_widget.addTab(self.interrogation_tab, "Document Interrogation")
         # A walled PDF the reader opens is waited for only while a hidden
-        # pass will visit it (#480, stage 3)
-        self.interrogation_tab.set_hidden_pass_check(self._hidden_pass_runs)
+        # pass will visit it now (#480, stage 3)
+        self.interrogation_tab.set_hidden_pass_check(self._hidden_pass_free)
 
         # Benchmark Results tab (persistent, starts empty)
         self.benchmark_tab = BenchmarkResultsTab(result=None, parent=self)
@@ -859,6 +859,24 @@ class LiteMainWindow(QMainWindow):
             ``True`` when QtWebEngine started and the setting is on.
         """
         return self._rescue_service is not None and self.config.discovery.browser_rescue_hidden
+
+    def _hidden_pass_free(self) -> bool:
+        """Whether a hidden pass will visit a pending entry now.
+
+        The review queue window holds the browser while it shows a visit or
+        walks the queue, and the hidden pass takes no entry meanwhile, so
+        the interrogation tab must not wait on it then.
+
+        Returns:
+            ``True`` when the hidden pass runs and the window holds nothing.
+        """
+        service = self._rescue_service
+        return (
+            self._hidden_pass_runs()
+            and service is not None
+            and service.shown_entry_id is None
+            and not service.walking
+        )
 
     def _on_rescue_queued(self) -> None:
         """The interrogation tab queued a walled PDF: visit soon, and count it."""

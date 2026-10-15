@@ -144,8 +144,9 @@ of 0 too).
 - **Select an entry** to open its page in the window's built-in browser. If
   the page asks for a robot check, tick the box. When the PDF arrives it is
   saved, the article's transparency is re-checked, and the next entry opens.
-  The page is yours to read and navigate: the app saves only what you
-  download there.
+  The page is yours to read and navigate. The first PDF you download there
+  is saved as the article's PDF and is not yet checked against its title, so
+  download the article itself, not a supplement.
 - **Walk the queue** opens each waiting entry in turn and waits up to a minute
   for its PDF. Most robot checks pass on their own this way, leaving only
   those that need a tick. Selecting an entry yourself stops the walk.

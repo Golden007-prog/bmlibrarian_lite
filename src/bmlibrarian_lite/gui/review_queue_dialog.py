@@ -415,7 +415,11 @@ class ReviewQueueDialog(QDialog):
             self._service.end_shown_visit()
         if dismiss_entry(self._storage, entry.id) is None:
             # Settled elsewhere meanwhile, or the queue could not be written
-            current = self._storage.rescue_entry(entry.id)
+            try:
+                current = self._storage.rescue_entry(entry.id)
+            except (sqlite3.Error, SQLiteError) as e:
+                logger.error("Walled PDF %s could not be read after its dismissal failed: %s", entry.id, e)
+                current = None
             if current is None or current.state in OPEN_RESCUE_STATES:
                 self.status_label.setText(REVIEW_QUEUE_UNWRITABLE)
         self.refresh()

@@ -295,7 +295,7 @@ class BrowserRescueService(QObject):
         """
         if self._stopped:
             return
-        self.end_shown_visit()
+        self._leave_shown()
         self._walk = deque(entry_ids)
         self._walk_view = view
         self._walk_next()
@@ -306,7 +306,7 @@ class BrowserRescueService(QObject):
             return
         self._walk = None
         self._walk_view = None
-        self.end_shown_visit()
+        self._leave_shown()
         self.walk_ended.emit()
 
     def _walk_next(self) -> None:
@@ -332,7 +332,19 @@ class BrowserRescueService(QObject):
         self.wake()
 
     def end_shown_visit(self) -> None:
-        """Leave the window's visit with no verdict: its entry stays as it was."""
+        """Leave the window's visit with no verdict: its entry stays as it was.
+
+        During a walk this stops the walk: the reader acted on its entry
+        (dismissed it, or chose a settled one), and a walk whose visit was
+        ended from outside would otherwise wait for a verdict that never comes.
+        """
+        if self._walk is not None:
+            self.stop_walk()
+            return
+        self._leave_shown()
+
+    def _leave_shown(self) -> None:
+        """Leave the window's visit with no verdict, whether or not a walk runs."""
         shown, self._shown = self._shown, None
         if shown is None:
             return
@@ -355,7 +367,7 @@ class BrowserRescueService(QObject):
         """
         if self._stopped:
             return
-        self.end_shown_visit()
+        self._leave_shown()
         self._shown_token += 1
         self._shown = _ShownVisit(entry, view, judge_pages, self._shown_token)
         self._start_shown_when_free()
@@ -401,7 +413,7 @@ class BrowserRescueService(QObject):
             attempt.start()
         except Exception:
             logger.exception("The review queue could not open the page at %s", shown.entry.request.host)
-            self.end_shown_visit()
+            self._leave_shown()
             self.shown_visit_failed.emit(shown.entry)
             # A walk goes on past a page that could not open
             self._walk_next()
@@ -500,6 +512,9 @@ class BrowserRescueService(QObject):
         if self._stopped:
             return
         started = False
+        # Only the attempt this call makes is its to free: a shown visit may
+        # have started while this one waited for its slot
+        attempt: RescueAttempt | None = None
         try:
             if self._shown is not None or not self._config.discovery.browser_rescue_hidden:
                 # The window asked for a visit meanwhile, or the pass was switched off
@@ -526,10 +541,11 @@ class BrowserRescueService(QObject):
             if not started:
                 # No visit under way: let the next poll look again, whatever
                 # stopped this one
-                unstarted, self._attempt = self._attempt, None
-                if unstarted is not None:
-                    unstarted.abort()
-                    unstarted.deleteLater()
+                if attempt is not None:
+                    if self._attempt is attempt:
+                        self._attempt = None
+                    attempt.abort()
+                    attempt.deleteLater()
                 self._busy = False
 
     def _ensure_profile(self) -> QWebEngineProfile:

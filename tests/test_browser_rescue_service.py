@@ -662,3 +662,41 @@ def test_the_hidden_pass_looks_again_once_a_walk_ends(qapp, tmp_path: Path, show
     _FakeAttempt.made[0].finished.emit(RescueVerdict(RescueOutcome.NO_PDF, 200))
     _run_scheduled(shown)
     assert not service.walking and storage.reads > reads
+
+
+# -- the final review's findings (#480, stage 3) ---------------------------------
+
+
+def test_a_hidden_visit_late_for_its_slot_leaves_the_reader_s_visit_alone(
+    qapp, tmp_path: Path, shown: list
+) -> None:
+    """A hidden visit whose slot arrives after a shown visit started frees only itself."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    service.wake()
+    _delay, tick = shown.pop(0)
+    tick()  # takes the entry and schedules its hidden visit for the host's slot
+    _delay, late_visit = shown.pop(0)
+    service.visit_shown(_other(), object())
+    _run_scheduled(shown)
+    (reader_attempt,) = _FakeAttempt.made
+    late_visit()
+    assert not reader_attempt.aborted
+    assert service._attempt is reader_attempt and service.shown_entry_id == 2
+    ended: list[Any] = []
+    service.shown_visit_ended.connect(lambda e, v: ended.append(v))
+    reader_attempt.finished.emit(PDF)
+    assert ended == [PDF]
+
+
+def test_ending_the_walk_s_visit_from_outside_ends_the_walk(qapp, tmp_path: Path, shown: list) -> None:
+    """Dismissing the walk's entry, or selecting a settled one, stops the walk rather than hanging it."""
+    storage = _WalkStorage({1: RescueState.NEEDS_PERSON, 2: RescueState.NEEDS_PERSON})
+    service = _walking_service(tmp_path, storage)
+    ended: list[bool] = []
+    service.walk_ended.connect(lambda: ended.append(True))
+    service.walk([1, 2], object())
+    _run_scheduled(shown)
+    service.end_shown_visit()
+    _run_scheduled(shown)
+    assert not service.walking and ended == [True]
+    assert _FakeAttempt.made[0].aborted and len(_FakeAttempt.made) == 1

@@ -247,7 +247,9 @@ a skip would leave CI green with the feature untested. CI sets
 - Only one visit runs at a time, so a host whose pacing slot is minutes away
   holds up every other host's entries meanwhile (#531).
 - A fetched PDF is checked for `%PDF` and its size, not against the article's
-  title (#532).
+  title (#532). A person's visit makes this likelier: the reader may navigate
+  and download a supplement or another article's PDF, which is then saved as
+  this article's.
 - An entry is unique by document ID and address, and the MCP server queues
   under its own IDs, so one address can be queued twice (#533).
 - A rescue that lands after the interrogation tab's wait ended is not loaded

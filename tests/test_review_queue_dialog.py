@@ -307,3 +307,25 @@ def test_a_verdict_elsewhere_refreshes_the_list(qapp, storage: LiteStorage) -> N
     service.entry_changed.emit(storage.rescue_entry(b.id))
     assert "Title doc-b" in _titles(dialog)
     dialog.deleteLater()
+
+
+def test_a_locked_queue_on_dismiss_is_said_not_raised(
+    qapp, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The follow-up read after a failed dismissal is guarded too (golden rule 8)."""
+    import sqlite3
+
+    dialog = _dialog(storage, FakeService())
+    dialog.table.selectRow(0)
+    changed: list[bool] = []
+    dialog.queue_changed.connect(lambda: changed.append(True))
+
+    def locked(*_a: Any) -> Any:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(storage, "dismiss_rescue", locked)
+    monkeypatch.setattr(storage, "rescue_entry", locked)
+    dialog._dismiss_selected()
+    assert dialog.status_label.text() == dialog_module.REVIEW_QUEUE_UNWRITABLE
+    assert changed == [True]
+    dialog.deleteLater()

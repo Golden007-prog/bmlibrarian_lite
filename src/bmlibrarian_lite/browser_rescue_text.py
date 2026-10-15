@@ -63,9 +63,11 @@ SHOWN_VISIT_NOT_STARTED = "The page could not be opened here; the log says why."
 #: The interrogation tab's wait, and its offer.
 BROWSER_RESCUE_WAITING = "Trying the publisher's page in a browser…"
 REVIEW_QUEUE_OFFER_TITLE = "Robot check"
+#: True whatever led here: a check the hidden browser met, a hidden browser
+#: that is off, busy or slower than the wait, or a page it could not reach.
 REVIEW_QUEUE_OFFER = (
-    "The publisher's copy of this article is behind a robot check that the "
-    "hidden browser could not pass, so the abstract is loaded for now. In the "
+    "The publisher's copy of this article is behind a robot check and could "
+    "not be fetched automatically, so the abstract is loaded for now. In the "
     "review queue you can open the page and tick the box; the PDF is then "
     "saved, and opening the citation again loads it."
 )
