@@ -48,7 +48,8 @@ sub-projects 2 and 3; replaces #483).
   check, then quit. Offscreen smoke runs passed, apart from #530's cold-start
   segfault (2 of the first 2 runs, then 0 of 48; evidence on #530).
   Lodged from stage 3: **#534** (the *Fetch PDF* button's path is not
-  queued). Still open from stage 2: **#524**, **#525**, **#527**, **#528**,
+  queued), **#535** (the review's minor follow-ups); **#532** now also
+  covers a person's visit saving a PDF they navigated to. Still open from stage 2: **#524**, **#525**, **#527**, **#528**,
   **#530**–**#533**.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
@@ -212,7 +213,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 ### Next up
 
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
-  browser's stage 3** is in review (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups), **#534** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+  browser's stage 3** is in review (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups), **#534**, **#535** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted
