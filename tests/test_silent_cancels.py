@@ -48,6 +48,7 @@ from bmlibrarian_lite.data_models import (  # noqa: E402
     DocumentSource,
     EvaluationErrorCode,
     LiteDocument,
+    LookupRecord,
     PassFailure,
     PassOutcome,
     ScoredDocument,
@@ -282,6 +283,8 @@ class FakeDiscoveryResult:
         self.verification_warning = None
         self.paywall_url = "https://example.org/article"
         self.markdown_content = "# Aspirin trial"
+        # What went unsettled; the worker keeps it for the interrogation tab (#480)
+        self.lookups = LookupRecord()
         self.source_type = MagicMock(value="europepmc_xml")
 
 

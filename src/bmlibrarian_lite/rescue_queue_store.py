@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 Dr Horst Herb
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""The browser rescue queue's table (#480, stage 2).
+"""The browser rescue queue's table (#480, stages 2 and 3).
 
 SQL only; the rules are ``browser_rescue``'s. Every function takes an open
 connection whose ``row_factory`` is ``sqlite3.Row``. ``LiteStorage`` opens
@@ -17,7 +17,7 @@ import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 
 from .browser_rescue import (
     OPEN_RESCUE_STATES,
@@ -25,7 +25,9 @@ from .browser_rescue import (
     RescueRequest,
     RescueState,
     RescueVerdict,
+    dismissed_state,
     next_state,
+    stamp,
 )
 from .constants import RESCUE_RETRY_DELAY_SECONDS
 
@@ -66,7 +68,7 @@ _OPEN_MARKS = ", ".join("?" for _ in _OPEN)
 
 @dataclass(frozen=True)
 class RecordedVerdict:
-    """What recording one visit's verdict did.
+    """What recording one visit's verdict, or a dismissal, did.
 
     Attributes:
         entry: The entry as it now stands; ``None`` when it is gone or its
@@ -79,17 +81,14 @@ class RecordedVerdict:
     entry: RescueEntry | None
     applied: bool
 
+    def __post_init__(self) -> None:
+        """An applied change has the entry it changed.
 
-def stamp(moment: datetime) -> str:
-    """A moment as stored: UTC ISO 8601 to the microsecond, so text order is time order.
-
-    Args:
-        moment: A timezone-aware moment.
-
-    Returns:
-        The stored text.
-    """
-    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+        Raises:
+            ValueError: If it was applied with no entry.
+        """
+        if self.applied and self.entry is None:
+            raise ValueError("An applied queue change needs the entry it changed")
 
 
 def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
@@ -100,8 +99,9 @@ def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
 
     Returns:
         The entry, its verdict ``None`` when unreadable; ``None`` for a
-        state this build does not know (a newer build's), which is left
-        alone.
+        state this build does not know (a newer build's), or a request it
+        cannot trust (damage: no web address, a host that is not the
+        address's, no DOI), which is left alone (logged).
     """
     try:
         state = RescueState(row["state"])
@@ -114,9 +114,11 @@ def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
             verdict = RescueVerdict.from_dict(json.loads(row["verdict"]))
         except (TypeError, ValueError):
             verdict = None
-    return RescueEntry(
-        id=row["id"],
-        request=RescueRequest(
+        if verdict is None:
+            # Shown as unreadable, never as "not visited yet"
+            logger.warning("The last verdict of rescue entry %s could not be read", row["id"])
+    try:
+        request = RescueRequest(
             document_id=row["document_id"],
             doi=row["doi"],
             pmid=row["pmid"],
@@ -124,7 +126,15 @@ def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
             address=row["address"],
             host=row["host"],
             service=row["service"],
-        ),
+        )
+    except (TypeError, AttributeError, ValueError) as e:
+        # Never handed to a browser: a damaged row is left alone, as a newer
+        # build's state is
+        logger.warning("Leaving rescue entry %s alone: it cannot be read (%s)", row["id"], e)
+        return None
+    return RescueEntry(
+        id=row["id"],
+        request=request,
         state=state,
         attempts=row["attempts"],
         verdict=verdict,
@@ -230,12 +240,12 @@ def record_verdict(
     conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (entry_id,)).fetchone()
-        entry = entry_from_row(row) if row is not None else None
-        if entry is None or entry.state not in OPEN_RESCUE_STATES:
+        current = entry_from_row(row) if row is not None else None
+        if current is None or current.state not in OPEN_RESCUE_STATES:
             conn.rollback()
-            return RecordedVerdict(entry, applied=False)
-        attempts = entry.attempts + 1
-        state = next_state(entry.state, verdict, attempts)
+            return RecordedVerdict(current, applied=False)
+        attempts = current.attempts + 1
+        state = next_state(current.state, verdict, attempts)
         at = stamp(now)
         retry_after = (
             stamp(now + timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS))
@@ -253,10 +263,10 @@ def record_verdict(
         if state is RescueState.RESCUED:
             conn.execute(
                 f"""
-                UPDATE {TABLE} SET state = ?, updated_at = ?
+                UPDATE {TABLE} SET state = ?, retry_after = NULL, updated_at = ?
                 WHERE document_id = ? AND id != ? AND state IN ({_OPEN_MARKS})
                 """,
-                (RescueState.SUPERSEDED.value, at, entry.request.document_id, entry_id, *_OPEN),
+                (RescueState.SUPERSEDED.value, at, current.request.document_id, entry_id, *_OPEN),
             )
         conn.commit()
     except BaseException:
@@ -264,7 +274,7 @@ def record_verdict(
         raise
     return RecordedVerdict(
         replace(
-            entry, state=state, attempts=attempts, verdict=verdict, updated_at=at,
+            current, state=state, attempts=attempts, verdict=verdict, updated_at=at,
             retry_after=retry_after,
         ),
         applied=True,
@@ -291,3 +301,87 @@ def entries(conn: sqlite3.Connection, states: Iterable[RescueState]) -> list[Res
         values,
     )
     return [entry for entry in map(entry_from_row, rows) if entry is not None]
+
+
+def entry(conn: sqlite3.Connection, entry_id: int) -> RescueEntry | None:
+    """One entry by its ID.
+
+    Args:
+        conn: The connection.
+        entry_id: The entry.
+
+    Returns:
+        The entry; ``None`` when it is gone or its state is a newer build's.
+    """
+    row = conn.execute(f"SELECT * FROM {TABLE} WHERE id = ?", (entry_id,)).fetchone()
+    return entry_from_row(row) if row is not None else None
+
+
+def dismiss(conn: sqlite3.Connection, entry_id: int, now: datetime) -> RecordedVerdict:
+    """Set an open entry aside for the reader; its last verdict is kept.
+
+    One immediate transaction, as :func:`record_verdict` takes, so a rescue
+    another process recorded in between is not overwritten.
+
+    Args:
+        conn: The connection.
+        entry_id: The entry.
+        now: The moment.
+
+    Returns:
+        The entry as it now stands, and whether it was dismissed; an entry no
+        longer open is returned unchanged and not applied.
+    """
+    if conn.in_transaction:
+        conn.commit()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = entry(conn, entry_id)
+        if current is None or current.state not in OPEN_RESCUE_STATES:
+            conn.rollback()
+            return RecordedVerdict(current, applied=False)
+        state = dismissed_state(current.state)
+        at = stamp(now)
+        conn.execute(
+            f"UPDATE {TABLE} SET state = ?, retry_after = NULL, updated_at = ? WHERE id = ?",
+            (state.value, at, entry_id),
+        )
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    return RecordedVerdict(replace(current, state=state, retry_after=None, updated_at=at), applied=True)
+
+
+def count(conn: sqlite3.Connection, states: Iterable[RescueState]) -> int:
+    """How many entries are in the given states.
+
+    Args:
+        conn: The connection.
+        states: The states counted.
+
+    Returns:
+        The count; 0 for no states.
+    """
+    values = [state.value for state in states]
+    if not values:
+        return 0
+    marks = ", ".join("?" for _ in values)
+    row = conn.execute(f"SELECT COUNT(*) FROM {TABLE} WHERE state IN ({marks})", values).fetchone()
+    return int(row[0])
+
+
+def for_document(conn: sqlite3.Connection, document_id: str) -> list[RescueEntry]:
+    """A document's entries, in any state, oldest first.
+
+    Args:
+        conn: The connection.
+        document_id: The document.
+
+    Returns:
+        Its entries; rows this build cannot read are left out.
+    """
+    rows = conn.execute(
+        f"SELECT * FROM {TABLE} WHERE document_id = ? ORDER BY created_at, id", (document_id,)
+    )
+    return [e for e in map(entry_from_row, rows) if e is not None]

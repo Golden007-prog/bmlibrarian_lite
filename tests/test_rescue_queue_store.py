@@ -14,6 +14,7 @@ from bmlibrarian_lite.browser_rescue import (
     RescueRequest,
     RescueState,
     RescueVerdict,
+    fetchable_host,
 )
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.constants import (
@@ -30,7 +31,9 @@ TRANSPORT = RescueVerdict(RescueOutcome.TRANSPORT)
 
 
 def _request(document_id: str = "doc-1", address: str = "https://a.example/1.pdf") -> RescueRequest:
-    return RescueRequest(document_id, "10.1/x", None, "Title", address, "a.example", SERVICE_UNPAYWALL_PDF)
+    host = fetchable_host(address)
+    assert host is not None
+    return RescueRequest(document_id, "10.1/x", None, "Title", address, host, SERVICE_UNPAYWALL_PDF)
 
 
 @pytest.fixture
@@ -217,13 +220,37 @@ def test_a_newer_builds_state_is_left_alone(conn: sqlite3.Connection) -> None:
     assert store.entries(conn, list(RescueState)) == []
 
 
-def test_a_damaged_verdict_reads_as_none(conn: sqlite3.Connection) -> None:
-    """A damaged stored verdict reads as None rather than failing."""
+def test_a_damaged_verdict_reads_as_none(conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture) -> None:
+    """A damaged stored verdict reads as None rather than failing, and is logged."""
     store.enqueue(conn, [_request()], 0, T0)
     conn.execute(f"UPDATE {store.TABLE} SET verdict = '{{not json'")
     conn.commit()
     entry = store.next_pending(conn, T0)
     assert entry is not None and entry.verdict is None
+    assert "could not be read" in caplog.text
+
+
+def test_a_newer_builds_verdict_is_logged_as_unreadable(
+    conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Valid JSON with an outcome this build does not know is unreadable too, never silently none."""
+    store.enqueue(conn, [_request()], 0, T0)
+    conn.execute(f"UPDATE {store.TABLE} SET verdict = ?", (json.dumps({"outcome": "newer"}),))
+    conn.commit()
+    entry = store.next_pending(conn, T0)
+    assert entry is not None and entry.verdict is None
+    assert "could not be read" in caplog.text
+
+
+def test_a_superseded_sibling_keeps_no_retry_time(conn: sqlite3.Connection) -> None:
+    """Only a pending entry is held back: superseding one held back clears its retry time."""
+    first, second = _queued(conn, _request("doc-1", "https://a.example/1.pdf"),
+                            _request("doc-1", "https://b.example/1.pdf"))
+    store.record_verdict(conn, second, TRANSPORT, T0)
+    store.record_verdict(conn, first, PDF, T0)
+    sibling = store.entry(conn, second)
+    assert sibling is not None and sibling.state is RescueState.SUPERSEDED
+    assert sibling.retry_after is None
 
 
 def test_stamps_sort_as_time_does() -> None:
@@ -258,3 +285,135 @@ def test_a_second_storage_on_the_same_file_sees_the_queue(storage: LiteStorage) 
     """The MCP server writes from another process; the GUI reads the same file."""
     LiteStorage(storage.config).enqueue_rescues([_request()])
     assert storage.next_rescue_entry() is not None
+
+
+# -- stage 3: the window's reads and the reader's dismissal ---------------------
+
+CHALLENGE = RescueVerdict(RescueOutcome.CHALLENGE, 403, ("cloudflare",))
+
+
+def _queued(conn: sqlite3.Connection, *requests: RescueRequest) -> list[int]:
+    store.enqueue(conn, list(requests), 0, T0)
+    return [r["id"] for r in conn.execute(f"SELECT id FROM {store.TABLE} ORDER BY id")]
+
+
+def test_a_person_s_rescue_settles_a_needs_person_entry_and_its_siblings(conn: sqlite3.Connection) -> None:
+    """needs_person -> rescued, superseding the document's other open entries."""
+    first, _second = _queued(conn, _request(), _request(address="https://b.example/2.pdf"))
+    store.record_verdict(conn, first, CHALLENGE, T0)
+    recorded = store.record_verdict(conn, first, PDF, T0)
+    assert recorded.applied
+    assert recorded.entry is not None and recorded.entry.state is RescueState.RESCUED
+    assert recorded.entry.attempts == 2
+    assert _states(conn)["doc-1 https://b.example/2.pdf"] == RescueState.SUPERSEDED.value
+
+
+@pytest.mark.parametrize("before", [None, CHALLENGE])
+def test_an_open_entry_is_dismissed_and_never_visited(conn: sqlite3.Connection, before: RescueVerdict | None) -> None:
+    """A pending or needs_person entry is dismissed; the hidden pass never takes it."""
+    (entry_id,) = _queued(conn, _request())
+    if before is not None:
+        store.record_verdict(conn, entry_id, before, T0)
+    recorded = store.dismiss(conn, entry_id, T0)
+    assert recorded.applied
+    assert recorded.entry is not None and recorded.entry.state is RescueState.DISMISSED
+    assert recorded.entry.retry_after is None
+    assert store.next_pending(conn, T0 + timedelta(days=1)) is None
+
+
+def test_a_dismissal_clears_a_pending_entry_s_retry_time(conn: sqlite3.Connection) -> None:
+    """A held-back entry, dismissed, keeps no retry time in its row."""
+    (entry_id,) = _queued(conn, _request())
+    store.record_verdict(conn, entry_id, TRANSPORT, T0)
+    store.dismiss(conn, entry_id, T0)
+    row = conn.execute(f"SELECT retry_after FROM {store.TABLE}").fetchone()
+    assert row["retry_after"] is None
+
+
+def test_a_dismissal_keeps_the_last_verdict(conn: sqlite3.Connection) -> None:
+    """The window still shows what the last visit saw."""
+    (entry_id,) = _queued(conn, _request())
+    store.record_verdict(conn, entry_id, CHALLENGE, T0)
+    store.dismiss(conn, entry_id, T0)
+    entry = store.entry(conn, entry_id)
+    assert entry is not None and entry.verdict == CHALLENGE
+
+
+def test_a_settled_entry_is_not_dismissed(conn: sqlite3.Connection) -> None:
+    """A rescue another process recorded first stands."""
+    (entry_id,) = _queued(conn, _request())
+    store.record_verdict(conn, entry_id, PDF, T0)
+    recorded = store.dismiss(conn, entry_id, T0)
+    assert not recorded.applied
+    assert recorded.entry is not None and recorded.entry.state is RescueState.RESCUED
+
+
+def test_dismissing_a_missing_entry_is_none(conn: sqlite3.Connection) -> None:
+    """An entry deleted meanwhile is not dismissed."""
+    assert store.dismiss(conn, 999, T0) == store.RecordedVerdict(None, applied=False)
+
+
+def test_a_dismissed_entry_is_not_reopened_by_a_later_run(conn: sqlite3.Connection) -> None:
+    """A later analysis of the same document leaves the dismissal as it is."""
+    (entry_id,) = _queued(conn, _request())
+    store.dismiss(conn, entry_id, T0)
+    assert store.enqueue(conn, [_request()], RESCUE_PRIORITY_WAITING, T0) == 0
+    assert _states(conn) == {"doc-1 https://a.example/1.pdf": RescueState.DISMISSED.value}
+
+
+def test_a_verdict_after_a_dismissal_is_not_applied(conn: sqlite3.Connection) -> None:
+    """A visit that ends after the reader dismissed its entry changes nothing."""
+    (entry_id,) = _queued(conn, _request())
+    store.dismiss(conn, entry_id, T0)
+    assert not store.record_verdict(conn, entry_id, PDF, T0).applied
+
+
+def test_one_entry_is_read_by_id(conn: sqlite3.Connection) -> None:
+    """An entry is read by its ID; a missing one is None."""
+    (entry_id,) = _queued(conn, _request())
+    entry = store.entry(conn, entry_id)
+    assert entry is not None and entry.request == _request()
+    assert store.entry(conn, entry_id + 1) is None
+
+
+def test_the_count_is_of_the_states_asked_for(conn: sqlite3.Connection) -> None:
+    """Counted by state; no states, no count."""
+    first, _second = _queued(conn, _request(), _request(address="https://b.example/2.pdf"))
+    store.record_verdict(conn, first, CHALLENGE, T0)
+    assert store.count(conn, [RescueState.NEEDS_PERSON]) == 1
+    assert store.count(conn, [RescueState.NEEDS_PERSON, RescueState.PENDING]) == 2
+    assert store.count(conn, []) == 0
+
+
+def test_a_document_s_entries_are_its_own_oldest_first(conn: sqlite3.Connection) -> None:
+    """Only that document's entries, in the order they were queued, any state."""
+    store.enqueue(conn, [_request()], 0, T0)
+    store.enqueue(conn, [_request("doc-2")], 0, T0 + timedelta(seconds=1))
+    store.enqueue(conn, [_request(address="https://b.example/2.pdf")], 0, T0 + timedelta(seconds=2))
+    entries = store.for_document(conn, "doc-1")
+    assert [e.request.address for e in entries] == ["https://a.example/1.pdf", "https://b.example/2.pdf"]
+
+
+def test_storage_reads_counts_and_dismisses(storage: LiteStorage) -> None:
+    """LiteStorage's four new methods, end to end on a file."""
+    storage.enqueue_rescues([_request()])
+    (entry,) = storage.rescue_entries_for_document("doc-1")
+    assert storage.rescue_entry(entry.id) == entry
+    assert storage.count_rescue_entries([RescueState.PENDING]) == 1
+    assert storage.dismiss_rescue(entry.id).applied
+    assert storage.count_rescue_entries([RescueState.PENDING]) == 0
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [("address", "file:///etc/passwd"), ("host", "elsewhere.example"), ("doi", "")],
+)
+def test_a_damaged_row_is_never_handed_to_a_browser(
+    conn: sqlite3.Connection, caplog: pytest.LogCaptureFixture, column: str, value: str
+) -> None:
+    """A row whose address, host or DOI cannot be trusted is left alone, logged."""
+    store.enqueue(conn, [_request()], 0, T0)
+    conn.execute(f"UPDATE {store.TABLE} SET {column} = ?", (value,))
+    conn.commit()
+    assert store.next_pending(conn, T0) is None
+    assert "cannot be read" in caplog.text

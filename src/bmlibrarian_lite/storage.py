@@ -4040,6 +4040,54 @@ class LiteStorage:
         with self._sqlite_connection() as conn:
             return rescue_queue_store.entries(conn, states)
 
+    def rescue_entry(self, entry_id: int) -> RescueEntry | None:
+        """One queue entry by its ID.
+
+        Args:
+            entry_id: The entry.
+
+        Returns:
+            The entry; ``None`` when it is gone or a newer build's.
+        """
+        with self._sqlite_connection() as conn:
+            return rescue_queue_store.entry(conn, entry_id)
+
+    def dismiss_rescue(self, entry_id: int) -> RecordedVerdict:
+        """Set an open queue entry aside for the reader (#480, stage 3).
+
+        Args:
+            entry_id: The entry.
+
+        Returns:
+            The entry as it now stands, and whether it was dismissed.
+        """
+        with self._sqlite_connection() as conn:
+            return rescue_queue_store.dismiss(conn, entry_id, datetime.now(UTC))
+
+    def count_rescue_entries(self, states: Iterable[RescueState]) -> int:
+        """How many queue entries are in the given states.
+
+        Args:
+            states: The states counted.
+
+        Returns:
+            The count.
+        """
+        with self._sqlite_connection() as conn:
+            return rescue_queue_store.count(conn, states)
+
+    def rescue_entries_for_document(self, document_id: str) -> list[RescueEntry]:
+        """A document's queue entries, oldest first.
+
+        Args:
+            document_id: The document.
+
+        Returns:
+            Its entries, in any state.
+        """
+        with self._sqlite_connection() as conn:
+            return rescue_queue_store.for_document(conn, document_id)
+
     # =========================================================================
     # Benchmark Run Operations
     # =========================================================================

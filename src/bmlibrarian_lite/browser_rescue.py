@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 Dr Horst Herb
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Bot-walled PDFs fetched by an embedded browser: the queue's rules (#480, stage 2).
+"""Bot-walled PDFs fetched by an embedded browser: the queue's rules (#480, stages 2 and 3).
 
 A PDF that an open-access source names, and whose host answered our client
 with a bot wall's challenge (``RequestFailureKind.CHALLENGED``), is queued
@@ -20,10 +20,12 @@ import logging
 import math
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 from .bot_walls import challenge_markers
@@ -47,6 +49,9 @@ from .exceptions import SQLiteError
 from .pdf_utils import generate_pdf_path
 from .polite_session import is_loopback_host, retry_after_from_headers
 from .rate_limit import limiter_for
+
+if TYPE_CHECKING:
+    from .rescue_queue_store import RecordedVerdict
 
 logger = logging.getLogger(__name__)
 
@@ -113,9 +118,8 @@ _SETTLED_BY: dict[RescueOutcome, RescueState] = {
     RescueOutcome.TOO_LARGE: RescueState.TOO_LARGE,
 }
 
-assert set(_SETTLED_BY) | {RescueOutcome.TRANSPORT} == set(RescueOutcome), (
-    "every rescue outcome needs the state it leaves an entry in"
-)
+# Every outcome but TRANSPORT settles an entry in a state of its own; a test
+# holds this (an import-time assert would vanish under ``python -O``)
 
 
 def http_status_or_none(value: object) -> int | None:
@@ -225,6 +229,71 @@ def next_state(state: RescueState, verdict: RescueVerdict, attempts: int) -> Res
             return RescueState.PENDING
         return RescueState.NEEDS_PERSON
     return _SETTLED_BY[verdict.outcome]
+
+
+def dismissed_state(state: RescueState) -> RescueState:
+    """Where an entry stands after the reader dismisses it.
+
+    Args:
+        state: Where it stood.
+
+    Returns:
+        ``DISMISSED`` for an open entry; a settled entry's own state, since a
+        dismissal never reopens or rewrites a verdict.
+    """
+    return RescueState.DISMISSED if state in OPEN_RESCUE_STATES else state
+
+
+def awaiting_reader_states(hidden_pass_runs: bool) -> frozenset[RescueState]:
+    """The states of the entries that wait for the reader.
+
+    Args:
+        hidden_pass_runs: Whether a hidden pass will visit pending entries:
+            the setting is on and QtWebEngine started.
+
+    Returns:
+        ``NEEDS_PERSON``; with no hidden pass, every open state, since no one
+        but the reader will visit a pending entry.
+    """
+    if hidden_pass_runs:
+        return frozenset({RescueState.NEEDS_PERSON})
+    return OPEN_RESCUE_STATES
+
+
+def stamp(moment: datetime) -> str:
+    """A moment as stored: UTC ISO 8601 to the microsecond, so text order is time order.
+
+    Args:
+        moment: A timezone-aware moment.
+
+    Returns:
+        The stored text.
+
+    Raises:
+        ValueError: If ``moment`` is naive: it would be read as local time,
+            and compare wrongly with every stored stamp.
+    """
+    if moment.tzinfo is None:
+        raise ValueError("A stored moment must be timezone-aware")
+    return moment.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def fetchable_host(address: str | None) -> str | None:
+    """The host of an address a browser can be sent to.
+
+    Args:
+        address: An address from a discovery record or from storage, untrusted.
+
+    Returns:
+        Its host, lowercased, for an ``http(s)`` address that names one;
+        ``None`` for anything else.
+    """
+    if not address:
+        return None
+    parsed = urlparse(address)
+    if parsed.scheme.lower() not in _FETCHABLE_SCHEMES or not parsed.hostname:
+        return None
+    return parsed.hostname
 
 
 def page_verdict(status: int | None, headers: Mapping[str, str], html: str) -> RescueVerdict:
@@ -374,6 +443,12 @@ class RescueRequest:
         host: The address's host, which the visit is paced by.
         service: Who named the address (``SERVICE_UNPAYWALL_PDF``,
             ``SERVICE_OPENALEX_PDF``).
+
+    Raises:
+        ValueError: If the address is no ``http(s)`` address, its host is
+            not ``host``, or the document ID or DOI is blank: a browser is
+            sent to the address, the pacing goes by the host, and the DOI
+            names the saved PDF.
     """
 
     document_id: str
@@ -383,6 +458,13 @@ class RescueRequest:
     address: str
     host: str
     service: str
+
+    def __post_init__(self) -> None:
+        """Hold the invariants a visit relies on, whatever the request was read from."""
+        if not self.document_id.strip() or not self.doi.strip():
+            raise ValueError("A walled PDF needs its document ID and DOI")
+        if fetchable_host(self.address) != self.host:
+            raise ValueError(f"A walled PDF's address must be http(s) at its host {self.host!r}")
 
 
 @dataclass(frozen=True)
@@ -453,10 +535,8 @@ def rescue_requests(subject: RescueSubject, record: LookupRecord) -> tuple[Rescu
     seen: set[str] = set()
     for failure in challenged:
         address = failure.address or ""
-        parsed = urlparse(address)
-        if parsed.scheme.lower() not in _FETCHABLE_SCHEMES or not parsed.hostname:
-            continue
-        if address in seen:
+        host = fetchable_host(address)
+        if host is None or address in seen:
             continue
         seen.add(address)
         requests.append(
@@ -466,7 +546,7 @@ def rescue_requests(subject: RescueSubject, record: LookupRecord) -> tuple[Rescu
                 pmid=subject.pmid,
                 title=subject.title,
                 address=address,
-                host=parsed.hostname,
+                host=host,
                 service=failure.service,
             )
         )
@@ -600,3 +680,215 @@ def reanalyse_rescued(
         )
         return False
     return bool(reanalyse(request.document_id, request.pmid, request.doi))
+
+
+class WaitOutcome(Enum):
+    """What a reader waiting on a document's walled PDFs is told."""
+
+    #: A watched entry has not had its visit yet.
+    WAITING = "waiting"
+    #: A PDF arrived during the wait.
+    RESCUED = "rescued"
+    #: An entry is still open: the review queue can try it with the reader.
+    NEEDS_READER = "needs_reader"
+    #: Every entry settled without a PDF.
+    NOTHING = "nothing"
+
+
+#: The outcomes decided by one entry, which the result carries.
+_OUTCOMES_WITH_ENTRY = frozenset({WaitOutcome.RESCUED, WaitOutcome.NEEDS_READER})
+
+
+@dataclass(frozen=True)
+class WaitResult:
+    """Where a reader's wait stands, with the entry that decided it.
+
+    Carrying the entry keeps the outcome and the entry acted on from
+    disagreeing: a caller never looks for "the rescued entry" by rules of its
+    own.
+
+    Attributes:
+        outcome: Where the wait stands.
+        entry: The rescued entry (``RESCUED``), or the open one to show the
+            reader (``NEEDS_READER``); ``None`` for the other outcomes.
+
+    Raises:
+        ValueError: If the entry is missing for an outcome that needs one,
+            or given for one that takes none.
+    """
+
+    outcome: WaitOutcome
+    entry: RescueEntry | None = None
+
+    def __post_init__(self) -> None:
+        """Hold the outcome and its entry together."""
+        needs_entry = self.outcome in _OUTCOMES_WITH_ENTRY
+        if needs_entry != (self.entry is not None):
+            raise ValueError(
+                f"A {self.outcome.value!r} wait result "
+                f"{'needs' if needs_entry else 'takes no'} entry"
+            )
+
+
+def wait_watch(
+    entries: Sequence[RescueEntry], hidden_pass_runs: bool, now: datetime
+) -> frozenset[int]:
+    """The entries a reader waits for: those the hidden pass will visit now.
+
+    A pending entry held back after a transport failure is not due for
+    minutes, so waiting on it would only run out the wait's limit.
+
+    Args:
+        entries: The document's entries.
+        hidden_pass_runs: Whether a hidden pass will visit them.
+        now: The moment.
+
+    Returns:
+        The IDs of the pending entries that are due; none when no hidden
+        pass runs.
+    """
+    if not hidden_pass_runs:
+        return frozenset()
+    at = stamp(now)
+    return frozenset(
+        e.id
+        for e in entries
+        if e.state is RescueState.PENDING and (e.retry_after is None or e.retry_after <= at)
+    )
+
+
+def wait_outcome(
+    entries: Sequence[RescueEntry],
+    watched: AbstractSet[int],
+    answered: AbstractSet[int],
+    *,
+    final: bool = False,
+) -> WaitResult:
+    """Where a reader's wait stands.
+
+    Args:
+        entries: The document's entries as they stand now; never empty, as
+            a wait is only for entries this load queued.
+        watched: The entries waited for (:func:`wait_watch`).
+        answered: The entries that have had a verdict since the wait began.
+        final: The wait is over (its limit): it is decided on what is known.
+            A watched entry then counts as answered, so the outcome is never
+            ``WAITING``, and one rescued counts as this wait's even when its
+            verdict was not seen here (another process recorded it).
+
+    Returns:
+        ``RESCUED`` with the entry when an entry answered during the wait
+        was rescued (one rescued earlier is not this wait's: its PDF is not
+        on disk, or discovery would have found it); ``WAITING`` while a
+        watched entry is pending and unanswered; ``NEEDS_READER`` with an
+        open entry while any is open; ``NOTHING`` otherwise.
+
+    Raises:
+        ValueError: If ``entries`` is empty: no wait is about nothing, and
+            "every entry settled without a PDF" would be false of it.
+    """
+    if not entries:
+        raise ValueError("A wait needs the entries it is about")
+    counted = set(answered) | set(watched) if final else answered
+    rescued = next(
+        (e for e in entries if e.state is RescueState.RESCUED and e.id in counted), None
+    )
+    if rescued is not None:
+        return WaitResult(WaitOutcome.RESCUED, rescued)
+    if any(
+        e.state is RescueState.PENDING and e.id in watched and e.id not in counted
+        for e in entries
+    ):
+        return WaitResult(WaitOutcome.WAITING)
+    open_entry = next((e for e in entries if e.state in OPEN_RESCUE_STATES), None)
+    if open_entry is not None:
+        return WaitResult(WaitOutcome.NEEDS_READER, open_entry)
+    return WaitResult(WaitOutcome.NOTHING)
+
+
+class WalkEndReason(Enum):
+    """Why *Walk the queue* ended."""
+
+    #: Every listed entry was visited or skipped as no longer open.
+    FINISHED = "finished"
+    #: The reader stopped it, chose an entry, or acted on the walk's entry.
+    STOPPED = "stopped"
+    #: The queue could not be read (logged): unreadable is not settled.
+    UNREADABLE = "unreadable"
+
+
+@dataclass(frozen=True)
+class WalkEnd:
+    """How *Walk the queue* ended.
+
+    Attributes:
+        reason: Why it ended.
+        failed: How many of its pages could not be opened (logged).
+    """
+
+    reason: WalkEndReason
+    failed: int = 0
+
+
+class RescueDismissals(Protocol):
+    """Where a queue entry is dismissed (``LiteStorage``)."""
+
+    def dismiss_rescue(self, entry_id: int) -> RecordedVerdict:
+        """Dismiss an open entry.
+
+        Args:
+            entry_id: The entry.
+
+        Returns:
+            The entry as it now stands, and whether the dismissal applied.
+        """
+        ...
+
+
+class DismissOutcome(Enum):
+    """What asking to dismiss an entry did."""
+
+    #: It was set aside.
+    DISMISSED = "dismissed"
+    #: It was no longer open: settled, dismissed or gone meanwhile.
+    NOT_OPEN = "not_open"
+    #: The queue could not be written (logged).
+    FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class DismissResult:
+    """What asking to dismiss an entry did, and the entry as it now stands.
+
+    Attributes:
+        outcome: What it did.
+        entry: The entry as it now stands; ``None`` when it is gone, or
+            unknown because the write failed.
+    """
+
+    outcome: DismissOutcome
+    entry: RescueEntry | None = None
+
+
+def dismiss_entry(queue: RescueDismissals, entry_id: int) -> DismissResult:
+    """Dismiss an entry for the reader, logging rather than raising a failure.
+
+    Args:
+        queue: The storage.
+        entry_id: The entry.
+
+    Returns:
+        ``DISMISSED`` with the entry; ``NOT_OPEN`` with the entry as it
+        stands (``None`` when gone) when it was settled or dismissed
+        elsewhere meanwhile; ``FAILED`` when the queue could not be written
+        (logged): three answers, so a reader is never told a write failed
+        when it was not tried.
+    """
+    try:
+        recorded = queue.dismiss_rescue(entry_id)
+    except (sqlite3.Error, SQLiteError) as e:
+        logger.error("Walled PDF %s could not be dismissed: %s", entry_id, e)
+        return DismissResult(DismissOutcome.FAILED)
+    if recorded.applied:
+        return DismissResult(DismissOutcome.DISMISSED, recorded.entry)
+    return DismissResult(DismissOutcome.NOT_OPEN, recorded.entry)

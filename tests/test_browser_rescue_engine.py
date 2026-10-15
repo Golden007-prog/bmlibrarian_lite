@@ -232,3 +232,54 @@ def test_a_quit_mid_visit_leaves_the_entry_pending(harness: dict[str, Any]) -> N
 def test_quit_releases_the_page_before_the_profile(harness: dict[str, Any]) -> None:
     """No QtWebEngine release warning at quit."""
     assert PROFILE_RELEASE_WARNING not in harness["stderr"]
+
+
+# -- shown in a view (#480, stage 3) ----------------------------------------------
+
+
+def _shown(harness: dict[str, Any], name: str) -> dict[str, Any]:
+    result: dict[str, Any] = harness["out"]["shown"][name]
+    return result
+
+
+def test_a_person_s_visit_shows_the_page_and_saves_its_pdf(harness: dict[str, Any]) -> None:
+    """The page is shown in the view; the PDF it serves is saved; the view outlives the page."""
+    result = _shown(harness, "pdf")
+    assert result["shown"] and result["finished"]
+    assert result["verdict"]["outcome"] == "pdf" and result["saved"]
+    assert result["view_alive"] and result["view_released"]
+
+
+@pytest.mark.parametrize("name", ["gone", "abstract"])
+def test_a_person_s_page_is_left_unjudged_until_they_leave(harness: dict[str, Any], name: str) -> None:
+    """No verdict past the hidden timeout; leaving releases the page from the view."""
+    result = _shown(harness, name)
+    assert not result["finished"] and result["verdict"] is None
+    assert result["view_alive"] and result["view_released"]
+
+
+def test_a_new_window_opens_in_the_person_s_page(harness: dict[str, Any]) -> None:
+    """A new window's page is the person's page itself (D3)."""
+    assert harness["out"]["shown"]["new_window_here"] is True
+
+
+def test_a_walk_judges_the_shown_page(harness: dict[str, Any]) -> None:
+    """A walk's visit is judged as the hidden pass's."""
+    result = _shown(harness, "walk_walled")
+    assert result["finished"]
+    assert result["verdict"] == {"outcome": "challenge", "http_status": 403, "markers": ["cloudflare"]}
+
+
+def test_a_person_s_visit_through_the_service_rescues_the_entry(harness: dict[str, Any]) -> None:
+    """visit_shown records the person's PDF on a needs_person entry and announces it."""
+    shown = harness["out"]["service"]["shown"]
+    assert shown["ended"] and shown["verdict"]["outcome"] == "pdf"
+    assert shown["state"] == "rescued" and shown["rescued"]
+
+
+def test_quit_during_a_shown_visit_releases_the_page_first(harness: dict[str, Any]) -> None:
+    """Quit during a shown visit: the entry stays as it was; no profile-release warning."""
+    quit_ = harness["out"]["shown_quit"]
+    assert quit_["visiting"]
+    assert (quit_["state"], quit_["attempts"]) == ("pending", 0)
+    assert PROFILE_RELEASE_WARNING not in harness["stderr"]

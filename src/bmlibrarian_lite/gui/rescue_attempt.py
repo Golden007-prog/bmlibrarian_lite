@@ -1,4 +1,4 @@
-"""One visit of one walled PDF's address, in a web page with no view (#480, stage 2).
+"""One visit of one walled PDF's address: hidden, or shown in the review queue window (#480, stages 2 and 3).
 
 Driven only by signals and timers, so nothing here blocks the GUI thread.
 The page is QtWebEngine's own, with its own User-Agent and no automation
@@ -15,7 +15,7 @@ import logging
 import os
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, QTimer, QUrl, Signal
 from PySide6.QtWebEngineCore import (
@@ -44,6 +44,10 @@ from ..constants import (
     RESCUE_PAGE_READ_GRACE_MS,
 )
 from ..pdf_download import discard_partial_download, partial_download_path
+
+if TYPE_CHECKING:
+    # Type only: the hidden pass never loads the widgets module
+    from PySide6.QtWebEngineWidgets import QWebEngineView
 
 logger = logging.getLogger(__name__)
 
@@ -120,15 +124,46 @@ def response_headers(raw: Mapping[Any, Any]) -> dict[str, str]:
     }
 
 
+class _ShownPage(QWebEnginePage):
+    """The page of a visit a person sees.
+
+    A link that opens a new window (``target=_blank``, the usual "Download
+    PDF") opens here instead: QtWebEngine would otherwise drop it, and a PDF
+    it leads to must be this visit's own download (``accept_download``).
+    Scripts still cannot open windows without the person's click
+    (``JavascriptCanOpenWindows`` stays off).
+    """
+
+    def createWindow(self, _type: QWebEnginePage.WebWindowType) -> QWebEnginePage:  # noqa: N802
+        """Open the new window's page in this one.
+
+        Args:
+            _type: The kind of window asked for; every kind opens here.
+
+        Returns:
+            This page.
+        """
+        return self
+
+
 class RescueAttempt(QObject):
-    """One hidden visit of one address, ending in exactly one verdict.
+    """One visit of one address, ending in exactly one verdict.
+
+    A hidden visit (no view) judges the page it stays on. A person's visit
+    (``judge_pages=False``, in the review queue window's view) ends only
+    with a download or a renderer crash; leaving it is :meth:`abort`. A file
+    a person downloads that is neither a PDF nor a wall (a citation export,
+    a supplement) is not the article's answer: it is discarded, said with
+    ``download_ignored``, and the page stays open for the PDF.
 
     Signals:
         finished: The visit's :class:`RescueVerdict`, emitted once, and never
             after :meth:`abort`.
+        download_ignored: A person's download was not a PDF; the visit goes on.
     """
 
     finished = Signal(object)
+    download_ignored = Signal()
 
     def __init__(
         self,
@@ -139,6 +174,9 @@ class RescueAttempt(QObject):
         stall_ms: int,
         max_pdf_bytes: int,
         parent: QObject | None = None,
+        *,
+        view: QWebEngineView | None = None,
+        judge_pages: bool = True,
     ) -> None:
         """Prepare the visit; :meth:`start` makes it.
 
@@ -150,8 +188,15 @@ class RescueAttempt(QObject):
             stall_ms: How long a started download may receive nothing.
             max_pdf_bytes: The largest PDF kept.
             parent: The owning object.
+            view: The review queue window's view to show the page in;
+                ``None`` for a hidden visit.
+            judge_pages: Whether the page the visit stays on is judged after
+                ``timeout_ms`` (hidden, and a walk); ``False`` for a person's
+                visit, which only a download or a renderer crash ends.
         """
         super().__init__(parent)
+        self._view = view
+        self._judge_pages = judge_pages
         self._profile = profile
         self._address = address
         self._pdf_path = pdf_path
@@ -176,15 +221,19 @@ class RescueAttempt(QObject):
         self._stall.timeout.connect(self._on_stall)
 
     def start(self) -> None:
-        """Load the address in a page with no view, and start waiting."""
+        """Load the address, in the view when there is one, and start waiting."""
         # Parentless, so it is deleted when this visit says, always before
-        # the profile, as QtWebEngine requires (_release_page)
-        page = QWebEnginePage(self._profile)
-        page.setAudioMuted(True)
+        # the profile, as QtWebEngine requires (_release_page). A view
+        # showing it falls back to a page of its own when it goes.
+        page = QWebEnginePage(self._profile) if self._view is None else _ShownPage(self._profile)
+        page.setAudioMuted(self._view is None)
         page.loadingChanged.connect(self._on_loading_changed)
         page.renderProcessTerminated.connect(self._on_render_process_terminated)
         self._page = page
-        self._timeout.start(self._timeout_ms)
+        if self._view is not None:
+            self._view.setPage(page)
+        if self._judge_pages:
+            self._timeout.start(self._timeout_ms)
         page.load(QUrl(self._address))
 
     def accept_download(self, request: QWebEngineDownloadRequest) -> None:
@@ -192,9 +241,10 @@ class RescueAttempt(QObject):
 
         Only one this visit's own page started: the profile is shared, and a
         page an earlier visit let go of may still start one, which is
-        another article's PDF. Only the first: a page that starts a second
-        is not believed twice. A size announced over the limit is refused
-        before a byte is written.
+        another article's PDF. Only one at a time: a page that starts a
+        second while the first runs is not believed twice (a person's visit
+        takes another once a file that was no PDF is discarded). A size
+        announced over the limit is refused before a byte is written.
 
         Args:
             request: The profile's download request.
@@ -230,7 +280,7 @@ class RescueAttempt(QObject):
         self._stall.start()
 
     def abort(self) -> None:
-        """End the visit with no verdict, for quit: its entry stays as it was."""
+        """End the visit with no verdict (quit, or the reader leaving a shown visit): its entry stays as it was."""
         if self._done:
             return
         self._done = True
@@ -263,8 +313,11 @@ class RescueAttempt(QObject):
             self._status = http_status_or_none(info.errorCode())
             self._headers = response_headers(info.responseHeaders())
             penalise_host_for_answer(self._address, self._status, self._headers)
-            if self._status in CHALLENGE_GONE_STATUSES:
+            if self._judge_pages and self._status in CHALLENGE_GONE_STATUSES:
                 self._finish(page_verdict(self._status, self._headers, ""))
+            return
+        if not self._judge_pages:
+            # A person's page: shown, never settled (D2)
             return
         if info.status() == _LoadStatus.LoadFailedStatus and (
             domain in _TRANSPORT_DOMAINS
@@ -278,7 +331,7 @@ class RescueAttempt(QObject):
 
     def _on_timeout(self) -> None:
         """No download began in time: read the page the visit stayed on."""
-        if self._done or self._download is not None or self._page is None:
+        if self._done or self._download is not None or self._page is None or not self._judge_pages:
             return
         if self._reading_page:
             # The page never handed its HTML over: nothing was learnt
@@ -324,7 +377,7 @@ class RescueAttempt(QObject):
             self._download.cancel()
 
     def _on_download_finished(self) -> None:
-        """Keep a whole PDF; anything else ends the visit without one."""
+        """Keep a whole PDF; anything else ends the visit without one, but a person's file that is no PDF."""
         request = self._download
         if self._done or request is None or not request.isFinished():
             return
@@ -334,7 +387,17 @@ class RescueAttempt(QObject):
             outcome = RescueOutcome.TOO_LARGE if self._too_large else RescueOutcome.TRANSPORT
             self._finish(RescueVerdict(outcome))
             return
-        self._finish(self._settle(written))
+        verdict = self._settle(written)
+        if not self._judge_pages and verdict.outcome is RescueOutcome.NO_PDF:
+            # A person's visit (D2): a file that is no PDF is not the
+            # article's answer, and settling on it would close the entry for
+            # good. The page stays open, and another download is taken.
+            logger.info("A download from %s was no PDF; the page stays open", self._address)
+            self._stall.stop()
+            self._download = None
+            self.download_ignored.emit()
+            return
+        self._finish(verdict)
 
     def _settle(self, written: Path) -> RescueVerdict:
         """Rename a finished download into place if it is a PDF within the limit.

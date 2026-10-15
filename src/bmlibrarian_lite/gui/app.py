@@ -72,7 +72,9 @@ from .benchmark_results_dialog import BenchmarkResultsTab
 from .document_interrogation_tab import DocumentInterrogationTab
 from .quality_benchmark_results_dialog import QualityBenchmarkResultsTab
 from .report_tab import ReportTab
+from .rescue_queue_indicator import RescueQueueIndicator
 from .research_questions_tab import ResearchQuestionsTab, documents_text
+from .review_queue_dialog import ReviewQueueDialog
 from .settings_dialog import SettingsDialog
 from .systematic_review_tab import SystematicReviewTab
 from .web_engine import prepare_web_engine
@@ -133,6 +135,8 @@ class LiteMainWindow(QMainWindow):
         self._last_token_count = 0
 
         self._rescue_service: BrowserRescueService | None = None
+        # The review queue window, made when first opened (#480, stage 3)
+        self._review_queue: ReviewQueueDialog | None = None
         # False once the hidden browser could not start (#480, stage 2)
         self._browser_rescue_available = True
 
@@ -198,6 +202,9 @@ class LiteMainWindow(QMainWindow):
             parent=self,
         )
         self.tab_widget.addTab(self.interrogation_tab, "Document Interrogation")
+        # A walled PDF the reader opens is waited for only while a hidden
+        # pass will visit it now (#480, stage 3)
+        self.interrogation_tab.set_hidden_pass_check(self._hidden_pass_free)
 
         # Benchmark Results tab (persistent, starts empty)
         self.benchmark_tab = BenchmarkResultsTab(result=None, parent=self)
@@ -216,6 +223,21 @@ class LiteMainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
+
+        # Walled PDFs waiting for the reader (#480, stage 3); hidden at 0
+        self.rescue_indicator = RescueQueueIndicator(
+            self.storage, self._hidden_pass_runs, parent=self
+        )
+        self.rescue_indicator.clicked.connect(lambda: self.show_review_queue())
+        self.status_bar.addPermanentWidget(self.rescue_indicator)
+        self.rescue_indicator.start()
+
+        # The app's only menu: the review queue opens from here at a count
+        # of 0 too, where the indicator is hidden (D5)
+        tools_menu = self.menuBar().addMenu("&Tools")
+        tools_menu.addAction("Walled PDFs\u2026").triggered.connect(
+            lambda: self.show_review_queue()
+        )
 
         # Token usage label in status bar (permanent, left of settings)
         self.token_usage_label = QLabel("Tokens: 0 | Cost: $0.0000")
@@ -298,6 +320,11 @@ class LiteMainWindow(QMainWindow):
             self.audit_trail_tab.on_transparency_outcome
         )
 
+        # A walled PDF the reader opened goes first; the reader may ask for
+        # the review queue on it (#480, stage 3)
+        self.interrogation_tab.rescue_queued.connect(self._on_rescue_queued)
+        self.interrogation_tab.review_queue_requested.connect(self.show_review_queue)
+
     def _apply_styles(self) -> None:
         """Apply stylesheet to the application."""
         generator = StylesheetGenerator()
@@ -322,6 +349,8 @@ class LiteMainWindow(QMainWindow):
             # old object, deaf to every later edit (a corrected CORE key
             # among them).
             self.status_bar.showMessage("Settings saved", 3000)
+            # The hidden pass's setting decides what waits for the reader
+            self.rescue_indicator.refresh()
 
     def set_status(self, message: str, timeout: int = 0) -> None:
         """
@@ -806,6 +835,13 @@ class LiteMainWindow(QMainWindow):
         service.rescued.connect(self._on_pdf_rescued)
         self.systematic_review_tab.transparency_outcome_ready.connect(service.wake)
         self.research_questions_tab.transparency_outcome_ready.connect(service.wake)
+        # Every verdict changes the count, and may end the interrogation
+        # tab's wait (#480, stage 3)
+        service.entry_changed.connect(self.rescue_indicator.refresh)
+        service.entry_changed.connect(self.interrogation_tab.on_rescue_entry_changed)
+        # Counted at start-up as if no hidden pass ran: pending entries are
+        # no longer the reader's to visit
+        self.rescue_indicator.refresh()
 
     def browser_rescue_unavailable(self) -> None:
         """Say the hidden browser could not start, here and in Settings (#480, stage 2).
@@ -816,6 +852,73 @@ class LiteMainWindow(QMainWindow):
         self._browser_rescue_available = False
         if self.config.discovery.browser_rescue_hidden:
             self.status_bar.showMessage(BROWSER_RESCUE_UNAVAILABLE_NOTE, STATUS_MESSAGE_TIMEOUT_MS)
+        # Pending entries now wait for the reader too
+        self.rescue_indicator.refresh()
+
+    def _hidden_pass_runs(self) -> bool:
+        """Whether a hidden pass will visit pending entries (D4).
+
+        Returns:
+            ``True`` when QtWebEngine started and the setting is on.
+        """
+        return self._rescue_service is not None and self.config.discovery.browser_rescue_hidden
+
+    def _hidden_pass_free(self) -> bool:
+        """Whether a hidden pass will visit a pending entry now.
+
+        The review queue window holds the browser while it shows a visit or
+        walks the queue, and the hidden pass takes no entry meanwhile, so
+        the interrogation tab must not wait on it then.
+
+        Returns:
+            ``True`` when the hidden pass runs and the window holds nothing.
+        """
+        service = self._rescue_service
+        return (
+            self._hidden_pass_runs()
+            and service is not None
+            and service.shown_entry_id is None
+            and not service.walking
+        )
+
+    def _on_rescue_queued(self) -> None:
+        """The interrogation tab queued a walled PDF: visit soon, and count it."""
+        if self._rescue_service is not None:
+            self._rescue_service.wake()
+        self.rescue_indicator.refresh()
+
+    def show_review_queue(self, entry_id: int | None = None) -> None:
+        """Open the review queue window, made once, focused on an entry if given.
+
+        Its view is loaded only with the hidden browser's service, so the app
+        never loads QtWebEngine for a window that cannot use it.
+
+        Args:
+            entry_id: The entry to select, or ``None``.
+        """
+        if self._review_queue is None:
+            make_view = None
+            if self._rescue_service is not None:
+                try:
+                    from .rescue_view import make_rescue_view
+                except (ImportError, RuntimeError) as e:
+                    # QtWebEngineWidgets is packaged apart from QtWebEngineCore
+                    # on some systems: the window opens all the same, saying
+                    # pages cannot be shown here
+                    logger.error("The review queue's browser view could not be loaded: %s", e)
+                else:
+                    make_view = make_rescue_view
+            self._review_queue = ReviewQueueDialog(
+                self.storage, self._rescue_service, make_view, self._hidden_pass_runs, parent=self
+            )
+            self._review_queue.queue_changed.connect(self.rescue_indicator.refresh)
+        else:
+            self._review_queue.refresh()
+        self._review_queue.show()
+        self._review_queue.raise_()
+        self._review_queue.activateWindow()
+        if entry_id is not None:
+            self._review_queue.focus_entry(entry_id)
 
     def _on_pdf_rescued(self, entry: RescueEntry) -> None:
         """Re-analyse a document whose walled PDF the browser fetched, and say so.
@@ -844,7 +947,7 @@ class LiteMainWindow(QMainWindow):
 
 
 def rescued_pdf_message(title: str, rechecking: bool, recheck_failed: bool) -> str:
-    """What the status bar says when the hidden browser fetched a PDF.
+    """What the status bar says when the built-in browser fetched a PDF, hidden or shown.
 
     Args:
         title: The article's title, or its DOI.
@@ -854,7 +957,7 @@ def rescued_pdf_message(title: str, rechecking: bool, recheck_failed: bool) -> s
     Returns:
         The message.
     """
-    fetched = f"Fetched the PDF of \u201c{title}\u201d in the hidden browser"
+    fetched = f"Fetched the PDF of \u201c{title}\u201d in the built-in browser"
     if recheck_failed:
         return fetched + "; its transparency could not be re-checked."
     if rechecking:

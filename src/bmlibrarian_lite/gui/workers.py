@@ -48,6 +48,7 @@ from PySide6.QtWidgets import QWidget
 from ..analysis_failures import failure_cause_text
 from ..data_models import (
     EvaluationErrorCode,
+    LookupRecord,
     PassFailure,
     PassOutcome,
     TransparencyAnalysisFailure,
@@ -386,6 +387,11 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
     Exactly one of ``finished``, ``paywall_detected``, ``error`` and
     ``cancelled`` ends a run. A cancelled run used to ``return`` in silence,
     so whatever waited on those signals waited forever.
+
+    Attributes:
+        lookups: What the run's discovery left unsettled, set before its
+            terminal signal; the interrogation tab reads it to queue a
+            walled PDF for the browser (#480, stage 3).
     """
 
     progress = Signal(str, str)  # stage, status
@@ -424,6 +430,7 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
         self.openalex_email = openalex_email
         self.core_api_key = core_api_key
         self.elsevier_credentials = elsevier_credentials
+        self.lookups: LookupRecord = LookupRecord()
         self._cancelled = False
         self._discoverer: Optional[FulltextDiscoverer] = None
 
@@ -486,6 +493,7 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
             result = self._discoverer.discover_fulltext(
                 doc_dict=self.doc_dict,
             )
+            self.lookups = result.lookups
 
             # A cancel the discoverer honoured stopped the retrieval, so
             # whatever it came back with describes the stop, not the article
