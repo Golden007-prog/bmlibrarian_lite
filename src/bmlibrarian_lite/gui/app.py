@@ -63,7 +63,7 @@ from ..benchmarking import BenchmarkRunner
 from ..benchmarking.display import benchmark_status_text
 from ..browser_rescue import RescueEntry, reanalyse_rescued
 from ..config import LiteConfig
-from ..constants import STATUS_MESSAGE_TIMEOUT_MS
+from ..constants import BROWSER_RESCUE_UNAVAILABLE_NOTE, STATUS_MESSAGE_TIMEOUT_MS
 from ..exceptions import SQLiteError
 from ..storage import LiteStorage
 from ..transparency import TransparencyUnassessed, stored_transparency_outcomes
@@ -133,6 +133,8 @@ class LiteMainWindow(QMainWindow):
         self._last_token_count = 0
 
         self._rescue_service: BrowserRescueService | None = None
+        # False once the hidden browser could not start (#480, stage 2)
+        self._browser_rescue_available = True
 
         self._setup_ui()
         self._apply_styles()
@@ -304,7 +306,11 @@ class LiteMainWindow(QMainWindow):
 
     def _show_settings(self) -> None:
         """Show the settings dialog."""
-        dialog = SettingsDialog(self.config, parent=self)
+        dialog = SettingsDialog(
+            self.config,
+            parent=self,
+            browser_rescue_available=self._browser_rescue_available,
+        )
         saved = dialog.exec()
         # The window is the dialog's parent, so without this every opening
         # would live until the window does. Its threads are the keeper's now.
@@ -801,6 +807,16 @@ class LiteMainWindow(QMainWindow):
         self.systematic_review_tab.transparency_outcome_ready.connect(service.wake)
         self.research_questions_tab.transparency_outcome_ready.connect(service.wake)
 
+    def browser_rescue_unavailable(self) -> None:
+        """Say the hidden browser could not start, here and in Settings (#480, stage 2).
+
+        Walled PDFs are still queued; only while the setting is on does the
+        reader expect them fetched, so only then is the status bar used.
+        """
+        self._browser_rescue_available = False
+        if self.config.discovery.browser_rescue_hidden:
+            self.status_bar.showMessage(BROWSER_RESCUE_UNAVAILABLE_NOTE, STATUS_MESSAGE_TIMEOUT_MS)
+
     def _on_pdf_rescued(self, entry: RescueEntry) -> None:
         """Re-analyse a document whose walled PDF the browser fetched, and say so.
 
@@ -808,6 +824,7 @@ class LiteMainWindow(QMainWindow):
             entry: The rescued entry.
         """
         asked = False
+        failed = False
         try:
             asked = reanalyse_rescued(
                 entry,
@@ -815,16 +832,34 @@ class LiteMainWindow(QMainWindow):
                 self.systematic_review_tab.reanalyse_transparency,
             )
         except (sqlite3.Error, SQLiteError) as e:
+            failed = True
             logger.error(
-                "The rescued PDF of %s could not be matched to a stored document: %s",
+                "The transparency of %s could not be re-checked after its PDF was rescued: %s",
                 entry.request.doi, e,
             )
         title = entry.request.title or entry.request.doi
         self.status_bar.showMessage(
-            f"Fetched the PDF of \u201c{title}\u201d in the hidden browser"
-            + ("; re-checking its transparency." if asked else "."),
-            STATUS_MESSAGE_TIMEOUT_MS,
+            rescued_pdf_message(title, asked, failed), STATUS_MESSAGE_TIMEOUT_MS
         )
+
+
+def rescued_pdf_message(title: str, rechecking: bool, recheck_failed: bool) -> str:
+    """What the status bar says when the hidden browser fetched a PDF.
+
+    Args:
+        title: The article's title, or its DOI.
+        rechecking: Whether its transparency is being re-checked.
+        recheck_failed: Whether the re-check could not be started.
+
+    Returns:
+        The message.
+    """
+    fetched = f"Fetched the PDF of \u201c{title}\u201d in the hidden browser"
+    if recheck_failed:
+        return fetched + "; its transparency could not be re-checked."
+    if rechecking:
+        return fetched + "; re-checking its transparency."
+    return fetched + "."
 
 
 def prepare_browser_rescue() -> bool:
@@ -897,7 +932,8 @@ def run_lite_app() -> int:
 
     # The hidden browser starts once the window is shown, and stops before
     # the event loop ends: its pages go before its profile (#480, stage 2)
-    if browser_ready:
-        start_browser_rescue(window, app)
+    rescue = start_browser_rescue(window, app) if browser_ready else None
+    if rescue is None:
+        window.browser_rescue_unavailable()
 
     return app.exec()

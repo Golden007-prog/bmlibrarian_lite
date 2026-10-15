@@ -70,6 +70,7 @@ from ..constants import (
     ELSEVIER_API_KEY_EXPLANATION,
     ELSEVIER_API_KEY_FROM_ENVIRONMENT,
     BROWSER_RESCUE_EXPLANATION,
+    BROWSER_RESCUE_UNAVAILABLE_NOTE,
     ELSEVIER_INSTTOKEN_EXPLANATION,
     ELSEVIER_INSTTOKEN_FROM_ENVIRONMENT,
     ENV_CORE_API_KEY,
@@ -263,6 +264,7 @@ class SettingsDialog(QDialog):
         self,
         config: LiteConfig,
         parent: Optional[QDialog] = None,
+        browser_rescue_available: bool = True,
     ) -> None:
         """
         Initialize the settings dialog.
@@ -270,9 +272,13 @@ class SettingsDialog(QDialog):
         Args:
             config: Lite configuration to modify
             parent: Optional parent widget
+            browser_rescue_available: Whether the hidden browser could
+                start; when not, its setting is shown disabled, with why
+                (#480, stage 2)
         """
         super().__init__(parent)
         self.config = config
+        self._browser_rescue_available = browser_rescue_available
         self.setWindowTitle("Settings")
         self.setMinimumWidth(scaled(550))
         self.setMinimumHeight(scaled(500))
@@ -822,6 +828,15 @@ class SettingsDialog(QDialog):
         browser_rescue_note = QLabel(f"<small>{BROWSER_RESCUE_EXPLANATION}</small>")
         browser_rescue_note.setWordWrap(True)
         layout.addRow(browser_rescue_note)
+        self.browser_rescue_unavailable_note: QLabel | None = None
+        if not self._browser_rescue_available:
+            # The setting is kept as it is, for when the browser can start
+            self.browser_rescue_hidden_check.setEnabled(False)
+            self.browser_rescue_unavailable_note = QLabel(
+                f"<small>{BROWSER_RESCUE_UNAVAILABLE_NOTE}</small>"
+            )
+            self.browser_rescue_unavailable_note.setWordWrap(True)
+            layout.addRow(self.browser_rescue_unavailable_note)
 
         self.tab_widget.addTab(tab, "Full Text")
 

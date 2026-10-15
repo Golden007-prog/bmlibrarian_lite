@@ -1,6 +1,7 @@
 """The browser rescue's setting and start-up (#480, stage 2)."""
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -24,15 +25,22 @@ def test_the_setting_round_trips(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("stored", ["false", 0, None, [1]])
-def test_a_setting_that_is_not_a_boolean_is_the_default(tmp_path: Path, stored: object) -> None:
-    """A stored value that is not a boolean is the default."""
-    """A setting that is not a boolean is the default."""
+def test_a_setting_that_is_not_a_boolean_is_the_default(
+    tmp_path: Path, stored: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stored value that is not a boolean is the default, and the log says so.
+
+    The default sends an unattended browser to publishers, so a reader who
+    meant "off" is told why it is on.
+    """
     path = tmp_path / "config.json"
     LiteConfig().save(path)
     data = json.loads(path.read_text())
     data["discovery"]["browser_rescue_hidden"] = stored
     path.write_text(json.dumps(data))
-    assert LiteConfig.load(path).discovery.browser_rescue_hidden is True
+    with caplog.at_level(logging.WARNING, logger="bmlibrarian_lite.config"):
+        assert LiteConfig.load(path).discovery.browser_rescue_hidden is True
+    assert "browser_rescue_hidden" in caplog.text
 
 
 def test_the_profile_lives_under_the_data_directory(tmp_path: Path) -> None:
@@ -63,6 +71,25 @@ def test_the_dialog_shows_and_saves_the_setting(qapp, monkeypatch: pytest.Monkey
     assert config.discovery.browser_rescue_hidden is False
     config.discovery.browser_rescue_hidden = True
     assert SettingsDialog(config).browser_rescue_hidden_check.isChecked()
+
+
+def test_an_unavailable_browser_is_shown_in_the_dialog(qapp, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without the hidden browser, its setting is disabled, kept, and explained."""
+    from bmlibrarian_lite.constants import BROWSER_RESCUE_UNAVAILABLE_NOTE
+    from bmlibrarian_lite.gui.settings_dialog import SettingsDialog
+
+    config = LiteConfig()
+    monkeypatch.setattr(LiteConfig, "save", lambda self, *a, **k: None)
+    dialog = SettingsDialog(config, browser_rescue_available=False)
+    assert not dialog.browser_rescue_hidden_check.isEnabled()
+    assert dialog.browser_rescue_unavailable_note is not None
+    assert BROWSER_RESCUE_UNAVAILABLE_NOTE in dialog.browser_rescue_unavailable_note.text()
+    dialog._save_config()
+    assert config.discovery.browser_rescue_hidden is True
+    # Control: an available browser shows no such note
+    available = SettingsDialog(config)
+    assert available.browser_rescue_hidden_check.isEnabled()
+    assert available.browser_rescue_unavailable_note is None
 
 
 def test_the_web_engine_is_prepared_before_any_application() -> None:

@@ -1,10 +1,12 @@
 """The browser rescue's hidden pass: works the queue on the GUI thread (#480, stage 2).
 
 One visit at a time, unattended, in a page with no view. Driven by signals
-and timers only: no thread waits on it, and a run never waits for it (spec
-decisions 1 and 4). Each visit takes its host's pacing slot first, from the
-limiter our requests use. A rescue is announced with ``rescued`` and the
-main window re-analyses that document.
+and timers only: no thread waits on it, and a run never waits for it
+(decisions 1 and 4 of
+``docs/superpowers/specs/2026-10-12-browser-rescue-design.md``). Each visit
+takes its host's pacing slot first, from the limiter our requests use. A
+rescue is announced with ``rescued``, and the main window re-analyses that
+document when storage holds it.
 """
 
 from __future__ import annotations
@@ -16,12 +18,13 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Signal
+from PySide6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineProfile
 from shiboken6 import Shiboken
 
 from ..browser_rescue import (
     RescueEntry,
+    RescueOutcome,
     RescueState,
     RescueVerdict,
     rescue_delay_ms,
@@ -86,7 +89,8 @@ class BrowserRescueService(QObject):
         Args:
             storage: The queue.
             config: The live configuration; its hidden-pass setting is read
-                before every visit.
+                when an entry is taken and again when its visit starts, after
+                the host's pacing slot.
             profile_dir: The browser's persistent profile.
             pdf_path_for: Where an entry's PDF is saved; the reader's library
                 by default.
@@ -114,6 +118,9 @@ class BrowserRescueService(QObject):
         self._save_wait = float(RESCUE_VERDICT_SAVE_RETRY_SECONDS)
         self._save_retry = QTimer(self)
         self._save_retry.setSingleShot(True)
+        # Precise: a coarse timer may fire up to 5% early, before the retry
+        # is due, and the save would then wait for the next poll
+        self._save_retry.setTimerType(Qt.TimerType.PreciseTimer)
         self._save_retry.timeout.connect(self.wake)
         self._profile: QWebEngineProfile | None = None
         self._attempt: RescueAttempt | None = None
@@ -126,10 +133,11 @@ class BrowserRescueService(QObject):
 
     @property
     def busy(self) -> bool:
-        """Whether a visit is scheduled or under way.
+        """Whether the pass is looking for work or a visit is scheduled or under way.
 
         Returns:
-            ``True`` from taking an entry until its verdict is recorded.
+            ``True`` from :meth:`wake` until no entry is taken, a visit cannot
+            start, or a visit's verdict has been recorded or held unsaved.
         """
         return self._busy
 
@@ -160,9 +168,12 @@ class BrowserRescueService(QObject):
 
         A visit under way ends with no verdict, so its entry stays pending. A
         verdict still unsaved gets one last try; if that fails too, its entry
-        stays pending and is visited again next session. The page goes before
-        the profile, as QtWebEngine requires: pages let go earlier are
-        deleted first, then the profile.
+        stays pending and is visited again next session. A rescue that last
+        try records is not announced: re-analysing its document would start
+        an analysis while the app quits, and the next session's analysis
+        finds the PDF, saved already. The page goes before the profile, as
+        QtWebEngine requires: pages let go earlier are deleted first, then
+        the profile.
         """
         if self._stopped:
             return
@@ -170,7 +181,7 @@ class BrowserRescueService(QObject):
         self._poll.stop()
         self._save_retry.stop()
         if self._unsaved is not None:
-            self._save(*self._unsaved)
+            self._save(*self._unsaved, announce=False)
         attempt, self._attempt = self._attempt, None
         if attempt is not None:
             attempt.abort()
@@ -180,15 +191,26 @@ class BrowserRescueService(QObject):
             Shiboken.delete(profile)
 
     def _tick(self) -> None:
-        """Take the next due entry and schedule its visit for its host's slot."""
+        """Take the next due entry and schedule its visit for its host's slot.
+
+        An unforeseen error is logged and the pass freed for the next poll:
+        escaping this slot would leave it busy, and stopped, for the session
+        (#525).
+        """
         if self._stopped:
             return
-        entry = self._next_entry()
-        if entry is None:
-            self._busy = False
-            return
-        delay = rescue_delay_ms(entry.request.host)
-        QTimer.singleShot(delay, self, lambda: self._visit(entry))
+        scheduled = False
+        try:
+            entry = self._next_entry()
+            if entry is not None:
+                delay = rescue_delay_ms(entry.request.host)
+                QTimer.singleShot(delay, self, lambda: self._visit(entry))
+                scheduled = True
+        except Exception:
+            logger.exception("The hidden browser could not look for a walled PDF to try")
+        finally:
+            if not scheduled:
+                self._busy = False
 
     def _next_entry(self) -> RescueEntry | None:
         """The next due entry, when the hidden pass is on.
@@ -215,28 +237,52 @@ class BrowserRescueService(QObject):
             return None
 
     def _visit(self, entry: RescueEntry) -> None:
-        """Start one visit.
+        """Start one visit, if the hidden pass is still on.
+
+        The setting is read again here: the visit waited for its host's
+        pacing slot, which a throttling host can push minutes away, and a
+        reader who switched the pass off meanwhile is not overridden. A
+        visit that cannot start for want of a folder learnt nothing, so it is
+        recorded as a transport failure: counted, and held back, rather than
+        tried again at every poll. Any other error is logged and the pass
+        freed for the next poll (#525).
 
         Args:
             entry: The entry to visit.
         """
         if self._stopped:
             return
+        started = False
         try:
-            profile = self._ensure_profile()
-            pdf_path = self._pdf_path_for(entry)
-        except OSError as e:
-            logger.error("The hidden browser cannot start a visit: %s", e)
-            self._busy = False
-            return
-        attempt = RescueAttempt(
-            profile, entry.request.address, pdf_path,
-            self._timeout_ms, self._stall_ms, self._max_pdf_bytes, parent=self,
-        )
-        attempt.finished.connect(lambda verdict: self._on_finished(entry, verdict))
-        self._attempt = attempt
-        logger.info("Trying a walled PDF at %s in the hidden browser", entry.request.host)
-        attempt.start()
+            if not self._config.discovery.browser_rescue_hidden:
+                return
+            try:
+                profile = self._ensure_profile()
+                pdf_path = self._pdf_path_for(entry)
+            except OSError as e:
+                logger.error("The hidden browser cannot start a visit: %s", e)
+                self._save(entry, RescueVerdict(RescueOutcome.TRANSPORT))
+                return
+            attempt = RescueAttempt(
+                profile, entry.request.address, pdf_path,
+                self._timeout_ms, self._stall_ms, self._max_pdf_bytes, parent=self,
+            )
+            attempt.finished.connect(lambda verdict: self._on_finished(entry, verdict))
+            self._attempt = attempt
+            logger.info("Trying a walled PDF at %s in the hidden browser", entry.request.host)
+            attempt.start()
+            started = True
+        except Exception:
+            logger.exception("The hidden browser could not start a visit to %s", entry.request.host)
+        finally:
+            if not started:
+                # No visit under way: let the next poll look again, whatever
+                # stopped this one
+                unstarted, self._attempt = self._attempt, None
+                if unstarted is not None:
+                    unstarted.abort()
+                    unstarted.deleteLater()
+                self._busy = False
 
     def _ensure_profile(self) -> QWebEngineProfile:
         """The profile, made on the first visit.
@@ -275,12 +321,15 @@ class BrowserRescueService(QObject):
         if attempt is not None:
             attempt.deleteLater()
         logger.info("The hidden browser's visit to %s: %s", entry.request.host, verdict.outcome.value)
-        saved = self._save(entry, verdict)
-        self._busy = False
+        try:
+            saved = self._save(entry, verdict)
+        finally:
+            # Whatever announcing a rescue raised, the pass is not left busy
+            self._busy = False
         if saved:
             self.wake()
 
-    def _save(self, entry: RescueEntry, verdict: RescueVerdict) -> bool:
+    def _save(self, entry: RescueEntry, verdict: RescueVerdict, announce: bool = True) -> bool:
         """Record a visit's verdict, and announce a rescue.
 
         A verdict that cannot be recorded is kept and tried again, never the
@@ -288,33 +337,49 @@ class BrowserRescueService(QObject):
         again would ask the publisher twice (and download a rescued PDF
         again). The retry waits RESCUE_VERDICT_SAVE_RETRY_SECONDS, doubling
         with each further failure up to RESCUE_RETRY_DELAY_SECONDS; a save
-        resets the wait.
+        resets the wait. Any error writing it is such a failure: the write
+        is one call, and whatever it raised, the verdict is not recorded. A
+        rescue is announced only when this verdict made it: one another
+        process recorded first was announced there.
 
         Args:
             entry: The entry visited.
             verdict: What the visit concluded.
+            announce: Whether a rescue recorded now is announced (not at quit).
 
         Returns:
             Whether the verdict was recorded.
         """
         try:
-            updated = self._storage.record_rescue_verdict(entry.id, verdict)
-        except (sqlite3.Error, SQLiteError) as e:
+            recorded = self._storage.record_rescue_verdict(entry.id, verdict)
+        except Exception as e:
             # The PDF, if any, is saved already; only the bookkeeping waits
             wait = self._save_wait
             self._unsaved = (entry, verdict)
             self._save_retry_at = self._clock() + wait
             self._save_wait = min(wait * 2, float(RESCUE_RETRY_DELAY_SECONDS))
-            logger.error(
-                "The verdict for a walled PDF at %s could not be recorded (%s); "
-                "trying again in %.0f seconds",
-                entry.request.host, e, wait,
-            )
-            if not self._stopped:
+            if self._stopped:
+                logger.error(
+                    "The verdict for a walled PDF at %s could not be recorded (%s: %s); "
+                    "its entry stays pending and is visited again next session",
+                    entry.request.host, type(e).__name__, e,
+                )
+            else:
+                logger.error(
+                    "The verdict for a walled PDF at %s could not be recorded (%s: %s); "
+                    "trying again in %.0f seconds",
+                    entry.request.host, type(e).__name__, e, wait,
+                )
                 self._save_retry.start(int(wait * MS_PER_SECOND))
             return False
         self._unsaved = None
         self._save_wait = float(RESCUE_VERDICT_SAVE_RETRY_SECONDS)
-        if updated is not None and updated.state is RescueState.RESCUED:
+        updated = recorded.entry
+        if (
+            announce
+            and recorded.applied
+            and updated is not None
+            and updated.state is RescueState.RESCUED
+        ):
             self.rescued.emit(updated)
         return True

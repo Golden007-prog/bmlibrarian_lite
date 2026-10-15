@@ -267,6 +267,7 @@ def test_each_opening_of_the_settings_dialog_is_deleted(qapp: QApplication) -> N
     window = QWidget()
     window.config = LiteConfig()  # type: ignore[attr-defined]
     window.status_bar = MagicMock()  # type: ignore[attr-defined]
+    window._browser_rescue_available = True  # type: ignore[attr-defined]
     opened: list[SettingsDialog] = []
 
     def record_and_cancel(dialog: SettingsDialog) -> int:

@@ -1242,12 +1242,23 @@ ELSEVIER_INSTTOKEN_EXPLANATION = (
 )
 BROWSER_RESCUE_EXPLANATION = (
     "Some open-access PDFs sit behind a robot check that blocks the app's "
-    "downloads. With this on, the app later opens each such PDF in a hidden "
-    "built-in browser, saves it if it arrives, and re-checks that article's "
-    "transparency. The page opens as in any browser: it loads its own "
-    "resources and runs the publisher's scripts, which is how the robot "
-    "check is passed, and the publisher's cookies are kept in the app's own "
-    "browser folder. Your searches, documents and keys are never sent."
+    "downloads. With this on, while the app is open it later opens each such "
+    "PDF in a hidden built-in browser, saves it if it arrives, and re-checks "
+    "that article's transparency when the article is in your library. It "
+    "also opens the PDFs the app's MCP server queued. The page opens as in "
+    "any browser: it loads its own resources and runs the publisher's "
+    "scripts, and those of the robot check's provider (such as Google's "
+    "reCAPTCHA or Cloudflare), which is how the check is passed. Their "
+    "cookies, and a cache of what the pages loaded, are kept in the app's "
+    "own browser folder. The site learns which article is fetched, as it "
+    "did when the app first tried; your searches, documents and keys are "
+    "never sent."
+)
+#: Said when QtWebEngine could not start: in the status bar at start-up
+#: (while the setting is on) and beside the setting.
+BROWSER_RESCUE_UNAVAILABLE_NOTE = (
+    "The hidden browser could not start on this computer, so walled PDFs "
+    "are queued but not fetched. The log says why."
 )
 # The fields' placeholders when the value comes from the environment.
 ELSEVIER_API_KEY_FROM_ENVIRONMENT = (
@@ -1314,12 +1325,12 @@ RESCUE_RETRY_DELAY_SECONDS = 15 * 60
 #: bookkeeping was lost, and a database lock usually clears in seconds.
 RESCUE_VERDICT_SAVE_RETRY_SECONDS = 30
 #: How often the queue is read for entries another process wrote (the MCP
-#: server, the CLI) or that arrived while the hidden pass was off.
+#: server) or that arrived while the hidden pass was off.
 RESCUE_POLL_INTERVAL_MS = 60_000
 #: The priority of an entry an analysis queued.
 RESCUE_PRIORITY_DEFAULT = 0
-#: The priority of an entry a reader is waiting on (stage 3's interrogation
-#: tab): visited before every default one.
+#: The priority of an entry a reader is waiting on: visited before every
+#: default one. Used from stage 3's interrogation tab, not yet built.
 RESCUE_PRIORITY_WAITING = 1
 #: The browser's persistent profile, under the data directory: its cookies
 #: are kept, so a clearance or a person's tick carries over between pages

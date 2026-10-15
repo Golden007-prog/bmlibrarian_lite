@@ -118,6 +118,10 @@ class TransparencyManager(QObject):
         self._executor: Optional[ThreadPoolExecutor] = None
         self._executor_workers = 0
         self._pending_futures: dict[str, Future] = {}
+        # Documents to analyse once more when their pending analysis ends,
+        # with the (pmid, doi) to ask by: a PDF rescued while one ran
+        # (#480, stage 2), which that analysis may have looked for too soon
+        self._again_after_pending: dict[str, tuple[str | None, str | None]] = {}
         self._lock = Lock()
 
         # Rate limiting
@@ -189,6 +193,7 @@ class TransparencyManager(QObject):
             self._executor = None
         with self._lock:
             self._pending_futures.clear()
+            self._again_after_pending.clear()
 
     def analyze_document(
         self,
@@ -197,6 +202,7 @@ class TransparencyManager(QObject):
         doi: Optional[str] = None,
         full_text: Optional[str] = None,
         reuse_stored: bool = True,
+        again_if_pending: bool = False,
     ) -> bool:
         """
         Queue a document for background transparency analysis.
@@ -215,11 +221,16 @@ class TransparencyManager(QObject):
                 rescued (#480, stage 2): its stored result was made without
                 that full text. A newer build's row is never overwritten
                 either way.
+            again_if_pending: For a document already pending, analyse it
+                once more when that analysis ends, rather than not at all
+                (#480, stage 2: a PDF rescued meanwhile may have been looked
+                for before it arrived).
 
         Returns:
-            ``True`` when an analysis was queued; ``False`` when it was
-            not (analysis off, no identifier, a stored result served, or
-            the document already pending).
+            ``True`` when an analysis was queued, or will run once the
+            pending one ends; ``False`` when it was not (analysis off, no
+            identifier, a stored result served, or the document already
+            pending without ``again_if_pending``).
         """
         if not self.settings.enabled:
             return False
@@ -288,6 +299,9 @@ class TransparencyManager(QObject):
 
         with self._lock:
             if document_id in self._pending_futures:
+                if again_if_pending:
+                    self._again_after_pending[document_id] = (pmid, doi)
+                    return True
                 return False  # Already queued
 
             future = self._executor.submit(
@@ -314,7 +328,9 @@ class TransparencyManager(QObject):
         Ignores this build's stored result, still refuses to overwrite a
         newer build's (``may_replace_stored``), and queues the analysis as
         usual: discovery finds the PDF at the cached-PDF tier, and
-        ``analysis_complete`` updates the badge.
+        ``analysis_complete`` updates the badge. A document whose analysis
+        is pending already is analysed once more when that one ends, since
+        it may have passed the cached-PDF tier before the PDF arrived.
 
         Args:
             document_id: Internal document ID.
@@ -322,9 +338,12 @@ class TransparencyManager(QObject):
             doi: The DOI the rescued PDF is saved under.
 
         Returns:
-            ``True`` only when an analysis was actually queued.
+            ``True`` when an analysis was queued, or will run once the
+            pending one ends.
         """
-        return self.analyze_document(document_id, pmid=pmid, doi=doi, reuse_stored=False)
+        return self.analyze_document(
+            document_id, pmid=pmid, doi=doi, reuse_stored=False, again_if_pending=True
+        )
 
     def analyze_batch(
         self,
@@ -398,6 +417,7 @@ class TransparencyManager(QObject):
         """
         with self._lock:
             self._pending_futures.pop(document_id, None)
+            again = self._again_after_pending.pop(document_id, None)
 
         try:
             result = future.result()
@@ -425,6 +445,14 @@ class TransparencyManager(QObject):
             # still be able to stop.
             if isinstance(e, (KeyboardInterrupt, SystemExit)):
                 raise
+        # Not after stop(): it cleared the request, and a stopped manager
+        # must not start a new executor (an analysis while the app quits)
+        if again is not None and self._executor is not None:
+            pmid, doi = again
+            logger.info(
+                f"Analysing {document_id} once more: its PDF arrived while it was analysed"
+            )
+            self.analyze_document(document_id, pmid=pmid, doi=doi, reuse_stored=False)
 
     def get_pending_count(self) -> int:
         """
@@ -442,6 +470,7 @@ class TransparencyManager(QObject):
             for future in self._pending_futures.values():
                 future.cancel()
             self._pending_futures.clear()
+            self._again_after_pending.clear()
 
     def update_settings(self, settings: TransparencySettings) -> None:
         """

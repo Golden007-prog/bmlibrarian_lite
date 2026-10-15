@@ -106,15 +106,32 @@ def test_the_message_promises_a_recheck_only_when_one_was_queued() -> None:
 
 
 @pytest.mark.parametrize("error", [__import__("sqlite3").Error("locked"), SQLiteError("locked")])
-def test_a_storage_error_still_shows_the_plain_message(
+def test_a_storage_error_says_the_recheck_failed(
     caplog: pytest.LogCaptureFixture, error: Exception
 ) -> None:
-    """The lookup failure is logged at ERROR; the reader still hears of the PDF."""
+    """The failure is logged at ERROR; the reader hears of the PDF and that no re-check runs."""
     def fail(_id: str) -> None:
         raise error
 
     window, said = _window(fail, True)
     with caplog.at_level(logging.ERROR, logger=app_module.logger.name):
         app_module.LiteMainWindow._on_pdf_rescued(window, _entry())  # type: ignore[arg-type]
-    assert said and said[0].startswith("Fetched the PDF") and "re-checking" not in said[0]
+    assert said and said[0].startswith("Fetched the PDF")
+    assert said[0].endswith("its transparency could not be re-checked.")
     assert any(r.levelno == logging.ERROR for r in caplog.records)
+
+
+def test_an_unavailable_browser_is_said_while_the_setting_is_on() -> None:
+    """The reader who expects walled PDFs fetched is told they will not be."""
+    from bmlibrarian_lite.constants import BROWSER_RESCUE_UNAVAILABLE_NOTE
+
+    for hidden, expected in ((True, [BROWSER_RESCUE_UNAVAILABLE_NOTE]), (False, [])):
+        messages: list[str] = []
+        window = SimpleNamespace(
+            _browser_rescue_available=True,
+            config=SimpleNamespace(discovery=SimpleNamespace(browser_rescue_hidden=hidden)),
+            status_bar=SimpleNamespace(showMessage=lambda text, _ms, m=messages: m.append(text)),
+        )
+        app_module.LiteMainWindow.browser_rescue_unavailable(window)  # type: ignore[arg-type]
+        assert window._browser_rescue_available is False
+        assert messages == expected
