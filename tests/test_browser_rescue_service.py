@@ -529,3 +529,136 @@ def test_shutdown_aborts_a_shown_visit(qapp, tmp_path: Path, shown: list, no_flu
     _run_scheduled(shown)
     service.shutdown()
     assert _FakeAttempt.made[0].aborted and storage.writes == []
+
+
+# -- walk the queue (#480, stage 3) ------------------------------------------------
+
+
+class _WalkStorage(_Storage):
+    """A queue whose entries are read by ID; ``states`` decides which are still open."""
+
+    def __init__(self, states: dict[int, RescueState]) -> None:
+        """Hold each entry's state."""
+        super().__init__(None, failures=0)
+        self.states = states
+
+    def rescue_entry(self, entry_id: int) -> Any:
+        """The entry as it now stands, or None when gone."""
+        state = self.states.get(entry_id)
+        if state is None:
+            return None
+        address = f"https://h{entry_id}.example/{entry_id}.pdf"
+        return SimpleNamespace(id=entry_id, state=state, request=SimpleNamespace(
+            host=f"h{entry_id}.example", address=address, doi=f"10.1/{entry_id}"))
+
+    def record_rescue_verdict(self, entry_id: int, verdict: RescueVerdict) -> RecordedVerdict:
+        """Apply a verdict: a PDF rescues, anything else waits for a person."""
+        self.writes.append((entry_id, verdict))
+        state = RescueState.RESCUED if verdict.outcome is RescueOutcome.PDF else RescueState.NEEDS_PERSON
+        self.states[entry_id] = state
+        return RecordedVerdict(self.rescue_entry(entry_id), applied=True)
+
+
+CHALLENGE = RescueVerdict(RescueOutcome.CHALLENGE, 403, ("cloudflare",))
+
+
+def _walking_service(tmp_path: Path, storage: _WalkStorage) -> BrowserRescueService:
+    """A started service whose hidden pass is off, so only the walk visits."""
+    service = _started_service(tmp_path, storage)
+    service._config.discovery.browser_rescue_hidden = False  # type: ignore[attr-defined]
+    return service
+
+
+def test_a_walk_visits_each_entry_in_turn_judging_its_page(qapp, tmp_path: Path, shown: list) -> None:
+    """Each entry in the order given, with the visible timeout and page judgement."""
+    storage = _WalkStorage({1: RescueState.NEEDS_PERSON, 2: RescueState.NEEDS_PERSON})
+    service = _walking_service(tmp_path, storage)
+    service.walk([1, 2], object())
+    _run_scheduled(shown)
+    first = _FakeAttempt.made[0]
+    assert first.judge_pages is True and first.timeout_ms == service._visible_timeout_ms
+    first.finished.emit(CHALLENGE)
+    _run_scheduled(shown)
+    assert [a.address for a in _FakeAttempt.made] == [
+        "https://h1.example/1.pdf", "https://h2.example/2.pdf"
+    ]
+    assert service.walking
+
+
+def test_a_walk_skips_an_entry_settled_meanwhile(qapp, tmp_path: Path, shown: list) -> None:
+    """Review focus 5: re-read before each visit; one no longer open, or gone, is skipped."""
+    storage = _WalkStorage({1: RescueState.DISMISSED, 3: RescueState.NEEDS_PERSON})
+    service = _walking_service(tmp_path, storage)
+    service.walk([1, 2, 3], object())
+    _run_scheduled(shown)
+    assert [a.address for a in _FakeAttempt.made] == ["https://h3.example/3.pdf"]
+
+
+def test_a_walk_ends_by_itself_after_the_last_entry(qapp, tmp_path: Path, shown: list) -> None:
+    """walk_ended is emitted once the list is done."""
+    storage = _WalkStorage({1: RescueState.NEEDS_PERSON})
+    service = _walking_service(tmp_path, storage)
+    ended: list[bool] = []
+    service.walk_ended.connect(lambda: ended.append(True))
+    service.walk([1], object())
+    _run_scheduled(shown)
+    _FakeAttempt.made[0].finished.emit(RescueVerdict(RescueOutcome.NO_PDF, 200))
+    assert ended == [True] and not service.walking
+
+
+def test_stopping_a_walk_aborts_its_visit(qapp, tmp_path: Path, shown: list) -> None:
+    """Stop: the visit under way ends with no verdict, and no further entry is visited."""
+    storage = _WalkStorage({1: RescueState.NEEDS_PERSON, 2: RescueState.NEEDS_PERSON})
+    service = _walking_service(tmp_path, storage)
+    ended: list[bool] = []
+    service.walk_ended.connect(lambda: ended.append(True))
+    service.walk([1, 2], object())
+    _run_scheduled(shown)
+    service.stop_walk()
+    _run_scheduled(shown)
+    assert _FakeAttempt.made[0].aborted and len(_FakeAttempt.made) == 1
+    assert storage.writes == [] and ended == [True]
+
+
+def test_choosing_an_entry_stops_the_walk(qapp, tmp_path: Path, shown: list) -> None:
+    """The reader picking an entry takes the view over: the walk stops."""
+    storage = _WalkStorage({1: RescueState.NEEDS_PERSON, 2: RescueState.NEEDS_PERSON})
+    service = _walking_service(tmp_path, storage)
+    service.walk([1, 2], object())
+    _run_scheduled(shown)
+    service.visit_shown(storage.rescue_entry(2), object())
+    _run_scheduled(shown)
+    assert not service.walking
+    assert _FakeAttempt.made[-1].judge_pages is False
+
+
+def test_a_queue_that_cannot_be_read_skips_that_entry(
+    qapp, tmp_path: Path, shown: list, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A read failure is logged and the walk goes on."""
+    storage = _WalkStorage({2: RescueState.NEEDS_PERSON})
+    original = storage.rescue_entry
+
+    def flaky(entry_id: int) -> Any:
+        if entry_id == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original(entry_id)
+
+    storage.rescue_entry = flaky  # type: ignore[method-assign]
+    service = _walking_service(tmp_path, storage)
+    service.walk([1, 2], object())
+    _run_scheduled(shown)
+    assert [a.address for a in _FakeAttempt.made] == ["https://h2.example/2.pdf"]
+    assert "could not be read" in caplog.text
+
+
+def test_the_hidden_pass_looks_again_once_a_walk_ends(qapp, tmp_path: Path, shown: list) -> None:
+    """The pause is over when the walk is: the hidden pass looks at once, not at the next poll."""
+    storage = _WalkStorage({1: RescueState.NEEDS_PERSON})
+    service = _started_service(tmp_path, storage)
+    service.walk([1], object())
+    _run_scheduled(shown)
+    reads = storage.reads
+    _FakeAttempt.made[0].finished.emit(RescueVerdict(RescueOutcome.NO_PDF, 200))
+    _run_scheduled(shown)
+    assert not service.walking and storage.reads > reads

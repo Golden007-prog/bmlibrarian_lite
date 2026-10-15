@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
-from collections.abc import Callable
+from collections import deque
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -25,6 +26,7 @@ from PySide6.QtWebEngineCore import QWebEngineDownloadRequest, QWebEngineProfile
 from shiboken6 import Shiboken
 
 from ..browser_rescue import (
+    OPEN_RESCUE_STATES,
     RescueEntry,
     RescueOutcome,
     RescueState,
@@ -101,6 +103,7 @@ class BrowserRescueService(QObject):
             :class:`RescueVerdict`, or ``None`` when it was left without one.
         shown_visit_failed: The :class:`RescueEntry` whose page could not be
             opened (logged); ``shown_visit_ended(entry, None)`` precedes it.
+        walk_ended: *Walk the queue* finished its last entry or was stopped.
     """
 
     rescued = Signal(object)
@@ -108,6 +111,7 @@ class BrowserRescueService(QObject):
     shown_visit_started = Signal(object)
     shown_visit_ended = Signal(object, object)
     shown_visit_failed = Signal(object)
+    walk_ended = Signal()
 
     def __init__(
         self,
@@ -176,6 +180,9 @@ class BrowserRescueService(QObject):
         # pass takes no entry (#480, stage 3)
         self._shown: _ShownVisit | None = None
         self._shown_token = 0
+        # The entries *Walk the queue* has still to visit, and its view
+        self._walk: deque[int] | None = None
+        self._walk_view: QWebEngineView | None = None
 
     @property
     def busy(self) -> bool:
@@ -225,6 +232,8 @@ class BrowserRescueService(QObject):
             return
         self._stopped = True
         self._shown = None
+        self._walk = None
+        self._walk_view = None
         self._poll.stop()
         self._save_retry.stop()
         if self._unsaved is not None:
@@ -257,7 +266,70 @@ class BrowserRescueService(QObject):
             entry: An open entry.
             view: The window's view.
         """
+        if self._walk is not None:
+            # The reader picking an entry takes the view over
+            self.stop_walk()
         self._ask_shown(entry, view, judge_pages=False)
+
+    @property
+    def walking(self) -> bool:
+        """Whether *Walk the queue* is running.
+
+        Returns:
+            ``True`` from :meth:`walk` until its last entry or :meth:`stop_walk`.
+        """
+        return self._walk is not None
+
+    def walk(self, entry_ids: Sequence[int], view: QWebEngineView) -> None:
+        """Visit each entry in turn in the window's view, unattended.
+
+        Each page is judged as the hidden pass judges it, waiting up to
+        ``visible_timeout_ms`` for a PDF: with the window shown this passed
+        the Cloudflare publishers 9 times in 9 (spike), so only walls that
+        need a person's tick are left. Each entry is read again before its
+        visit, and one no longer open is skipped.
+
+        Args:
+            entry_ids: The entries, in the order to visit them.
+            view: The window's view.
+        """
+        if self._stopped:
+            return
+        self.end_shown_visit()
+        self._walk = deque(entry_ids)
+        self._walk_view = view
+        self._walk_next()
+
+    def stop_walk(self) -> None:
+        """Stop *Walk the queue*; the visit under way ends with no verdict."""
+        if self._walk is None:
+            return
+        self._walk = None
+        self._walk_view = None
+        self.end_shown_visit()
+        self.walk_ended.emit()
+
+    def _walk_next(self) -> None:
+        """Visit the walk's next open entry, or end the walk."""
+        walk, view = self._walk, self._walk_view
+        if walk is None or view is None:
+            return
+        while walk:
+            entry_id = walk.popleft()
+            try:
+                entry = self._storage.rescue_entry(entry_id)
+            except (sqlite3.Error, SQLiteError) as e:
+                logger.error("Walled PDF %s could not be read for the walk: %s", entry_id, e)
+                continue
+            if entry is None or entry.state not in OPEN_RESCUE_STATES:
+                continue
+            self._ask_shown(entry, view, judge_pages=True)
+            return
+        self._walk = None
+        self._walk_view = None
+        self.walk_ended.emit()
+        # The window no longer drives the browser: the hidden pass resumes
+        self.wake()
 
     def end_shown_visit(self) -> None:
         """Leave the window's visit with no verdict: its entry stays as it was."""
@@ -331,6 +403,8 @@ class BrowserRescueService(QObject):
             logger.exception("The review queue could not open the page at %s", shown.entry.request.host)
             self.end_shown_visit()
             self.shown_visit_failed.emit(shown.entry)
+            # A walk goes on past a page that could not open
+            self._walk_next()
             return
         self.shown_visit_started.emit(shown.entry)
 
@@ -353,7 +427,10 @@ class BrowserRescueService(QObject):
             self._save(shown.entry, verdict)
         finally:
             self.shown_visit_ended.emit(shown.entry, verdict)
-            self.wake()
+            if self._walk is not None:
+                self._walk_next()
+            else:
+                self.wake()
 
     def _tick(self) -> None:
         """Take the next due entry and schedule its visit for its host's slot.
