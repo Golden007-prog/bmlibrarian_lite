@@ -30,6 +30,7 @@ from bmlibrarian_lite.data_models import (  # noqa: E402
     Citation,
     DocumentSource,
     LiteDocument,
+    LookupRecord,
 )
 from bmlibrarian_lite.gui import document_interrogation_tab as tab_module  # noqa: E402
 from bmlibrarian_lite.gui.citation_loader import abstract_source_label  # noqa: E402
@@ -80,6 +81,7 @@ class StubFulltextWorker(QObject):
         """
         super().__init__()
         self.stopped = False
+        self.lookups = LookupRecord()
 
     def start(self) -> None:
         """Nothing runs until the test emits a result."""
@@ -211,6 +213,7 @@ def tab(qapp: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
         _citation: Any,
         on_error: Any = None,
         on_cancel: Any = None,
+        fall_back: Any = None,
     ) -> None:
         widget.discovery_on_error = on_error
 
