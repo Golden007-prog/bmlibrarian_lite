@@ -30,8 +30,7 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**A rescued PDF must be the article's** (#532, Python; branch
-`fix/rescue-pdf-title-check-532`, in review). `pdf_title_check.py`: the first
+**A rescued PDF must be the article's** (#532, Python; PR #542, in review). `pdf_title_check.py`: the first
 page must carry ≥ `PDF_TITLE_MIN_PAIR_SHARE` (0.5) of the title's adjacent
 word pairs; survey numbers are in the constant's comment (single words passed
 62 of 500 same-subject titles). A hidden visit's mismatch is `wrong_pdf` →
