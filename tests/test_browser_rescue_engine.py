@@ -121,6 +121,49 @@ def test_a_page_replaced_during_a_download_does_not_end_it(harness: dict[str, An
     assert "/gone" in harness["out"]["attempts"]["visits"]
 
 
+def test_an_empty_download_learnt_nothing(harness: dict[str, Any]) -> None:
+    """An empty file served as the PDF is transport, not no_pdf: unparsed is not absent."""
+    result = _attempt(harness, "empty")
+    assert result["verdict"]["outcome"] == "transport"
+    assert not result["saved"] and result["left"] == []
+
+
+def test_a_wall_served_as_a_download_waits_for_a_person(harness: dict[str, Any]) -> None:
+    """A challenge page that arrived as a download is a challenge, not no_pdf."""
+    result = _attempt(harness, "walldownload")
+    assert result["verdict"] == {"outcome": "challenge", "http_status": None, "markers": ["cloudflare"]}
+    assert not result["saved"] and result["left"] == []
+
+
+def test_a_page_leaving_for_an_unanswered_pdf_is_not_judged_no_pdf(harness: dict[str, Any]) -> None:
+    """An interstitial whose navigation to a slow PDF is still open learnt nothing."""
+    result = _attempt(harness, "interstitial")
+    assert result["verdict"] == {"outcome": "transport", "http_status": 200, "markers": []}
+    assert "/slowpdf" in harness["out"]["attempts"]["visits"]
+
+
+def test_a_pdf_that_cannot_be_kept_learnt_nothing(harness: dict[str, Any]) -> None:
+    """A PDF that arrived and could not be renamed into place is transport, with no partial file left."""
+    result = _attempt(harness, "unkept")
+    assert result["verdict"]["outcome"] == "transport"
+    assert not result["saved"] and result["left"] == []
+
+
+def test_no_folder_for_the_pdf_learnt_nothing(harness: dict[str, Any]) -> None:
+    """A PDF library folder that cannot be made is the computer's failure, not the article's."""
+    result = _attempt(harness, "nofolder")
+    assert result["verdict"]["outcome"] == "transport"
+    assert not result["saved"] and result["left"] == ["blocker"]
+
+
+def test_a_download_another_page_started_is_not_this_visits_pdf(harness: dict[str, Any]) -> None:
+    """A stray page's download is refused: it would save another article's PDF under this DOI."""
+    result = _attempt(harness, "foreign")
+    assert "/pdf?stray" in harness["out"]["attempts"]["visits"]
+    assert result["verdict"] == {"outcome": "no_pdf", "http_status": 200, "markers": []}
+    assert not result["saved"] and result["left"] == []
+
+
 def test_response_headers_join_a_multimap() -> None:
     """Repeated headers are joined as HTTP joins them."""
     from PySide6.QtCore import QByteArray

@@ -24,7 +24,8 @@ from bmlibrarian_lite.gui.web_engine import prepare_web_engine
 
 prepare_web_engine()
 
-from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QEvent, QEventLoop, QUrl  # noqa: E402
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 from shiboken6 import Shiboken  # noqa: E402
 
@@ -73,6 +74,12 @@ CHALLENGE_PAGE = (
 WALL_PAGE = (
     b"<html><head><title>Just a moment...</title></head><body>"
     b"<script>window._cf_chl_opt={};</script></body></html>"
+)
+# An interstitial whose script moves on to a PDF that answers only after the
+# visit's timeout: the page in view at the timeout is the one being left.
+INTERSTITIAL_PAGE = (
+    b"<html><title>Redirecting</title><p>Fetching the PDF...</p><script>"
+    b"setTimeout(function(){location='/slowpdf'},100);</script></html>"
 )
 
 
@@ -126,6 +133,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html", b"<html><title>Abstract</title><p>An abstract.</p></html>")
         elif route == "/fakepdf":
             self._send(200, "application/pdf", b"<html>not a pdf</html>")
+        elif route == "/empty":
+            self._send(200, "application/pdf", b"", {"Content-Disposition": "attachment; filename=a.pdf"})
+        elif route == "/walldownload":
+            self._send(200, "application/pdf", WALL_PAGE)
+        elif route == "/interstitial":
+            self._send(200, "text/html", INTERSTITIAL_PAGE)
+        elif route == "/slowpdf":
+            time.sleep(SLOW_ANSWER_SECONDS)
+            self._send(200, "application/pdf", PDF_BODY)
         elif route == "/oversize":
             self._send(200, "application/pdf", OVERSIZE_BODY)
         elif route == "/oversize-unannounced":
@@ -193,7 +209,71 @@ ATTEMPTS = {
     "stall": "/stall",
     "slow": "/slow",
     "replacing": "/replacing",
+    "empty": "/empty",
+    "walldownload": "/walldownload",
+    "interstitial": "/interstitial",
+    "unkept": "/pdf?unkept",
+    "nofolder": "/pdf?nofolder",
 }
+
+
+def _pdf_path_where_the_rename_fails(out: Path) -> Path:
+    """A folder already stands where the PDF goes, so it cannot be renamed into place."""
+    pdf_path = out / "article.pdf"
+    pdf_path.mkdir()
+    return pdf_path
+
+
+def _pdf_path_with_no_folder(out: Path) -> Path:
+    """A file stands where the PDF's folder should be made."""
+    (out / "blocker").write_text("a file where the folder should be")
+    return out / "blocker" / "article.pdf"
+
+
+#: Scenarios whose PDF path is prepared to fail; the rest save to out/article.pdf
+PDF_PATHS: dict[str, Callable[[Path], Path]] = {
+    "unkept": _pdf_path_where_the_rename_fails,
+    "nofolder": _pdf_path_with_no_folder,
+}
+
+
+def run_attempt(
+    app: QApplication, profile: QWebEngineProfile, current: list[RescueAttempt], address: str,
+    out: Path, pdf_path: Path, during: Callable[[], None] | None = None,
+) -> dict[str, Any]:
+    """Make one visit and report what came of it.
+
+    Args:
+        app: The application, pumped until the verdict.
+        profile: The shared profile.
+        current: Holds the visit downloads are handed to.
+        address: The address visited.
+        out: The scenario's folder.
+        pdf_path: Where a PDF that arrives is saved.
+        during: Called once the visit has started.
+
+    Returns:
+        Whether it finished, its verdict, whether a PDF was saved, and what else
+        was left in the folder.
+    """
+    verdicts: list[RescueVerdict] = []
+    attempt = RescueAttempt(profile, address, pdf_path, TIMEOUT_MS, STALL_MS, MAX_PDF_BYTES)
+    attempt.finished.connect(verdicts.append)
+    current[:] = [attempt]
+    started = time.monotonic()
+    attempt.start()
+    if during is not None:
+        during()
+    finished = run_until(app, lambda: bool(verdicts), SCENARIO_LIMIT_SECONDS)
+    result = {
+        "finished": finished,
+        "verdict": verdicts[0].to_dict() if verdicts else None,
+        "saved": pdf_path.is_file() and pdf_path.read_bytes().startswith(b"%PDF"),
+        "left": sorted(p.name for p in out.iterdir() if p.name != "article.pdf"),
+        "seconds": round(time.monotonic() - started, 2),
+    }
+    attempt.deleteLater()
+    return result
 
 
 def attempt_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any]:
@@ -208,22 +288,20 @@ def attempt_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
         Handler.trickle_headers_sent = None
         out = root / "attempts" / name
         out.mkdir(parents=True)
-        pdf_path = out / "article.pdf"
-        verdicts: list[RescueVerdict] = []
-        attempt = RescueAttempt(profile, address, pdf_path, TIMEOUT_MS, STALL_MS, MAX_PDF_BYTES)
-        attempt.finished.connect(verdicts.append)
-        current[:] = [attempt]
-        started = time.monotonic()
-        attempt.start()
-        finished = run_until(app, lambda v=verdicts: bool(v), SCENARIO_LIMIT_SECONDS)
-        results[name] = {
-            "finished": finished,
-            "verdict": verdicts[0].to_dict() if verdicts else None,
-            "saved": pdf_path.exists() and pdf_path.read_bytes().startswith(b"%PDF"),
-            "left": sorted(p.name for p in out.iterdir() if p.name != "article.pdf"),
-            "seconds": round(time.monotonic() - started, 2),
-        }
-        attempt.deleteLater()
+        pdf_path = PDF_PATHS.get(name, lambda o: o / "article.pdf")(out)
+        results[name] = run_attempt(app, profile, current, address, out, pdf_path)
+
+    # A page an earlier visit let go of starts a download while the next
+    # visit is under way: another article's PDF, which that visit refuses
+    out = root / "attempts" / "foreign"
+    out.mkdir(parents=True)
+    stray = QWebEnginePage(profile)
+    results["foreign"] = run_attempt(
+        app, profile, current, base + "/abstract?foreign", out, out / "article.pdf",
+        during=lambda: stray.load(QUrl(base + "/pdf?stray")),
+    )
+    Shiboken.delete(stray)
+
     results["visits"] = list(Handler.visits)
     QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     Shiboken.delete(profile)
@@ -278,7 +356,7 @@ def service_scenarios(app: QApplication, base: str, root: Path) -> dict[str, Any
         "doc_a_saved": (out / "doc-a.pdf").exists(),
     }
 
-    # Written by another process: the poll finds it
+    # Written as another process would, through a second storage: the poll finds it
     LiteStorage(config).enqueue_rescues([request("doc-d", "/pdf?d")])
     result["polled"] = run_until(app, lambda: "doc-d" in rescued, SCENARIO_LIMIT_SECONDS)
 

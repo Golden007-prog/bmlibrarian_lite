@@ -2,10 +2,11 @@
 
 Driven only by signals and timers, so nothing here blocks the GUI thread.
 The page is QtWebEngine's own, with its own User-Agent and no automation
-protocol (no impersonation, spec decision 5). The profile's PDF viewer is
-off, so a PDF arrives as a download. It is written beside its cache path
-as a partial file, and renamed into place only once it is whole, within
-the size limit, and begins with ``%PDF``.
+protocol (no impersonation, decision 5 of
+``docs/superpowers/specs/2026-10-12-browser-rescue-design.md``). The
+profile's PDF viewer is off, so a PDF arrives as a download. It is written
+as a partial file beside ``pdf_path`` in the PDF library, and renamed into
+place only once it is whole, within the size limit, and begins with ``%PDF``.
 """
 
 from __future__ import annotations
@@ -30,15 +31,16 @@ from ..browser_rescue import (
     RescueOutcome,
     RescueVerdict,
     download_verdict,
+    http_status_or_none,
     page_verdict,
     penalise_host_for_answer,
 )
 from ..constants import (
     BROWSER_PROFILE_CACHE_DIRNAME,
     BROWSER_PROFILE_STORAGE_NAME,
+    CHALLENGE_BODY_PREFIX_BYTES,
     CHALLENGE_GONE_STATUSES,
     CONFIG_DIR_PERMISSIONS,
-    PDF_MAGIC_BYTES,
     RESCUE_PAGE_READ_GRACE_MS,
 )
 from ..pdf_download import discard_partial_download, partial_download_path
@@ -161,6 +163,9 @@ class RescueAttempt(QObject):
         self._headers: dict[str, str] = {}
         self._too_large = False
         self._reading_page = False
+        # A main-frame navigation has started and not yet ended: the page in
+        # view is the one it is leaving
+        self._navigating = False
         self._done = False
         self._timeout = QTimer(self)
         self._timeout.setSingleShot(True)
@@ -185,13 +190,21 @@ class RescueAttempt(QObject):
     def accept_download(self, request: QWebEngineDownloadRequest) -> None:
         """Take the download this visit started, into the partial file.
 
-        Only the first: a page that starts a second is not believed twice.
-        A size announced over the limit is refused before a byte is written.
+        Only one this visit's own page started: the profile is shared, and a
+        page an earlier visit let go of may still start one, which is
+        another article's PDF. Only the first: a page that starts a second
+        is not believed twice. A size announced over the limit is refused
+        before a byte is written.
 
         Args:
             request: The profile's download request.
         """
-        if self._done or self._download is not None:
+        if (
+            self._done
+            or self._download is not None
+            or self._page is None
+            or request.page() is not self._page
+        ):
             request.cancel()
             return
         self._timeout.stop()
@@ -234,15 +247,20 @@ class RescueAttempt(QObject):
         Args:
             info: The load's state.
         """
-        if self._done or info.isDownload() or info.status() == _LoadStatus.LoadStartedStatus:
+        if self._done or info.isDownload():
             return
         if self._download is not None:
             # A download is under way: what the page does now is not the answer
             return
+        if info.status() == _LoadStatus.LoadStartedStatus:
+            self._navigating = True
+            return
+        self._navigating = False
         domain = info.errorDomain()
         if domain == _Domain.HttpStatusCodeDomain:
-            # Every main-frame answer reports its status here, a 200 included
-            self._status = info.errorCode()
+            # Every main-frame answer reports its status here, a 200 included.
+            # A code that is no HTTP status is as good as none: nothing learnt
+            self._status = http_status_or_none(info.errorCode())
             self._headers = response_headers(info.responseHeaders())
             penalise_host_for_answer(self._address, self._status, self._headers)
             if self._status in CHALLENGE_GONE_STATUSES:
@@ -273,17 +291,22 @@ class RescueAttempt(QObject):
     def _on_html(self, html: str) -> None:
         """Judge the page by its serialised DOM.
 
+        With no status, no server ever answered and the page read is the
+        empty initial document (``page_verdict``: transport). While a
+        navigation the page started is still open, the page read is the one
+        it is leaving, which says nothing of where it goes: that is no
+        ``NO_PDF`` either, but a transport failure. A challenge it shows
+        still waits for a person, an open state.
+
         Args:
             html: The page's HTML.
         """
         if self._done or self._download is not None:
             return
-        if self._status is None:
-            # No server ever answered: the page read is the empty initial
-            # document, and the visit learnt nothing
-            self._finish(RescueVerdict(RescueOutcome.TRANSPORT))
-            return
-        self._finish(page_verdict(self._status, self._headers, html))
+        verdict = page_verdict(self._status, self._headers, html)
+        if self._navigating and verdict.outcome is RescueOutcome.NO_PDF:
+            verdict = RescueVerdict(RescueOutcome.TRANSPORT, self._status)
+        self._finish(verdict)
 
     def _on_progress(self) -> None:
         """A download moved: refuse it past the limit, else wait on."""
@@ -326,7 +349,9 @@ class RescueAttempt(QObject):
             if written.stat().st_size > self._max_pdf_bytes:
                 return RescueVerdict(RescueOutcome.TOO_LARGE)
             with open(written, "rb") as f:
-                verdict = download_verdict(f.read(len(PDF_MAGIC_BYTES)))
+                # A bounded read of what was served, for the challenge rules;
+                # a PDF is kept whole by the rename below
+                verdict = download_verdict(f.read(CHALLENGE_BODY_PREFIX_BYTES))
             if verdict.outcome is RescueOutcome.PDF:
                 written.replace(self._pdf_path)
             return verdict

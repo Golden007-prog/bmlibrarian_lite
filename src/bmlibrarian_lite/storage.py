@@ -49,6 +49,7 @@ import sqlite_vec
 
 from . import rescue_queue_store
 from .browser_rescue import RescueEntry, RescueRequest, RescueState, RescueVerdict
+from .rescue_queue_store import RecordedVerdict
 
 # Register adapters/converters for datetime to avoid Python 3.12 deprecation warning
 # The default converter expects space-separated format, but we use ISO format with 'T'
@@ -4010,7 +4011,7 @@ class LiteStorage:
 
     def record_rescue_verdict(
         self, entry_id: int, verdict: RescueVerdict
-    ) -> RescueEntry | None:
+    ) -> RecordedVerdict:
         """Apply one browser visit's verdict to its entry.
 
         Args:
@@ -4018,7 +4019,9 @@ class LiteStorage:
             verdict: What the visit concluded.
 
         Returns:
-            The entry as it now stands; ``None`` when it is gone.
+            The entry as it now stands (``None`` when it is gone or its state
+            is a newer build's), and whether the verdict was applied: not
+            when the entry was no longer open.
         """
         with self._sqlite_connection() as conn:
             return rescue_queue_store.record_verdict(

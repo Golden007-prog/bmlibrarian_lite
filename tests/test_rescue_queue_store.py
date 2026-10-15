@@ -97,10 +97,15 @@ def test_a_transport_failure_waits_before_the_next_try(conn: sqlite3.Connection)
     store.enqueue(conn, [_request()], 0, T0)
     entry = store.next_pending(conn, T0)
     assert entry is not None
-    updated = store.record_verdict(conn, entry.id, TRANSPORT, T0)
-    assert updated is not None and (updated.state, updated.attempts) == (RescueState.PENDING, 1)
+    recorded = store.record_verdict(conn, entry.id, TRANSPORT, T0)
+    updated = recorded.entry
+    assert recorded.applied and updated is not None
+    assert (updated.state, updated.attempts) == (RescueState.PENDING, 1)
+    due = store.stamp(T0 + timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS))
+    assert updated.retry_after == due
     assert store.next_pending(conn, T0 + timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS - 1)) is None
-    assert store.next_pending(conn, T0 + timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS)) is not None
+    again = store.next_pending(conn, T0 + timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS))
+    assert again is not None and again.retry_after == due
 
 
 def test_the_attempt_cap_hands_the_entry_to_a_person(conn: sqlite3.Connection) -> None:
@@ -110,10 +115,11 @@ def test_the_attempt_cap_hands_the_entry_to_a_person(conn: sqlite3.Connection) -
     assert entry is not None
     now = T0
     for _ in range(MAX_RESCUE_ATTEMPTS):
-        updated = store.record_verdict(conn, entry.id, TRANSPORT, now)
+        updated = store.record_verdict(conn, entry.id, TRANSPORT, now).entry
         now += timedelta(seconds=RESCUE_RETRY_DELAY_SECONDS)
     assert updated is not None
     assert (updated.state, updated.attempts) == (RescueState.NEEDS_PERSON, MAX_RESCUE_ATTEMPTS)
+    assert updated.retry_after is None
     assert store.next_pending(conn, now) is None
     row = conn.execute(f"SELECT retry_after FROM {store.TABLE}").fetchone()
     assert row["retry_after"] is None
@@ -158,14 +164,35 @@ def test_a_verdict_for_an_entry_no_longer_open_changes_nothing(conn: sqlite3.Con
     assert entry is not None
     conn.execute(f"UPDATE {store.TABLE} SET state = 'dismissed'")
     conn.commit()
-    unchanged = store.record_verdict(conn, entry.id, PDF, T0)
-    assert unchanged is not None and unchanged.state is RescueState.DISMISSED
+    recorded = store.record_verdict(conn, entry.id, PDF, T0)
+    assert not recorded.applied
+    assert recorded.entry is not None and recorded.entry.state is RescueState.DISMISSED
     assert _states(conn) == {"doc-1 https://a.example/1.pdf": "dismissed"}
 
 
+def test_a_second_verdict_for_a_rescued_entry_is_not_applied(conn: sqlite3.Connection) -> None:
+    """A rescue another process recorded first is shown, not applied again."""
+    store.enqueue(conn, [_request()], 0, T0)
+    entry = store.next_pending(conn, T0)
+    assert entry is not None
+    assert store.record_verdict(conn, entry.id, PDF, T0).applied
+    again = store.record_verdict(conn, entry.id, PDF, T0)
+    assert not again.applied
+    assert again.entry is not None and again.entry.state is RescueState.RESCUED
+    assert again.entry.attempts == 1
+
+
 def test_a_verdict_for_a_missing_entry_is_none(conn: sqlite3.Connection) -> None:
-    """A verdict for a missing entry returns None."""
-    assert store.record_verdict(conn, 999, PDF, T0) is None
+    """A verdict for a missing entry returns no entry and is not applied."""
+    assert store.record_verdict(conn, 999, PDF, T0) == store.RecordedVerdict(None, applied=False)
+
+
+def test_the_sql_open_states_are_the_rules_open_states() -> None:
+    """The SQL's open states follow OPEN_RESCUE_STATES, so they cannot drift."""
+    from bmlibrarian_lite.browser_rescue import OPEN_RESCUE_STATES
+
+    assert set(store._OPEN) == {state.value for state in OPEN_RESCUE_STATES}
+    assert store._OPEN_MARKS.count("?") == len(OPEN_RESCUE_STATES)
 
 
 def test_the_verdict_is_stored_as_json(conn: sqlite3.Connection) -> None:
@@ -221,8 +248,9 @@ def test_storage_creates_the_table_and_round_trips_an_entry(storage: LiteStorage
     assert storage.enqueue_rescues([_request()]) == 1
     entry = storage.next_rescue_entry()
     assert entry is not None
-    updated = storage.record_rescue_verdict(entry.id, PDF)
-    assert updated is not None and updated.state is RescueState.RESCUED
+    recorded = storage.record_rescue_verdict(entry.id, PDF)
+    assert recorded.applied
+    assert recorded.entry is not None and recorded.entry.state is RescueState.RESCUED
     assert [e.state for e in storage.rescue_entries([RescueState.RESCUED])] == [RescueState.RESCUED]
 
 

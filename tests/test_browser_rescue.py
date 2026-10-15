@@ -14,6 +14,7 @@ from bmlibrarian_lite.browser_rescue import (
     RescueSubject,
     RescueVerdict,
     download_verdict,
+    http_status_or_none,
     next_state,
     page_verdict,
     queue_challenged_copies,
@@ -140,10 +141,11 @@ def test_a_gone_status_is_gone_whatever_the_page_says(status: int) -> None:
     assert page_verdict(status, {}, "Just a moment...") == RescueVerdict(RescueOutcome.GONE, status)
 
 
-def test_a_page_with_no_status_is_read_for_markers_alone() -> None:
-    """A page with no status is read for markers alone."""
-    assert page_verdict(None, {}, "Verify you are human").outcome is RescueOutcome.CHALLENGE
-    assert page_verdict(None, {}, "<p>nothing</p>") == RescueVerdict(RescueOutcome.NO_PDF, None)
+def test_a_page_with_no_status_learnt_nothing() -> None:
+    """No server answered: the page is the empty initial document, never no_pdf."""
+    assert page_verdict(None, {}, "<p>nothing</p>") == RescueVerdict(RescueOutcome.TRANSPORT)
+    assert page_verdict(None, {}, "") == RescueVerdict(RescueOutcome.TRANSPORT)
+    assert page_verdict(None, {}, "Verify you are human") == RescueVerdict(RescueOutcome.TRANSPORT)
 
 
 def test_only_the_first_64_kib_of_a_page_are_read() -> None:
@@ -155,8 +157,24 @@ def test_only_the_first_64_kib_of_a_page_are_read() -> None:
 def test_a_download_is_the_pdf_only_when_it_begins_with_the_magic_bytes() -> None:
     """A download is a PDF only when it begins with the magic bytes."""
     assert download_verdict(b"%PDF-1.7") == RescueVerdict(RescueOutcome.PDF)
-    assert download_verdict(b"<htm") == RescueVerdict(RescueOutcome.NO_PDF)
-    assert download_verdict(b"") == RescueVerdict(RescueOutcome.NO_PDF)
+    assert download_verdict(b"<html>An abstract.</html>") == RescueVerdict(RescueOutcome.NO_PDF)
+
+
+def test_an_empty_download_learnt_nothing() -> None:
+    """An empty file says nothing about the article: unparsed is not absent."""
+    assert download_verdict(b"") == RescueVerdict(RescueOutcome.TRANSPORT)
+
+
+def test_a_wall_served_as_a_download_waits_for_a_person() -> None:
+    """A challenge page that arrived as a download is a challenge, not no_pdf."""
+    verdict = download_verdict(b"<html><title>Just a moment...</title></html>")
+    assert verdict == RescueVerdict(RescueOutcome.CHALLENGE, None, ("cloudflare",))
+
+
+def test_only_the_first_64_kib_of_a_download_are_read_for_markers() -> None:
+    """A download is read for markers as a page is: its first 64 KiB."""
+    body = b"x" * (64 * 1024) + b"Just a moment..."
+    assert download_verdict(body).outcome is RescueOutcome.NO_PDF
 
 
 # -- how an entry moves -------------------------------------------------------
@@ -215,9 +233,35 @@ def test_an_unreadable_verdict_is_none(data: object) -> None:
 
 def test_a_stored_verdict_keeps_only_what_it_can_vouch_for() -> None:
     """A stored verdict keeps only the fields it can vouch for."""
-    data = {"outcome": "no_pdf", "http_status": True, "markers": ["captcha", 7, None]}
-    assert RescueVerdict.from_dict(data) == RescueVerdict(RescueOutcome.NO_PDF, None, ("captcha",))
+    data = {"outcome": "challenge", "http_status": True, "markers": ["captcha", 7, None]}
+    assert RescueVerdict.from_dict(data) == RescueVerdict(RescueOutcome.CHALLENGE, None, ("captcha",))
     assert RescueVerdict.from_dict({"outcome": "gone", "http_status": 99}) == RescueVerdict(RescueOutcome.GONE)
+    # Markers name a challenge's defences; on any other outcome they are dropped
+    data = {"outcome": "no_pdf", "http_status": 200, "markers": ["captcha"]}
+    assert RescueVerdict.from_dict(data) == RescueVerdict(RescueOutcome.NO_PDF, 200)
+
+
+@pytest.mark.parametrize("status", [99, 1000, 0, -3])
+def test_a_verdict_refuses_a_status_that_is_no_http_status(status: int) -> None:
+    """A verdict is built only with a status from 100 to 999."""
+    with pytest.raises(ValueError):
+        RescueVerdict(RescueOutcome.NO_PDF, status)
+
+
+def test_only_a_challenge_names_defences() -> None:
+    """Markers on anything but a challenge are refused."""
+    with pytest.raises(ValueError):
+        RescueVerdict(RescueOutcome.PDF, None, ("cloudflare",))
+    assert RescueVerdict(RescueOutcome.CHALLENGE, 403, ("cloudflare",)).markers == ("cloudflare",)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(200, 200), (100, 100), (999, 999), (99, None), (1000, None), (True, None), ("200", None), (None, None)],
+)
+def test_http_status_or_none(value: object, expected: int | None) -> None:
+    """Only an integer from 100 to 999 is an HTTP status."""
+    assert http_status_or_none(value) == expected
 
 
 # -- where a rescued PDF goes -------------------------------------------------

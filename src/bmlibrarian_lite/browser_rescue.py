@@ -57,8 +57,8 @@ RESCUABLE_SERVICES = frozenset({SERVICE_UNPAYWALL_PDF, SERVICE_OPENALEX_PDF})
 #: The address schemes a web view is sent to; any other address is not queued.
 _FETCHABLE_SCHEMES = frozenset({"http", "https"})
 
-#: The status the challenge rules are handed when the browser saw none: it
-#: is no gone status and no Cloudflare refusal.
+#: The status the challenge rules are handed for a download, which carries
+#: none: it is no gone status and no Cloudflare refusal.
 _NO_HTTP_STATUS = 0
 
 
@@ -67,7 +67,9 @@ class RescueState(Enum):
 
     #: Waiting for the hidden browser.
     PENDING = "pending"
-    #: Still a challenge after a visit: waits for a person (stage 3's window).
+    #: Waits for a person (stage 3's window): still a challenge after a visit,
+    #: a refusal (401, 403) with no marker, or a transport failure on the last
+    #: of ``MAX_RESCUE_ATTEMPTS``.
     NEEDS_PERSON = "needs_person"
     #: The PDF arrived and was saved.
     RESCUED = "rescued"
@@ -83,7 +85,8 @@ class RescueState(Enum):
     SUPERSEDED = "superseded"
 
 
-#: The states the browser still visits.
+#: The open states: a verdict can still change them. The hidden pass visits
+#: only ``PENDING``; ``NEEDS_PERSON`` is visited from stage 3's window.
 OPEN_RESCUE_STATES = frozenset({RescueState.PENDING, RescueState.NEEDS_PERSON})
 
 
@@ -115,6 +118,24 @@ assert set(_SETTLED_BY) | {RescueOutcome.TRANSPORT} == set(RescueOutcome), (
 )
 
 
+def http_status_or_none(value: object) -> int | None:
+    """A value as an HTTP status, or ``None`` when it cannot be one.
+
+    Args:
+        value: A status from the browser or from storage, untrusted.
+
+    Returns:
+        The value when it is an integer from 100 to 999; ``None`` otherwise.
+    """
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and HTTP_STATUS_CODE_MIN <= value <= HTTP_STATUS_CODE_MAX
+    ):
+        return value
+    return None
+
+
 @dataclass(frozen=True)
 class RescueVerdict:
     """What one browser visit concluded, as the queue stores and shows it.
@@ -124,11 +145,22 @@ class RescueVerdict:
         http_status: The main frame's last HTTP status, for a page the visit
             stayed on; ``None`` for a download or when none was seen.
         markers: The defences the page named, for a challenge.
+
+    Raises:
+        ValueError: On construction, for a status that is no HTTP status, or
+            markers on anything but a challenge.
     """
 
     outcome: RescueOutcome
     http_status: int | None = None
     markers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        """Refuse a verdict no visit can reach."""
+        if self.http_status is not None and http_status_or_none(self.http_status) is None:
+            raise ValueError(f"Not an HTTP status: {self.http_status!r}")
+        if self.markers and self.outcome is not RescueOutcome.CHALLENGE:
+            raise ValueError(f"Only a challenge names defences, not {self.outcome.value}")
 
     def to_dict(self) -> dict[str, Any]:
         """The verdict as JSON-safe values.
@@ -153,8 +185,8 @@ class RescueVerdict:
             data: The decoded JSON.
 
         Returns:
-            The verdict, keeping only a status from 100 to 999 and text
-            markers; ``None`` when its outcome cannot be read.
+            The verdict, keeping only a status from 100 to 999 and, for a
+            challenge, text markers; ``None`` when its outcome cannot be read.
         """
         if not isinstance(data, dict):
             return None
@@ -162,16 +194,13 @@ class RescueVerdict:
             outcome = RescueOutcome(data.get("outcome"))
         except (ValueError, TypeError):
             return None
-        status = data.get("http_status")
-        if not (
-            isinstance(status, int)
-            and not isinstance(status, bool)
-            and HTTP_STATUS_CODE_MIN <= status <= HTTP_STATUS_CODE_MAX
-        ):
-            status = None
         raw = data.get("markers")
-        markers = tuple(m for m in raw if isinstance(m, str)) if isinstance(raw, list) else ()
-        return cls(outcome, status, markers)
+        markers = (
+            tuple(m for m in raw if isinstance(m, str))
+            if isinstance(raw, list) and outcome is RescueOutcome.CHALLENGE
+            else ()
+        )
+        return cls(outcome, http_status_or_none(data.get("http_status")), markers)
 
 
 def next_state(state: RescueState, verdict: RescueVerdict, attempts: int) -> RescueState:
@@ -201,8 +230,10 @@ def next_state(state: RescueState, verdict: RescueVerdict, attempts: int) -> Res
 def page_verdict(status: int | None, headers: Mapping[str, str], html: str) -> RescueVerdict:
     """What a visit concluded from the page it stayed on, with no download.
 
-    A gone status (404, 410) is gone whatever the page says, as discovery
-    rules. Any other page goes through the challenge rules a download's
+    A page with no status is the empty document a load that never answered
+    leaves: the visit learnt nothing, so it is a transport failure (unreachable
+    is not absent). A gone status (404, 410) is gone whatever the page says, as
+    discovery rules. Any other page goes through the challenge rules a download's
     answer goes through (``bot_walls.challenge_markers``), on its first
     ``CHALLENGE_BODY_PREFIX_BYTES`` as UTF-8: a bounded read of a lookup
     page, not research content. A page with markers is a challenge. One
@@ -221,10 +252,12 @@ def page_verdict(status: int | None, headers: Mapping[str, str], html: str) -> R
         ``GONE``, ``CHALLENGE`` with the defences named (none for a bare
         refusal), ``TRANSPORT`` or ``NO_PDF``; each with the status.
     """
+    if status is None:
+        return RescueVerdict(RescueOutcome.TRANSPORT)
     if status in CHALLENGE_GONE_STATUSES:
         return RescueVerdict(RescueOutcome.GONE, status)
     body = html.encode("utf-8", errors="replace")[:CHALLENGE_BODY_PREFIX_BYTES]
-    markers = challenge_markers(_NO_HTTP_STATUS if status is None else status, headers, body)
+    markers = challenge_markers(status, headers, body)
     if markers:
         return RescueVerdict(RescueOutcome.CHALLENGE, status, markers)
     if status in RESCUE_UNANSWERED_PAGE_STATUSES:
@@ -261,14 +294,27 @@ def penalise_host_for_answer(address: str, status: int | None, headers: Mapping[
 def download_verdict(first_bytes: bytes) -> RescueVerdict:
     """What a finished download concluded: the PDF, or something served as one.
 
+    An empty file says nothing about the article, so it is a transport
+    failure (unparsed is not absent). Anything else that is not a PDF goes
+    through the challenge rules a page goes through, on its first
+    ``CHALLENGE_BODY_PREFIX_BYTES``: a wall served as a download waits for a
+    person. Only a body that is neither is ``NO_PDF``.
+
     Args:
-        first_bytes: The start of the downloaded file.
+        first_bytes: The start of the downloaded file; at least its first
+            ``CHALLENGE_BODY_PREFIX_BYTES`` when it is that long.
 
     Returns:
-        ``PDF`` when it begins with ``%PDF``; ``NO_PDF`` otherwise.
+        ``PDF`` when it begins with ``%PDF``; ``TRANSPORT`` when empty;
+        ``CHALLENGE`` with the defences named; ``NO_PDF`` otherwise.
     """
     if first_bytes.startswith(PDF_MAGIC_BYTES):
         return RescueVerdict(RescueOutcome.PDF)
+    if not first_bytes:
+        return RescueVerdict(RescueOutcome.TRANSPORT)
+    markers = challenge_markers(_NO_HTTP_STATUS, {}, first_bytes[:CHALLENGE_BODY_PREFIX_BYTES])
+    if markers:
+        return RescueVerdict(RescueOutcome.CHALLENGE, None, markers)
     return RescueVerdict(RescueOutcome.NO_PDF)
 
 
@@ -354,6 +400,9 @@ class RescueEntry:
             reader is waiting on.
         created_at: When it was queued, as stored.
         updated_at: When it last changed, as stored.
+        retry_after: When a ``PENDING`` entry held back after a transport
+            failure is due again, as stored; ``None`` when due now, and for
+            every other state.
     """
 
     id: int
@@ -364,6 +413,7 @@ class RescueEntry:
     priority: int
     created_at: str
     updated_at: str
+    retry_after: str | None = None
 
 
 def rescue_requests(subject: RescueSubject, record: LookupRecord) -> tuple[RescueRequest, ...]:
@@ -528,9 +578,11 @@ def reanalyse_rescued(
 
     By the entry's DOI, which names the saved PDF, so the analysis's
     cached-PDF tier finds it. The MCP server queues under its own document
-    ID (``doi-...``), which storage need not hold: such a rescue is not
-    re-analysed, as that would store a transparency row for no document. Its
-    PDF is saved all the same, for the next request.
+    ID: ``pmid-<n>``, storage's own scheme, so such an article is re-analysed
+    when storage holds it; or ``doi-...``, which storage need not hold. A
+    rescue of a document storage does not hold is not re-analysed, as that
+    would store a transparency row for no document. Its PDF is saved all the
+    same, for the next request.
 
     Args:
         entry: The rescued entry.

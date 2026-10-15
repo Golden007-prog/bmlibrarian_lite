@@ -7,8 +7,7 @@
 SQL only; the rules are ``browser_rescue``'s. Every function takes an open
 connection whose ``row_factory`` is ``sqlite3.Row``. ``LiteStorage`` opens
 it and commits after :func:`enqueue`. :func:`record_verdict` runs its own
-transaction, because the MCP server and the CLI write this table from other
-processes.
+transaction, because the MCP server writes this table from another process.
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Iterable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from .browser_rescue import (
@@ -35,7 +34,8 @@ logger = logging.getLogger(__name__)
 TABLE = "browser_rescue_queue"
 
 # No foreign key to documents: the MCP server queues under its own document
-# ID, which storage may not hold (spec section 2).
+# ID, which storage may not hold (section 2 of
+# docs/superpowers/specs/2026-10-12-browser-rescue-design.md).
 SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS {TABLE} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -59,8 +59,25 @@ CREATE INDEX IF NOT EXISTS idx_{TABLE}_next
     ON {TABLE}(state, priority, created_at);
 """
 
-#: The open states' stored values, for SQL.
-_OPEN = tuple(state.value for state in (RescueState.PENDING, RescueState.NEEDS_PERSON))
+#: The open states' stored values, for SQL, and their placeholders.
+_OPEN = tuple(sorted(state.value for state in OPEN_RESCUE_STATES))
+_OPEN_MARKS = ", ".join("?" for _ in _OPEN)
+
+
+@dataclass(frozen=True)
+class RecordedVerdict:
+    """What recording one visit's verdict did.
+
+    Attributes:
+        entry: The entry as it now stands; ``None`` when it is gone or its
+            state is a newer build's.
+        applied: Whether this verdict changed it; ``False`` when it was no
+            longer open (dismissed or settled meanwhile, perhaps by another
+            process), so a rescue it shows was announced already.
+    """
+
+    entry: RescueEntry | None
+    applied: bool
 
 
 def stamp(moment: datetime) -> str:
@@ -114,6 +131,7 @@ def entry_from_row(row: sqlite3.Row) -> RescueEntry | None:
         priority=row["priority"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        retry_after=row["retry_after"],
     )
 
 
@@ -145,7 +163,7 @@ def enqueue(conn: sqlite3.Connection, requests: Sequence[RescueRequest], priorit
             ON CONFLICT (document_id, address) DO UPDATE
                 SET priority = excluded.priority, updated_at = excluded.updated_at
                 WHERE {TABLE}.priority < excluded.priority
-                  AND {TABLE}.state IN (?, ?)
+                  AND {TABLE}.state IN ({_OPEN_MARKS})
             """,
             (
                 request.document_id, request.doi, request.pmid, request.title,
@@ -185,7 +203,7 @@ def next_pending(conn: sqlite3.Connection, now: datetime) -> RescueEntry | None:
 
 def record_verdict(
     conn: sqlite3.Connection, entry_id: int, verdict: RescueVerdict, now: datetime
-) -> RescueEntry | None:
+) -> RecordedVerdict:
     """Apply one visit's verdict to its entry; on a rescue, supersede its siblings.
 
     One immediate transaction, taken before the row is read, so a dismissal
@@ -202,9 +220,10 @@ def record_verdict(
         now: The moment.
 
     Returns:
-        The entry as it now stands. It is unchanged when no longer open
-        (dismissed or settled meanwhile). ``None`` when it is gone or its
-        state is a newer build's.
+        The entry as it now stands, and whether the verdict was applied. An
+        entry no longer open (dismissed or settled meanwhile) is returned
+        unchanged and not applied; its entry is ``None`` when it is gone or
+        its state is a newer build's.
     """
     if conn.in_transaction:
         conn.commit()
@@ -214,7 +233,7 @@ def record_verdict(
         entry = entry_from_row(row) if row is not None else None
         if entry is None or entry.state not in OPEN_RESCUE_STATES:
             conn.rollback()
-            return entry
+            return RecordedVerdict(entry, applied=False)
         attempts = entry.attempts + 1
         state = next_state(entry.state, verdict, attempts)
         at = stamp(now)
@@ -235,7 +254,7 @@ def record_verdict(
             conn.execute(
                 f"""
                 UPDATE {TABLE} SET state = ?, updated_at = ?
-                WHERE document_id = ? AND id != ? AND state IN (?, ?)
+                WHERE document_id = ? AND id != ? AND state IN ({_OPEN_MARKS})
                 """,
                 (RescueState.SUPERSEDED.value, at, entry.request.document_id, entry_id, *_OPEN),
             )
@@ -243,7 +262,13 @@ def record_verdict(
     except BaseException:
         conn.rollback()
         raise
-    return replace(entry, state=state, attempts=attempts, verdict=verdict, updated_at=at)
+    return RecordedVerdict(
+        replace(
+            entry, state=state, attempts=attempts, verdict=verdict, updated_at=at,
+            retry_after=retry_after,
+        ),
+        applied=True,
+    )
 
 
 def entries(conn: sqlite3.Connection, states: Iterable[RescueState]) -> list[RescueEntry]:
