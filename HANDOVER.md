@@ -38,28 +38,19 @@ sub-projects 2 and 3; replaces #483).
   Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
   `challenge_detection.json`, contract "A challenged PDF (#480)"). Lodged
   from it: #520, #522, #523.
-- **Stage 2 (Python) in review:** branch `feat/browser-rescue-stage2-480`
-  (PR #529). The queue
-  (`browser_rescue.py`, `rescue_queue_store.py`), the hidden QtWebEngine
-  pass (`gui/rescue_attempt.py`, `gui/browser_rescue_service.py`), rescue →
-  re-analysis, the setting, the #483 removal. Developer doc
-  `doc/developer/browser_rescue.md`. Live acceptance (spikes README §4):
-  PMC 12/12, other walls 12/14 (spike 5/14), ScienceDirect 10/10
-  `needs_person`, controls 5/5 `no_pdf`. **Check the PR's CI run**: the
-  QtWebEngine apt libraries, `QTWEBENGINE_DISABLE_SANDBOX` and the engine
-  harness have only run locally on PySide6 6.10.1. The maintainer should
-  launch and quit the real app once (a scripted 8 s smoke run passed). The
-  review's findings are applied on the branch: a visit takes only its own
-  page's download; an empty download, a page read mid-navigation, or a
-  status-less page is `transport`, a wall served as a download `challenge`;
-  the setting is re-read when a delayed visit starts; no rescue is announced
-  at quit; a rescue during a pending analysis analyses once more after it
-  (#526); errors in the pass's slots are logged and free it (#525's
-  exception bullet); an unavailable QtWebEngine is said in the status bar
-  and Settings.
-- **Next, stage 3 (Python):** the review queue window, its status-bar
+- **Stage 2 landed** (PR #529, merged 2026-10-15; CI green on Linux
+  QtWebEngine too). The queue (`browser_rescue.py`, `rescue_queue_store.py`),
+  the hidden QtWebEngine pass (`gui/rescue_attempt.py`,
+  `gui/browser_rescue_service.py`), rescue → re-analysis, the setting, the
+  #483 removal. Developer doc `doc/developer/browser_rescue.md`. Live
+  acceptance (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect
+  10/10 `needs_person`, controls 5/5 `no_pdf`. Still owed by the maintainer:
+  launch and quit the real app once.
+- **Stage 3 (Python), planning:** branch `feat/browser-rescue-stage3-480`.
+  Plan `docs/superpowers/plans/2026-10-15-browser-rescue-stage-3.md`, awaiting
+  the maintainer's review. The review queue window, its status-bar
   indicator, and the interrogation tab's priority path (spec section 4).
-  Write its plan first; the user reviews it. Carry in from stage 2: test
+  Carry in from stage 2: test
   `needs_person → rescued`; a shown view sharing the profile relies on
   `accept_download`'s own-page check; `RescueEntry.retry_after` is there for
   the window. Lodged from stage 2: **#524** (a `no_pdf`/`gone` verdict keeps
