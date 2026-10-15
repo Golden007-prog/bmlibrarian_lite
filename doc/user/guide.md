@@ -134,6 +134,47 @@ article reads "could not be asked … (the host asked for a robot check)". If th
 hidden browser cannot start on your computer, the status bar says so at
 start-up and the setting is shown disabled, with the reason in the log.
 
+#### The review queue (Walled PDFs)
+
+Some robot checks need a person: ScienceDirect, for example, asks you to tick
+a box. When PDFs like these are waiting for you, the status bar shows "Walled
+PDFs: N"; click it, or choose **Tools → Walled PDFs…** (which works at a count
+of 0 too).
+
+- **Select an entry** to open its page in the window's built-in browser. If
+  the page asks for a robot check, tick the box. When the PDF arrives it is
+  saved, the article's transparency is re-checked, and the next entry opens.
+  The page is yours to read and navigate: the app saves only what you
+  download there.
+- **Walk the queue** opens each waiting entry in turn and waits up to a minute
+  for its PDF. Most robot checks pass on their own this way, leaving only
+  those that need a tick. Selecting an entry yourself stops the walk.
+- **Dismiss** sets an entry aside; it is not tried again.
+- **Open in system browser** opens the address in your usual browser. Nothing
+  downloaded there is saved by the app.
+- The filter at the top shows "Waiting for you" by default, and also "Not yet
+  settled" and "All", which include the PDFs the browser found gone, too
+  large, or with no PDF behind the page.
+
+The window and the hidden browser share one browser profile, so a robot check
+you pass once usually covers that publisher's later PDFs. While the window has
+a page open, the hidden browser waits.
+
+In **Document Interrogation**, opening a citation whose open-access PDF is
+behind a robot check puts it first in the queue. The tab then shows "Trying
+the publisher's page in a browser…" (with Cancel) for up to about a minute and
+a half:
+
+- when the PDF arrives, it is loaded into the session;
+- when the robot check needs you, the abstract is loaded ("the publisher's
+  copy is behind a robot check"), and you are offered the review queue for
+  that article; once you have passed the check there, open the citation again
+  to load its PDF;
+- when there is no PDF behind the page, the abstract is loaded as before.
+
+With the hidden browser off or unavailable, the tab offers the review queue
+straight away.
+
 ### Launching the Application
 
 ```bash

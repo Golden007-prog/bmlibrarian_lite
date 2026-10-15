@@ -28,38 +28,35 @@ the embedded browser):
 
 **Bot-walled PDFs: `challenged`, an embedded browser, a review queue** (#480
 sub-projects 2 and 3; replaces #483).
-- **Spec (approved 2026-10-12):**
-  `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`. Decisions:
-  auto then queue (a run never waits); a rescue re-analyses that document;
-  the kind on all three platforms, the browser desktop only; one recovery
-  path, a QtWebEngine service on the GUI thread driven by a SQLite queue
-  (no cross-thread broker, no helper process); no impersonation.
-- **Stage 1 landed** (PR #521, merged 2026-10-13): `challenged` on Python,
-  Swift, Kotlin (`bot_walls.py`/`BotWalls.swift`/`BotWalls.kt`,
-  `challenge_detection.json`, contract "A challenged PDF (#480)"). Lodged
-  from it: #520, #522, #523.
-- **Stage 2 landed** (PR #529, merged 2026-10-15; CI green on Linux
-  QtWebEngine too). The queue (`browser_rescue.py`, `rescue_queue_store.py`),
-  the hidden QtWebEngine pass (`gui/rescue_attempt.py`,
-  `gui/browser_rescue_service.py`), rescue → re-analysis, the setting, the
-  #483 removal. Developer doc `doc/developer/browser_rescue.md`. Live
-  acceptance (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect
-  10/10 `needs_person`, controls 5/5 `no_pdf`. Still owed by the maintainer:
-  launch and quit the real app once.
-- **Stage 3 (Python), planning:** branch `feat/browser-rescue-stage3-480`.
-  Plan `docs/superpowers/plans/2026-10-15-browser-rescue-stage-3.md`, awaiting
-  the maintainer's review. The review queue window, its status-bar
-  indicator, and the interrogation tab's priority path (spec section 4).
-  Carry in from stage 2: test
-  `needs_person → rescued`; a shown view sharing the profile relies on
-  `accept_download`'s own-page check; `RescueEntry.retry_after` is there for
-  the window. Lodged from stage 2: **#524** (a `no_pdf`/`gone` verdict keeps
-  the stored "could not be asked" sentence), **#525** (no per-visit deadline;
-  the redirect's host is not the one penalised), **#527** (frozen bundle and
-  QtWebEngine), **#528** (two instances, no lease), **#530** (the engine
-  harness fails intermittently under load), **#531** (a throttled host holds
-  up the queue), **#532** (a fetched PDF is not checked against the title),
-  **#533** (queue identity across MCP and storage IDs).
+- **Spec:** `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`
+  (auto then queue; a rescue re-analyses; one GUI-thread QtWebEngine service
+  driven by a SQLite queue; no impersonation).
+- **Landed:** stage 1 (PR #521: `challenged` on all three platforms;
+  lodged #520, #522, #523), and stage 2 (PR #529: the queue, the hidden
+  QtWebEngine pass, rescue → re-analysis, the #483 removal; developer doc
+  `doc/developer/browser_rescue.md`). Live acceptance (spikes README §4):
+  PMC 12/12, other walls 12/14, ScienceDirect 10/10 `needs_person`.
+- **Stage 3 (Python) in review:** branch `feat/browser-rescue-stage3-480`;
+  plan `docs/superpowers/plans/2026-10-15-browser-rescue-stage-3.md`. The
+  review queue window (`gui/review_queue_dialog.py`, view from
+  `gui/rescue_view.py`), "Walled PDFs: N" (`gui/rescue_queue_indicator.py`),
+  *Tools → Walled PDFs…*, shown visits and *Walk the queue* in
+  `BrowserRescueService`, and the interrogation tab's priority path. With it
+  the desktop browser rescue is complete; the PR closes #480. The apps'
+  embedded browsers need their own spec. Still owed by the maintainer:
+  launch the real app, open the window on a ScienceDirect entry, tick the
+  check, then quit. Offscreen smoke runs passed, apart from #530's cold-start
+  segfault (2 of the first 2 runs, then 0 of 48; evidence on #530).
+  Lodged from stage 3: **#534** (the *Fetch PDF* button's path is not
+  queued). Still open from stage 2: **#524**, **#525**, **#527**, **#528**,
+  **#530**–**#533**.
+- **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
+  the service; while the window has a visit or a walk, the hidden pass takes
+  no entry. A person's visit (`judge_pages=False`) is judged only by its
+  download; leaving it records nothing. In a shown page, `createWindow`
+  returns the page. The window never imports QtWebEngine. The tab waits only
+  while a watched entry is pending, due and unvisited, and never past
+  `RESCUE_READER_WAIT_LIMIT_MS`; with no hidden pass it does not wait.
 - **Stage 2's rules that bind:** a challenged copy is never a paywall (D1).
   A visit that learnt nothing (no answer, a network error, 408/429/5xx with
   no marker) is `transport`: the entry stays pending, retried no sooner than
@@ -215,7 +212,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 ### Next up
 
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
-  browser's stage 3** is next (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+  browser's stage 3** is in review (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups), **#534** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted

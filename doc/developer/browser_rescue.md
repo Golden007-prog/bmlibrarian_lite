@@ -1,6 +1,6 @@
 # Browser Rescue
 
-Developer notes for the desktop's browser rescue (#480, stage 2). Design and
+Developer notes for the desktop's browser rescue (#480, stages 2 and 3). Design and
 decisions: `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`. What
 the embedded browser passes and what it does not:
 `doc/developer/unpaywall_pdf_survey/spikes/README.md`.
@@ -12,7 +12,9 @@ with a bot wall's challenge page is **queued** instead of given up. Later, the
 GUI **visits** its address in a hidden QtWebEngine page, **saves** the PDF
 where discovery's cached-PDF tier finds it (`rescue_pdf_path`, in the PDF
 library), and **re-analyses** the document so its transparency badge reflects
-the full text.
+the full text. What the hidden page cannot pass waits for the reader in the
+**review queue window**, whose embedded view shows the page so a person can
+tick the robot check (stage 3).
 
 ## Modules
 
@@ -30,6 +32,15 @@ the full text.
   exactly one verdict; and `rescue_profile`.
 - `gui/browser_rescue_service.py`: `BrowserRescueService`, the hidden pass. One
   visit at a time, driven by signals and timers; nothing waits on it.
+- `browser_rescue_text.py`: what the reader reads about the queue (state,
+  service and verdict labels; the window's and the interrogation tab's
+  sentences). Pure text, no Qt.
+- `gui/review_queue_dialog.py`: `ReviewQueueDialog`, the review queue window.
+  It never imports QtWebEngine: its view comes from `make_view`.
+- `gui/rescue_view.py`: `make_rescue_view()`, the only QtWebEngineWidgets
+  import. `gui/app.py` imports it lazily, and only with a service.
+- `gui/rescue_queue_indicator.py`: `RescueQueueIndicator`, "Walled PDFs: N" in
+  the status bar, hidden at 0.
 - `gui/web_engine.py`: `prepare_web_engine()`, QtWebEngine's start-up
   requirement. `gui/app.py` imports the service lazily (`start_browser_rescue`)
   and guards the preparation (`prepare_browser_rescue`), so an app whose
@@ -52,8 +63,9 @@ needs_person --visit, any outcome--> its answer's state
 needs_person --transport--> needs_person
 ```
 
-`dismissed` (the reader set it aside) and `superseded` (another address of the
-same document was rescued) are reached outside a visit. `pending` and
+`dismissed` (the reader set it aside, `dismissed_state`, open entries only; the
+last verdict is kept) and `superseded` (another address of the same document
+was rescued) are reached outside a visit. `pending` and
 `needs_person` are the *open* states; the others are settled and never change.
 
 A **transport** outcome learnt nothing about the article, so the entry stays
@@ -101,12 +113,65 @@ the app quits, and the next session's analysis finds the PDF. Any error
 writing a verdict holds it like a database lock does; any other unexpected
 error in the pass's slots is logged and never leaves the pass busy (#525).
 
+## Shown Visits and the Walk (stage 3)
+
+- **One visit at a time, hidden or shown (D1).** `BrowserRescueService` runs
+  the window's visits too: it owns the profile and hands each download to the
+  one attempt under way. A shown visit asked for while a hidden one runs
+  starts when that one ends. While a shown visit is asked for or under way,
+  or a walk runs, the hidden pass takes no entry. Shown visits take their
+  host's pacing slot like hidden ones.
+- **A person's visit is judged only by its download (D2).** `RescueAttempt(...,
+  view=, judge_pages=False)`: no timeout, no page verdict. A 404 or a network
+  error is shown, not settled, and the host is still penalised for 429/503.
+  It ends on a finished download or a renderer crash. Leaving it (another
+  entry, *Dismiss*, closing the window, quit) is `abort()`: no verdict, no
+  attempt counted.
+- **New windows open in the same page (D3).** `_ShownPage.createWindow`
+  returns the page, so a `target=_blank` "Download PDF" link arrives as this
+  visit's download. `JavascriptCanOpenWindows` stays off.
+- A page deleted while a view shows it leaves the view on a page of its own,
+  in the default profile (probed on 6.10.1), so a visit can let its page go
+  mid-display.
+- **Walk the queue** (`walk(entry_ids, view)`) judges each page as the hidden
+  pass does, with `RESCUE_VISIBLE_TIMEOUT_MS` (60 s). It re-reads each entry
+  before its visit and skips one no longer open. The reader choosing an
+  entry, or `stop_walk()`, ends it. When it ends, the hidden pass looks again
+  at once.
+- Signals: `entry_changed(entry)` after every applied verdict, hidden or
+  shown. `shown_visit_started(entry)`. `shown_visit_ended(entry, verdict |
+  None)`, where `None` means left without a verdict. `shown_visit_failed(entry)`
+  when the page could not open (`ended(entry, None)` comes first).
+  `walk_ended()`.
+- **What waits for the reader (D4):** `needs_person`, plus `pending` while no
+  hidden pass will visit (`awaiting_reader_states`). The indicator counts
+  these, and the window's default filter lists them.
+- **Without QtWebEngine (D12)** the window still opens: the list, *Dismiss*
+  and *Open in system browser*, with a note in place of the view.
+
 ## Who Queues
 
 `assess_document` (`transparency/assessment.py`, the body both analysis paths
-share) and the MCP server queue the challenged copies a discovery left. Stage 3
-adds the interrogation tab. A queue that cannot be written is logged, never
-raised: the analysis must not fail for it.
+share) and the MCP server queue the challenged copies a discovery left. A
+queue that cannot be written is logged, never raised: the analysis must not
+fail for it.
+
+**The interrogation tab** (stage 3, citation path only, D7) queues what its
+full-text discovery left at `RESCUE_PRIORITY_WAITING`.
+`FulltextDiscoveryWorker.lookups` carries the record out (D10). The tab waits
+while one of the document's entries is pending, due now and unvisited since
+the wait began (`wait_watch`, `wait_outcome`). The wait ends on any of these:
+- a rescue: the PDF is loaded, labelled "fetched in the built-in browser";
+- an entry still open, which includes a transport verdict: the abstract,
+  "behind a robot check", and an offer to open the review queue on that
+  entry;
+- everything settled without a PDF: today's fallback;
+- *Cancel*: "cancelled", and the entry stays queued;
+- `RESCUE_READER_WAIT_LIMIT_MS` (90 s).
+
+With the hidden pass off or unavailable, the tab does not wait (D8). It falls
+back through `load_from_citation`'s own `fall_back(reason)`, so a stale cached
+full text is still preferred to the abstract.
 
 **D1.** A challenged copy is not a paywall. Before stage 2, a challenged 401,
 403 or `text/html` 200 at a paywall-looking address took the paywall branch, so
@@ -154,7 +219,17 @@ Everything that pumps QtWebEngine runs in `tests/browser_rescue_harness.py`, in
 a **subprocess**, against a loopback publisher. Pumping the suite's shared
 `QApplication` inherits earlier tests' dangling timers (#516, #517).
 `tests/test_browser_rescue_engine.py` runs the harness once and asserts on its
-JSON. Run it alone:
+JSON. Stage 3 adds `shown_scenarios`, which covers:
+- a person's visit in a `QWebEngineView`: the PDF is saved, and a gone page or
+  an abstract stays unjudged until it is left;
+- `createWindow`;
+- a walk's judged visit;
+- a person's visit through the real service;
+- `shown_quit_scenario`: quit during a shown visit, after which the entry is
+  unchanged and no profile-release warning appears.
+
+The window, the indicator and the tab are tested in the suite with a fake
+service, calling slots directly and never pumping. Run it alone:
 
 ```bash
 QT_QPA_PLATFORM=offscreen python tests/browser_rescue_harness.py
@@ -175,4 +250,6 @@ a skip would leave CI green with the feature untested. CI sets
   title (#532).
 - An entry is unique by document ID and address, and the MCP server queues
   under its own IDs, so one address can be queued twice (#533).
-- Until stage 3 the reader sees no persistent indicator of the queue.
+- A rescue that lands after the interrogation tab's wait ended is not loaded
+  into the tab. Opening the citation again finds it, and the offer says so.
+- The *Fetch PDF* button's path is not queued (Deferred: #534).
