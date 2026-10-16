@@ -31,7 +31,7 @@ have landed):
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
 **Wrong-article PDFs in discovery and the library** (#541, Python; branch
-`fix/wrong-article-pdfs-541`, PR in review). A PDF is read as the article's
+`fix/wrong-article-pdfs-541`, PR #548 in review). A PDF is read as the article's
 only if its first page with text carries the title. Every entry point checks:
 each download (`PDFDiscoverer._try_download`, Elsevier's API, Europe PMC's
 render) and each cached PDF (`fulltext_discovery` step 3, the interrogation
