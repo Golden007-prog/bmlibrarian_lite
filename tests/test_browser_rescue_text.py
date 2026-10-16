@@ -15,15 +15,20 @@ from bmlibrarian_lite.browser_rescue import (
     WalkEndReason,
 )
 from bmlibrarian_lite.browser_rescue_text import (
+    FULLTEXT_WALLED,
+    REVIEW_QUEUE_OFFER,
+    REVIEW_QUEUE_OFFER_TITLE,
     STATE_LABELS,
     last_visit_text,
     retry_text,
+    review_queue_offer,
     service_label,
     state_label,
     verdict_text,
     walk_end_text,
 )
 from bmlibrarian_lite.constants import SERVICE_OPENALEX_PDF, SERVICE_UNPAYWALL_PDF
+from bmlibrarian_lite.pdf_title_check import UNJUDGED_OUTCOMES, TitleCheckOutcome
 
 
 def test_every_state_has_a_label() -> None:
@@ -57,6 +62,18 @@ def test_the_services_are_named_as_the_reader_knows_them() -> None:
         (RescueVerdict(RescueOutcome.NO_PDF), "The page served no PDF"),
         (RescueVerdict(RescueOutcome.GONE, 404), "Not found (HTTP 404)"),
         (RescueVerdict(RescueOutcome.TOO_LARGE), "The PDF is larger than the app downloads"),
+        (
+            RescueVerdict(RescueOutcome.WRONG_PDF),
+            "A PDF arrived whose first page does not carry this article's title; it was not kept",
+        ),
+        (
+            RescueVerdict(RescueOutcome.UNREADABLE_PDF),
+            "A PDF arrived that could not be opened; it was not kept",
+        ),
+        (
+            RescueVerdict(RescueOutcome.PDF, title_unchecked=TitleCheckOutcome.NO_TEXT),
+            "The PDF arrived; its title could not be checked: the PDF has no text (a scan)",
+        ),
         (RescueVerdict(RescueOutcome.TRANSPORT, 503), "Nothing was learnt: the page or its download failed (HTTP 503)"),
         (RescueVerdict(RescueOutcome.TRANSPORT), "Nothing was learnt: the page or its download failed"),
     ],
@@ -127,3 +144,40 @@ def test_the_offer_claims_no_attempt_that_may_not_have_been_made() -> None:
     assert "could not pass" not in REVIEW_QUEUE_OFFER
     assert "hidden browser" not in REVIEW_QUEUE_OFFER
     assert "robot check" in REVIEW_QUEUE_OFFER
+    # The hidden browser may have been off or unreachable: a box only if it asks
+    assert "tick the box if it asks" in REVIEW_QUEUE_OFFER
+    assert "download the article's PDF" in REVIEW_QUEUE_OFFER
+
+
+def test_every_reason_a_title_went_unchecked_is_said() -> None:
+    """Never the stored value, and never the plain "arrived" of a checked PDF."""
+    for reason in UNJUDGED_OUTCOMES:
+        text = verdict_text(RescueVerdict(RescueOutcome.PDF, title_unchecked=reason))
+        assert text.startswith("The PDF arrived; its title could not be checked: ")
+        assert reason.value not in text
+
+
+@pytest.mark.parametrize(
+    "verdict",
+    [None, RescueVerdict(RescueOutcome.CHALLENGE, 403, ()), RescueVerdict(RescueOutcome.TRANSPORT)],
+)
+def test_the_robot_check_offer_follows_a_check_or_no_answer(verdict: RescueVerdict | None) -> None:
+    """A wall met, a visit that learnt nothing, or none yet: the robot check's offer."""
+    offer = review_queue_offer(verdict)
+    assert (offer.title, offer.text, offer.cause) == (
+        REVIEW_QUEUE_OFFER_TITLE, REVIEW_QUEUE_OFFER, FULLTEXT_WALLED
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcome", "said"),
+    [(RescueOutcome.WRONG_PDF, "is not this article's"), (RescueOutcome.UNREADABLE_PDF, "could not be opened")],
+)
+def test_a_pdf_not_kept_names_no_robot_check(outcome: RescueOutcome, said: str) -> None:
+    """After another document's PDF there may have been no robot check at all (#532)."""
+    offer = review_queue_offer(RescueVerdict(outcome))
+    for text in (offer.title, offer.text, offer.cause):
+        assert "robot check" not in text.lower()
+        assert "tick the box" not in text
+    assert said in offer.text and said in offer.cause
+    assert "download the article's own PDF" in offer.text

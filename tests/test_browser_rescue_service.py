@@ -15,6 +15,7 @@ import pytest
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from bmlibrarian_lite.browser_rescue import (
+    HeldPdfKeep,
     RescueOutcome,
     RescueState,
     RescueVerdict,
@@ -92,7 +93,9 @@ def _service(tmp_path: Path, storage: _Storage, now: list[float]) -> BrowserResc
 def _entry() -> Any:
     return SimpleNamespace(
         id=1,
-        request=SimpleNamespace(host="example.org", address="https://example.org/a.pdf", doi="10.1/a"),
+        request=SimpleNamespace(
+            host="example.org", address="https://example.org/a.pdf", doi="10.1/a", title="An article"
+        ),
     )
 
 
@@ -362,17 +365,28 @@ class _FakeAttempt(QObject):
     """Stands in for RescueAttempt: records how it was made and driven."""
 
     finished = Signal(object)
+    download_started = Signal()
     download_ignored = Signal()
+    download_mismatched = Signal()
+    download_unreadable = Signal()
     made: list["_FakeAttempt"] = []
 
     def __init__(self, profile: Any, address: str, pdf_path: Path, timeout_ms: int, stall_ms: int,
-                 max_pdf_bytes: int, parent: Any = None, *, view: Any = None, judge_pages: bool = True) -> None:
+                 max_pdf_bytes: int, parent: Any = None, *, title: str, view: Any = None,
+                 judge_pages: bool = True) -> None:
         """Record the arguments."""
         super().__init__()
         self.address, self.timeout_ms, self.view, self.judge_pages = address, timeout_ms, view, judge_pages
+        self.title = title
         self.started = False
         self.aborted = False
+        self.kept = 0
         _FakeAttempt.made.append(self)
+
+    def keep_held_pdf(self) -> HeldPdfKeep:
+        """Record the keep; a held PDF is assumed, and saved."""
+        self.kept += 1
+        return HeldPdfKeep.KEPT
 
     def start(self) -> None:
         """Record the start."""
@@ -418,7 +432,9 @@ def _run_scheduled(scheduled: list[tuple[int, Any]]) -> None:
 
 def _other() -> Any:
     return SimpleNamespace(
-        id=2, request=SimpleNamespace(host="b.example", address="https://b.example/2.pdf", doi="10.1/b")
+        id=2, request=SimpleNamespace(
+            host="b.example", address="https://b.example/2.pdf", doi="10.1/b", title="Another article"
+        )
     )
 
 
@@ -448,7 +464,7 @@ def test_the_hidden_pass_takes_no_entry_while_a_shown_visit_is_asked_for(qapp, t
 def test_a_shown_visit_waits_for_the_hidden_visit_under_way(qapp, tmp_path: Path, shown: list) -> None:
     """One visit at a time: the shown one starts when the hidden one ends (D1)."""
     service = _started_service(tmp_path, _Storage(_entry(), failures=0))
-    service._attempt = _FakeAttempt(None, "h", tmp_path, 0, 0, 0)  # type: ignore[assignment]
+    service._attempt = _FakeAttempt(None, "h", tmp_path, 0, 0, 0, title="")  # type: ignore[assignment]
     _FakeAttempt.made = []
     service.visit_shown(_other(), object())
     _run_scheduled(shown)
@@ -465,7 +481,7 @@ def test_a_shown_visit_for_an_entry_the_hidden_visit_rescued_is_not_made(
     """Asked for behind the hidden visit of the same entry, which then rescued it: no page asks for a tick."""
     service = _started_service(tmp_path, _Storage(_entry(), failures=0))
     service._config.discovery.browser_rescue_hidden = False  # type: ignore[attr-defined]
-    service._attempt = _FakeAttempt(None, "h", tmp_path, 0, 0, 0)  # type: ignore[assignment]
+    service._attempt = _FakeAttempt(None, "h", tmp_path, 0, 0, 0, title="")  # type: ignore[assignment]
     _FakeAttempt.made = []
     ended: list[tuple[Any, Any]] = []
     service.shown_visit_ended.connect(lambda e, v: ended.append((e, v)))
@@ -630,7 +646,7 @@ class _WalkStorage(_Storage):
             return None
         address = f"https://h{entry_id}.example/{entry_id}.pdf"
         return SimpleNamespace(id=entry_id, state=state, request=SimpleNamespace(
-            host=f"h{entry_id}.example", address=address, doi=f"10.1/{entry_id}"))
+            host=f"h{entry_id}.example", address=address, doi=f"10.1/{entry_id}", title=f"Article {entry_id}"))
 
     def record_rescue_verdict(self, entry_id: int, verdict: RescueVerdict) -> RecordedVerdict:
         """Apply a verdict: a PDF rescues, anything else waits for a person."""
@@ -911,3 +927,76 @@ def test_the_hidden_pass_looks_again_once_a_person_s_visit_is_left(qapp, tmp_pat
     service.end_shown_visit()
     _run_scheduled(shown)
     assert storage.reads >= 1
+
+
+# -- the title a PDF is checked against (#532) -----------------------------------
+
+
+def test_a_hidden_visit_checks_against_its_entry_s_title(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry's title, as the queue holds it, goes to the visit."""
+    _FakeAttempt.made = []
+    monkeypatch.setattr(service_module, "RescueAttempt", _FakeAttempt)
+    service = _service(tmp_path, _Storage(_entry(), failures=0), [0.0])
+    service._profile = SimpleNamespace()  # type: ignore[assignment]
+    service._busy = True
+    service._visit(_entry())
+    (attempt,) = _FakeAttempt.made
+    assert attempt.started and attempt.title == "An article"
+
+
+def test_a_shown_visit_checks_against_its_entry_s_title(qapp, tmp_path: Path, shown: list) -> None:
+    """The window's visit is checked as the hidden one is."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    (attempt,) = _FakeAttempt.made
+    assert attempt.title == "An article"
+
+
+@pytest.mark.parametrize(
+    ("said", "relayed"),
+    [
+        ("download_mismatched", "shown_download_mismatched"),
+        ("download_unreadable", "shown_download_unreadable"),
+        ("download_started", "shown_download_started"),
+    ],
+)
+def test_what_a_person_s_download_met_is_said_for_their_visit_only(
+    qapp, tmp_path: Path, shown: list, said: str, relayed: str
+) -> None:
+    """Relayed while the visit is the window's; one the reader left says nothing."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    heard: list[Any] = []
+    getattr(service, relayed).connect(heard.append)
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    first = _FakeAttempt.made[0]
+    getattr(first, said).emit()
+    assert [e.id for e in heard] == [1]
+    service.visit_shown(_other(), object())
+    _run_scheduled(shown)
+    getattr(first, said).emit()
+    assert [e.id for e in heard] == [1]
+
+
+def test_keeping_the_held_pdf_asks_the_window_s_visit(qapp, tmp_path: Path, shown: list) -> None:
+    """The person's word goes to the visit that holds the PDF; with none, nothing is kept."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    assert service.keep_shown_pdf() is HeldPdfKeep.NOTHING_HELD
+    service.visit_shown(_entry(), object())
+    _run_scheduled(shown)
+    (attempt,) = _FakeAttempt.made
+    assert service.keep_shown_pdf() is HeldPdfKeep.KEPT
+    assert attempt.kept == 1
+
+
+def test_keeping_before_the_window_s_visit_started_keeps_nothing(
+    qapp, tmp_path: Path, shown: list
+) -> None:
+    """Asked for, not yet started (its host's slot): no attempt to ask, and no error."""
+    service = _started_service(tmp_path, _Storage(_entry(), failures=0))
+    service.visit_shown(_entry(), object())
+    assert service.shown_entry_id == 1 and _FakeAttempt.made == []
+    assert service.keep_shown_pdf() is HeldPdfKeep.NOTHING_HELD

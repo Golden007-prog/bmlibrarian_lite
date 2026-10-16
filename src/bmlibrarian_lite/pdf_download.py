@@ -16,13 +16,14 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
-from .constants import MAX_PDF_SIZE, PDF_PARTIAL_SUFFIX
+from .constants import MAX_PDF_SIZE, PDF_HELD_SUFFIX, PDF_PARTIAL_SUFFIX
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "MAX_PDF_SIZE",
     "discard_partial_download",
+    "held_download_path",
     "partial_download_path",
     "read_body_prefix",
 ]
@@ -63,6 +64,19 @@ def partial_download_path(output_path: Path) -> Path:
         so the rename into place stays on one filesystem.
     """
     return output_path.with_name(output_path.name + PDF_PARTIAL_SUFFIX)
+
+
+def held_download_path(output_path: Path) -> Path:
+    """Where a PDF waits while a person decides whether to keep it (#532).
+
+    Args:
+        output_path: Where the PDF is to end up.
+
+    Returns:
+        ``output_path`` with :data:`PDF_HELD_SUFFIX` appended, beside it and
+        apart from :func:`partial_download_path`, which discovery writes too.
+    """
+    return output_path.with_name(output_path.name + PDF_HELD_SUFFIX)
 
 
 def discard_partial_download(partial: Path) -> None:

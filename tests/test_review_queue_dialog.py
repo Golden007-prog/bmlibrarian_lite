@@ -17,6 +17,7 @@ from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QWidget
 
 from bmlibrarian_lite.browser_rescue import (
+    HeldPdfKeep,
     RescueOutcome,
     RescueRequest,
     RescueState,
@@ -53,7 +54,10 @@ class FakeService(QObject):
     shown_visit_started = Signal(object)
     shown_visit_ended = Signal(object, object)
     shown_visit_failed = Signal(object)
+    shown_download_started = Signal(object)
     shown_download_ignored = Signal(object)
+    shown_download_mismatched = Signal(object)
+    shown_download_unreadable = Signal(object)
     entry_changed = Signal(object)
     walk_ended = Signal(object)
     rescued = Signal(object)
@@ -66,6 +70,7 @@ class FakeService(QObject):
         self.shown_entry_id: int | None = None
         self.holds_unsaved_verdict = False
         self.walk_ends_at_once: WalkEnd | None = None
+        self.keep_result = HeldPdfKeep.KEPT
 
     def visit_shown(self, entry: Any, view: Any) -> None:
         """Record a person's visit; it stops a walk."""
@@ -88,6 +93,11 @@ class FakeService(QObject):
             self.walk_ended.emit(self.walk_ends_at_once)
             return
         self.walking = True
+
+    def keep_shown_pdf(self) -> HeldPdfKeep:
+        """Record keeping the held PDF; what came of it is ``keep_result``."""
+        self.calls.append(("keep", self.shown_entry_id))
+        return self.keep_result
 
     def stop_walk(self) -> None:
         """Record stopping the walk, which says it ended."""
@@ -555,4 +565,65 @@ def test_closing_the_window_leaves_nothing_selected(qapp, storage: LiteStorage) 
     dialog.table.selectRow(0)
     dialog.done(0)
     assert dialog.selected_entry_id() is None
+    dialog.deleteLater()
+
+
+def test_a_pdf_that_is_not_the_article_s_is_said_and_can_be_kept(qapp, storage: LiteStorage) -> None:
+    """Said, with a button to keep it anyway (#532); keeping hides the button."""
+    service = FakeService()
+    dialog = _dialog(storage, service)
+    assert dialog.keep_pdf_button.isHidden()
+    dialog.table.selectRow(0)
+    service.shown_download_mismatched.emit(storage.rescue_entry(dialog.selected_entry_id()))
+    assert dialog.status_label.text() == dialog_module.SHOWN_VISIT_WRONG_PDF
+    assert not dialog.keep_pdf_button.isHidden()
+    dialog.keep_pdf_button.click()
+    assert ("keep", dialog.selected_entry_id()) in service.calls
+    assert dialog.keep_pdf_button.isHidden()
+    dialog.deleteLater()
+
+
+@pytest.mark.parametrize("how", ["ended", "ignored", "started", "downloading", "unreadable"])
+def test_the_keep_button_goes_when_the_held_pdf_does(qapp, storage: LiteStorage, how: str) -> None:
+    """A visit's end, another visit, or the next download (begun, or done): nothing is held."""
+    service = FakeService()
+    dialog = _dialog(storage, service)
+    dialog.table.selectRow(0)
+    entry = storage.rescue_entry(dialog.selected_entry_id())
+    service.shown_download_mismatched.emit(entry)
+    if how == "ended":
+        service.shown_visit_ended.emit(entry, None)
+    elif how == "ignored":
+        service.shown_download_ignored.emit(entry)
+    elif how == "started":
+        service.shown_visit_started.emit(entry)
+    elif how == "downloading":
+        service.shown_download_started.emit(entry)
+        assert dialog.status_label.text() == dialog_module.SHOWN_VISIT_DOWNLOADING
+    else:
+        service.shown_download_unreadable.emit(entry)
+        assert dialog.status_label.text() == dialog_module.SHOWN_VISIT_UNREADABLE_PDF
+    assert dialog.keep_pdf_button.isHidden()
+    dialog.deleteLater()
+
+
+@pytest.mark.parametrize(
+    ("result", "said", "button_stays"),
+    [
+        (HeldPdfKeep.NOTHING_HELD, "SHOWN_VISIT_NOTHING_HELD", False),
+        (HeldPdfKeep.NOT_SAVED, "SHOWN_VISIT_HELD_NOT_SAVED", True),
+    ],
+)
+def test_a_keep_that_kept_nothing_is_said(
+    qapp, storage: LiteStorage, result: HeldPdfKeep, said: str, button_stays: bool
+) -> None:
+    """Never a silent click: nothing held any more, or a save that failed (still held)."""
+    service = FakeService()
+    service.keep_result = result
+    dialog = _dialog(storage, service)
+    dialog.table.selectRow(0)
+    service.shown_download_mismatched.emit(storage.rescue_entry(dialog.selected_entry_id()))
+    dialog.keep_pdf_button.click()
+    assert dialog.status_label.text() == getattr(dialog_module, said)
+    assert dialog.keep_pdf_button.isHidden() is not button_stays
     dialog.deleteLater()

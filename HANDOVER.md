@@ -8,8 +8,8 @@ its slice has landed; add a new section when handing off new work.
 
 ## In flight
 
-**Owed by the maintainer** (stages C1 and C2 have landed; #480 stays open for
-the embedded browser):
+**Owed by the maintainer** (stages C1 and C2 and the desktop browser rescue
+have landed):
 - **C2's probe, off-network**: `ELSEVIER_API_KEY=… python
   scripts/elsevier_probe.py --label off-network --out tmp/elsevier_probe.jsonl`
   (never writes the key, follows no redirect). The fixtures follow Elsevier's
@@ -25,41 +25,51 @@ the embedded browser):
   --out tmp/core_acceptance.jsonl`; the bar is ≥ 14 of the spike's 149
   not-open-access rows; record the counts in the spikes README and the
   contract.
+- **Desktop browser rescue, live check** (maintainer): launch the real app,
+  open *Tools → Walled PDFs…* on a ScienceDirect entry, tick the check, then
+  quit; also download a supplement there and see *Keep this PDF* offered.
+  Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Bot-walled PDFs: `challenged`, an embedded browser, a review queue** (#480
-sub-projects 2 and 3; replaces #483).
-- **Spec:** `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`
-  (auto then queue; a rescue re-analyses; one GUI-thread QtWebEngine service
-  driven by a SQLite queue; no impersonation).
-- **Landed:** stage 1 (PR #521: `challenged` on all three platforms;
-  lodged #520, #522, #523), and stage 2 (PR #529: the queue, the hidden
-  QtWebEngine pass, rescue → re-analysis, the #483 removal; developer doc
-  `doc/developer/browser_rescue.md`). Live acceptance (spikes README §4):
-  PMC 12/12, other walls 12/14, ScienceDirect 10/10 `needs_person`.
-- **Stage 3 (Python) in review:** branch `feat/browser-rescue-stage3-480`;
-  plan `docs/superpowers/plans/2026-10-15-browser-rescue-stage-3.md`. The
-  review queue window (`gui/review_queue_dialog.py`, view from
-  `gui/rescue_view.py`), "Walled PDFs: N" (`gui/rescue_queue_indicator.py`),
-  *Tools → Walled PDFs…*, shown visits and *Walk the queue* in
-  `BrowserRescueService`, and the interrogation tab's priority path. With it
-  the desktop browser rescue is complete; the PR closes #480. The apps'
-  embedded browsers need their own spec. Still owed by the maintainer:
-  launch the real app, open the window on a ScienceDirect entry, tick the
-  check, then quit. Offscreen smoke runs passed, apart from #530's cold-start
-  segfault (2 of the first 2 runs, then 0 of 48; evidence on #530).
-  Lodged from stage 3: **#534** (the *Fetch PDF* button's path is not
-  queued), **#535** (the review's minor follow-ups), and from the PR review
-  **#537** (a rescued entry whose PDF is gone is never tried again), **#538**
-  (a discovery ending on a paywall skips the priority path), **#539** (visit
-  mode and phase types), **#540** (a harness walk through the real service);
-  **#532** now also
-  covers a person's visit saving a PDF they navigated to. Still open from stage 2: **#524**, **#525**, **#527**, **#528**,
-  **#530**–**#533**.
+**A rescued PDF must be the article's** (#532, Python; PR #542, in review). `pdf_title_check.py`: the first
+page with text must carry ≥ `PDF_TITLE_MIN_PAIR_SHARE` (0.5) of the title's
+adjacent word pairs; survey numbers are in the constant's comment (single
+words passed 62 of 500 same-subject titles). A hidden visit's mismatch is
+`wrong_pdf` → `needs_person`; a person's is held with *Keep this PDF*
+(`HeldPdfKeep`; a failed save stays held). An unopenable or pageless `%PDF`
+is `unreadable_pdf` → `needs_person`, and a person's visit stays open past
+it. No title words, no text on any page, or a PubMed-translated `[title]`
+the page lacks keeps the PDF with `RescueVerdict.title_unchecked`, never as
+a checked one. `PDFDiscoverer._verify_pdf_content` shares the check
+(`verification_status`/`verification_warning`). Matcher limits are #543
+(errata, generic and stopword-heavy titles, stamped scans); housekeeping
+#544. **Found on the way
+(#541): 10 of 25 PDFs in a real desktop library are other articles**, and
+discovery and the cached-PDF tier never refuse one. That is the next slice
+with the most reader-facing harm.
+
+## Recently landed (context)
+
+Compressed once merged: the rules that still bind. Git history and the
+`doc/cross_platform/` READMEs carry the rest.
+
+- **Bot-walled PDFs: the desktop browser rescue** (#480, closed; stages 1–3,
+  PRs #521, #529, #536). Spec
+  `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, developer doc
+  `doc/developer/browser_rescue.md`. `challenged` on all three platforms; a
+  SQLite queue; a hidden QtWebEngine pass; a rescue re-analyses; the review
+  queue window (`gui/review_queue_dialog.py`), "Walled PDFs: N", shown visits,
+  *Walk the queue*, the interrogation tab's priority path. Live acceptance
+  (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect 10/10
+  `needs_person`. The apps' embedded browsers need their own spec.
+  Open follow-ups: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**,
+  **#533**–**#535**, **#537**–**#540**, **#543**, **#544** (#532 is in
+  review, above).
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
-  download, and a download that is no PDF is discarded with the page left
-  open; leaving it records nothing. Every visit, hidden or shown, reads its
+  download, and a download that is no PDF, or a PDF that cannot be opened,
+  is discarded with the page left open; one that does not carry the title is
+  held at `<pdf>.held` until kept or replaced; leaving it records nothing. Every visit, hidden or shown, reads its
   entry again when it starts and skips one settled meanwhile. In a shown page,
   `createWindow` returns the page. The window never imports QtWebEngine at
   runtime. The tab waits only while a watched entry is pending, due and
@@ -81,26 +91,13 @@ sub-projects 2 and 3; replaces #483).
   `errors&#46;edgesuite&#46;net`, Cloudflare by `_cf_chl_opt`
   (`challenge-platform` appears on ordinary pages). Change a needle only
   against live pages and the survey, never to fit one case.
+- **Settings dialog lifecycle** (PR #518). `done()` hands running threads to
+  `gui/thread_keeper.py`; a released dialog's handlers do nothing (**a queued
+  signal still arrives after a disconnect**). **The suite collects garbage on
+  the main thread only** (`tests/main_thread_gc.py`, #517); a test that pumps
+  the shared `QApplication` inherits earlier tests' backlog. Lodged: #519.
 
-## Recently landed (context)
-
-Compressed once merged: the rules that still bind. Git history and the
-`doc/cross_platform/` READMEs carry the rest.
-
-- **Settings dialog lifecycle** (PR #518, #514). Every way out of
-  `SettingsDialog` goes through `done()`, which hands running threads to
-  `gui/thread_keeper.py` (kept until `finished`, waited on at quit up to
-  `KEPT_THREAD_EXIT_WAIT_MS`); a released dialog's handlers do nothing and
-  start no thread (**a queued signal still arrives after a disconnect**).
-  Provider probes are one request each, bounded per phase, no retries. **The
-  whole suite collects garbage on the main thread only**
-  (`tests/main_thread_gc.py`): GC on a worker thread leaves dangling Qt timers
-  (#517). Any test that pumps the shared `QApplication` inherits earlier
-  tests' backlog (guide.md, "Testing a thread and the event loop"). Lodged:
-  #519.
-
-- **PySide6 capped `<6.12`** (PR #515, #516): CI resolves the newest deps,
-  `uv.lock` doesn't; **check master's CI before a slice**.
+- **PySide6 capped `<6.12`** (#516): **check master's CI before a slice**.
 - **Machine channels, stage C2: Elsevier's article API** (all three; PR
   #507). Contract "Elsevier's Article API" + `elsevier_article.json`.
   **A first-page PDF is never served** (`X-ELS-Status: WARNING` on a 200 is an
@@ -110,20 +107,17 @@ Compressed once merged: the rules that still bind. Git history and the
   sent**; the environment's token goes only with its key. Lodged: #506,
   #508–#513.
 - **Machine channels, stage C1: CORE's text** (all three; PR #501). **A hit
-  counts only if its own DOI is this article's**; asked last, once, only with
-  a key and a DOI; **no key, nothing recorded**; a configured channel that
-  could not be asked is unsettled.
+  counts only if its own DOI is this article's**; **no key, nothing
+  recorded**; a configured channel not asked is unsettled.
 - **Machine channels, stage B: every Unpaywall PDF in the apps, then
   OpenAlex's** (all three; PR #491). Contract "Tried sources (#480)" and
   "OpenAlex's Locations". **The first copy served ends the walk; one not saved
   is a caching note, never a shortfall.** Stored shortfall: v1 for one
   address-less entry, else v2 `entries`.
 - **Machine channels, stage A: PMC's open-data bucket** (all three; PR #487).
-  Why: our clients get 28% of 400 Unpaywall PDFs, and 81% of the failures are
-  bot walls (`doc/developer/unpaywall_pdf_survey/`; **re-analyse, never
-  re-fetch**). **Decided (maintainer):** machine channels first, then a real
-  embedded browser; no stealth clients. **Absent only for a listing naming no
-  version or a record with no `xml_url`.** A listing 404 is unreachable.
+  81% of failed Unpaywall PDFs are bot walls (`doc/developer/unpaywall_pdf_survey/`;
+  **re-analyse, never re-fetch**); **no stealth clients** (maintainer). A
+  listing 404 is unreachable.
 - **Unpaywall** (PRs #465–#482; `fulltext_retrieval.md`): a PDF not obtained
   is refused, never a link; non-`%PDF` is `malformed_response`; **no absence
   while an `OpenAccessShortfall` is set**; Room migrations register from
@@ -222,8 +216,9 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
+- **#541** wrong-article PDFs in discovery and the library (above).
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
-  browser's stage 3** is in review (above); **#524**, **#525**, **#527**, **#528**, **#530**–**#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+  browser rescue's follow-ups**: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**, **#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted

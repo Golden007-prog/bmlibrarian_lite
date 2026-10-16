@@ -45,6 +45,20 @@ def test_a_direct_pdf_is_saved_whole(harness: dict[str, Any]) -> None:
     assert result["saved"] and result["left"] == []
 
 
+def test_another_article_s_pdf_is_not_kept(harness: dict[str, Any]) -> None:
+    """A whole PDF whose first page does not carry the title (#532): not saved, nothing left."""
+    result = _attempt(harness, "otherpdf")
+    assert result["verdict"] == {"outcome": "wrong_pdf", "http_status": None, "markers": []}
+    assert not result["saved"] and result["left"] == []
+
+
+def test_a_pdf_no_reader_can_open_is_not_kept(harness: dict[str, Any]) -> None:
+    """Served whole and begins with %PDF, but cannot be opened (#532): not saved, nothing left."""
+    result = _attempt(harness, "brokenpdf")
+    assert result["verdict"] == {"outcome": "unreadable_pdf", "http_status": None, "markers": []}
+    assert not result["saved"] and result["left"] == []
+
+
 def test_a_javascript_challenge_is_passed_to_the_pdf(harness: dict[str, Any]) -> None:
     """A cookie-and-reload challenge passes in the hidden page."""
     result = _attempt(harness, "challenge")
@@ -248,6 +262,16 @@ def test_a_person_s_visit_shows_the_page_and_saves_its_pdf(harness: dict[str, An
     assert result["shown"] and result["finished"]
     assert result["verdict"]["outcome"] == "pdf" and result["saved"]
     assert result["view_alive"] and result["view_released"]
+
+
+def test_a_person_keeps_another_article_s_pdf_they_have_seen(harness: dict[str, Any]) -> None:
+    """Held beside the PDF path, then kept: the visit ends as a rescue, nothing left (#532)."""
+    result = harness["out"]["shown"]["held"]
+    assert result["held"], "the mismatch was never said"
+    assert result["held_before_keep"] == ["article.pdf.held"]
+    assert result["kept"] == "kept"
+    assert result["verdict"] == {"outcome": "pdf", "http_status": None, "markers": []}
+    assert result["saved_other"] and result["left"] == []
 
 
 @pytest.mark.parametrize("name", ["gone", "abstract"])

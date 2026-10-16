@@ -68,10 +68,11 @@ from ..browser_rescue import (
 )
 from ..browser_rescue_text import (
     BROWSER_RESCUE_WAITING,
-    REVIEW_QUEUE_OFFER,
+    FULLTEXT_WALLED,
     REVIEW_QUEUE_OFFER_LATER,
     REVIEW_QUEUE_OFFER_OPEN,
-    REVIEW_QUEUE_OFFER_TITLE,
+    QueueOffer,
+    review_queue_offer,
 )
 from ..config import LiteConfig
 from ..constants import CORE_SOURCE_LABEL, RESCUE_PRIORITY_WAITING, RESCUE_READER_WAIT_LIMIT_MS
@@ -137,24 +138,24 @@ STALE_CACHED_FULLTEXT_LABEL = (
 )
 PDF_NO_TEXT = "no text could be extracted from the PDF"
 PDF_UNREADABLE = "the PDF was retrieved but could not be read"
-FULLTEXT_WALLED = "the publisher's copy is behind a robot check"
 # The label of a PDF the built-in browser fetched for the reader (#480, stage 3)
 BROWSER_PDF_LABEL = "Full Text (PDF, fetched in the built-in browser)"
 
 
-def ask_to_open_review_queue(parent: QWidget) -> bool:
+def ask_to_open_review_queue(parent: QWidget, offer: QueueOffer) -> bool:
     """Offer the review queue for a walled PDF (#480, stage 3).
 
     Args:
         parent: The tab.
+        offer: What to say (``review_queue_offer``).
 
     Returns:
         Whether the reader chose to open it.
     """
     box = QMessageBox(parent)
     box.setIcon(QMessageBox.Icon.Information)
-    box.setWindowTitle(REVIEW_QUEUE_OFFER_TITLE)
-    box.setText(REVIEW_QUEUE_OFFER)
+    box.setWindowTitle(offer.title)
+    box.setText(offer.text)
     open_button = box.addButton(REVIEW_QUEUE_OFFER_OPEN, QMessageBox.ButtonRole.AcceptRole)
     box.addButton(REVIEW_QUEUE_OFFER_LATER, QMessageBox.ButtonRole.RejectRole)
     box.exec()
@@ -1422,8 +1423,11 @@ class DocumentInterrogationTab(QWidget):
                 wait.fall_back(FULLTEXT_UNAVAILABLE)
             return True
         if result.outcome is WaitOutcome.NEEDS_READER and result.entry is not None:
-            wait.fall_back(FULLTEXT_WALLED)
-            if ask_to_open_review_queue(self):
+            # A PDF the hidden browser fetched and did not keep is said as
+            # such: there may have been no robot check at all (#532)
+            offer = review_queue_offer(result.entry.verdict)
+            wait.fall_back(offer.cause)
+            if ask_to_open_review_queue(self, offer):
                 self.review_queue_requested.emit(result.entry.id)
             return True
         wait.fall_back(FULLTEXT_UNAVAILABLE)

@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, assert_never
 from urllib.parse import urlparse
 
 from .bot_walls import challenge_markers
@@ -46,6 +46,7 @@ from .constants import (
 )
 from .data_models import LookupRecord, RequestFailureKind
 from .exceptions import SQLiteError
+from .pdf_title_check import UNJUDGED_OUTCOMES, TitleCheck, TitleCheckOutcome
 from .pdf_utils import generate_pdf_path
 from .polite_session import is_loopback_host, retry_after_from_headers
 from .rate_limit import limiter_for
@@ -73,8 +74,9 @@ class RescueState(Enum):
     #: Waiting for the hidden browser.
     PENDING = "pending"
     #: Waits for a person (stage 3's window): still a challenge after a visit,
-    #: a refusal (401, 403) with no marker, or a transport failure on the last
-    #: of ``MAX_RESCUE_ATTEMPTS``.
+    #: a refusal (401, 403) with no marker, a PDF that was not the article's
+    #: or could not be opened (#532), or a transport failure on the last of
+    #: ``MAX_RESCUE_ATTEMPTS``.
     NEEDS_PERSON = "needs_person"
     #: The PDF arrived and was saved.
     RESCUED = "rescued"
@@ -103,8 +105,17 @@ class RescueOutcome(Enum):
     NO_PDF = "no_pdf"
     GONE = "gone"
     TOO_LARGE = "too_large"
+    #: A PDF arrived whose first page does not carry the article's title, so
+    #: it was not kept (#532). The right PDF may still be on the page, so the
+    #: entry waits for a person rather than settling as an absence.
+    WRONG_PDF = "wrong_pdf"
+    #: A file arrived that begins as a PDF but could not be opened (one that
+    #: needs a password, damage, no pages), so it was not kept (#532). It is
+    #: the host's answer, not a passing failure: retrying fetches the same
+    #: file, so the entry waits for a person, who may be served another.
+    UNREADABLE_PDF = "unreadable_pdf"
     #: The visit learnt nothing: a network error, a renderer crash, a stalled
-    #: or interrupted download, or a PDF that arrived and could not be kept.
+    #: or interrupted download, or a PDF that arrived and could not be saved.
     TRANSPORT = "transport"
 
 
@@ -116,10 +127,12 @@ _SETTLED_BY: dict[RescueOutcome, RescueState] = {
     RescueOutcome.NO_PDF: RescueState.NO_PDF,
     RescueOutcome.GONE: RescueState.GONE,
     RescueOutcome.TOO_LARGE: RescueState.TOO_LARGE,
+    RescueOutcome.WRONG_PDF: RescueState.NEEDS_PERSON,
+    RescueOutcome.UNREADABLE_PDF: RescueState.NEEDS_PERSON,
 }
 
-# Every outcome but TRANSPORT settles an entry in a state of its own; a test
-# holds this (an import-time assert would vanish under ``python -O``)
+# Every outcome but TRANSPORT settles an entry; a test holds this (an
+# import-time assert would vanish under ``python -O``)
 
 
 def http_status_or_none(value: object) -> int | None:
@@ -149,15 +162,21 @@ class RescueVerdict:
         http_status: The main frame's last HTTP status, for a page the visit
             stayed on; ``None`` for a download or when none was seen.
         markers: The defences the page named, for a challenge.
+        title_unchecked: For a PDF kept whose title could not be judged
+            (#532), why: no title, no text, or a translated title
+            (``UNJUDGED_OUTCOMES``); ``None`` for one checked, or kept by
+            the person who saw it.
 
     Raises:
-        ValueError: On construction, for a status that is no HTTP status, or
-            markers on anything but a challenge.
+        ValueError: On construction, for a status that is no HTTP status,
+            markers on anything but a challenge, or a title left unchecked
+            on anything but a PDF, for a reason that is no unjudged outcome.
     """
 
     outcome: RescueOutcome
     http_status: int | None = None
     markers: tuple[str, ...] = ()
+    title_unchecked: TitleCheckOutcome | None = None
 
     def __post_init__(self) -> None:
         """Refuse a verdict no visit can reach."""
@@ -165,18 +184,30 @@ class RescueVerdict:
             raise ValueError(f"Not an HTTP status: {self.http_status!r}")
         if self.markers and self.outcome is not RescueOutcome.CHALLENGE:
             raise ValueError(f"Only a challenge names defences, not {self.outcome.value}")
+        if self.title_unchecked is not None and (
+            self.outcome is not RescueOutcome.PDF or self.title_unchecked not in UNJUDGED_OUTCOMES
+        ):
+            raise ValueError(
+                f"Only a PDF is kept unchecked, for want of something to judge, not "
+                f"{self.outcome.value} for {self.title_unchecked.value}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         """The verdict as JSON-safe values.
 
         Returns:
-            ``outcome``, ``http_status`` and ``markers``.
+            ``outcome``, ``http_status`` and ``markers``, and
+            ``title_unchecked`` only when a title was left unchecked, so a
+            verdict stored before #532 reads the same.
         """
-        return {
+        data: dict[str, Any] = {
             "outcome": self.outcome.value,
             "http_status": self.http_status,
             "markers": list(self.markers),
         }
+        if self.title_unchecked is not None:
+            data["title_unchecked"] = self.title_unchecked.value
+        return data
 
     @classmethod
     def from_dict(cls, data: Any) -> RescueVerdict | None:
@@ -189,8 +220,10 @@ class RescueVerdict:
             data: The decoded JSON.
 
         Returns:
-            The verdict, keeping only a status from 100 to 999 and, for a
-            challenge, text markers; ``None`` when its outcome cannot be read.
+            The verdict, keeping only a status from 100 to 999, for a
+            challenge text markers, and for a PDF a title left unchecked for
+            a reason this build knows; ``None`` when its outcome cannot be
+            read.
         """
         if not isinstance(data, dict):
             return None
@@ -204,7 +237,43 @@ class RescueVerdict:
             if isinstance(raw, list) and outcome is RescueOutcome.CHALLENGE
             else ()
         )
-        return cls(outcome, http_status_or_none(data.get("http_status")), markers)
+        return cls(
+            outcome,
+            http_status_or_none(data.get("http_status")),
+            markers,
+            _title_unchecked_or_none(outcome, data.get("title_unchecked")),
+        )
+
+
+def _title_unchecked_or_none(outcome: RescueOutcome, value: object) -> TitleCheckOutcome | None:
+    """A stored verdict's reason for a title left unchecked, untrusted.
+
+    Args:
+        outcome: The verdict's outcome.
+        value: The stored reason.
+
+    Returns:
+        The reason, for a PDF and a reason that is an unjudged outcome;
+        ``None`` otherwise.
+    """
+    if outcome is not RescueOutcome.PDF or not isinstance(value, str):
+        return None
+    try:
+        reason = TitleCheckOutcome(value)
+    except ValueError:
+        return None
+    return reason if reason in UNJUDGED_OUTCOMES else None
+
+
+class HeldPdfKeep(Enum):
+    """What came of a person's *Keep this PDF* (#532)."""
+
+    #: The held PDF is the article's now; the visit ends as a rescue.
+    KEPT = "kept"
+    #: No PDF was held: a newer download replaced it, or the visit is over.
+    NOTHING_HELD = "nothing_held"
+    #: It could not be renamed into place (logged); it is still held.
+    NOT_SAVED = "not_saved"
 
 
 def next_state(state: RescueState, verdict: RescueVerdict, attempts: int) -> RescueState:
@@ -387,6 +456,35 @@ def download_verdict(first_bytes: bytes) -> RescueVerdict:
     return RescueVerdict(RescueOutcome.NO_PDF)
 
 
+def title_checked_verdict(check: TitleCheck) -> RescueVerdict:
+    """What a visit concluded from a PDF that arrived, once checked against the title (#532).
+
+    A PDF that does not carry the title is not kept: its text would feed
+    the article's rating. One the check could not judge is kept, saying so
+    (``title_unchecked``): with no title there is nothing to check against,
+    a PDF with no text on any page (a scan) feeds no rating, and a
+    translated title says nothing of a PDF in the article's own language. A
+    file that cannot be opened is not kept either.
+
+    Args:
+        check: The PDF checked against the entry's title.
+
+    Returns:
+        ``PDF``, ``WRONG_PDF``, or ``UNREADABLE_PDF``.
+    """
+    match check.outcome:
+        case TitleCheckOutcome.MATCHES:
+            return RescueVerdict(RescueOutcome.PDF)
+        case TitleCheckOutcome.NO_TITLE | TitleCheckOutcome.NO_TEXT | TitleCheckOutcome.TRANSLATED_TITLE:
+            return RescueVerdict(RescueOutcome.PDF, title_unchecked=check.outcome)
+        case TitleCheckOutcome.MISMATCH:
+            return RescueVerdict(RescueOutcome.WRONG_PDF)
+        case TitleCheckOutcome.UNREADABLE:
+            return RescueVerdict(RescueOutcome.UNREADABLE_PDF)
+        case unknown:
+            assert_never(unknown)
+
+
 def _stripped_or_none(value: str | None) -> str | None:
     """A value stripped, or ``None`` when blank.
 
@@ -409,7 +507,8 @@ class RescueSubject:
         document_id: The document's ID in storage, or the MCP server's own.
         doi: Its DOI; names the file a rescued PDF is saved as.
         pmid: Its PubMed ID, if known.
-        title: Its title, for the queue window.
+        title: Its title, for the queue window, and the title a rescued
+            PDF must carry (#532); a blank one checks nothing.
 
     Raises:
         ValueError: On construction, if the document ID is blank.
@@ -438,7 +537,8 @@ class RescueRequest:
         document_id: The document it belongs to.
         doi: The document's DOI.
         pmid: The document's PubMed ID, if known.
-        title: The document's title.
+        title: The document's title, which a rescued PDF must carry (#532);
+            a blank one (a row stored before titles were) checks nothing.
         address: The PDF's address.
         host: The address's host, which the visit is paced by.
         service: Who named the address (``SERVICE_UNPAYWALL_PDF``,

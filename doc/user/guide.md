@@ -124,6 +124,14 @@ reCAPTCHA or Cloudflare), which is how the check is passed. Those sites learn
 which article is fetched, as the publisher did when the app first tried. Your
 searches, documents and keys are never sent.
 
+A PDF the hidden browser fetches is not saved when its first page with text
+shows it is another document (a supplement, another article), or when it
+cannot be opened (it needs a password, or is damaged); the entry then waits
+for you in the review queue. A PDF whose title cannot be checked (a scan with
+no text, an article with no title, or one whose title PubMed gives as an
+English translation in square brackets) is saved, and the review queue says
+its title could not be checked.
+
 Rescued PDFs are saved in your PDF library, and a rescued article's
 transparency badge is re-checked, so it may change once the full text has been
 read. The browser keeps the sites' cookies and a cache of what the pages loaded
@@ -144,12 +152,17 @@ choose **Tools → Walled PDFs…** (which works at a count of 0 too).
 - **Select an entry** to open its page in the window's built-in browser. If
   the page asks for a robot check, tick the box. When the PDF arrives it is
   saved, the article's transparency is re-checked, and the next entry opens.
-  The page is yours to read and navigate. The first PDF you download there
-  is saved as the article's PDF and is not yet checked against its title, so
-  download the article itself, not a supplement. A file that is not a PDF
-  (a citation export, say) is not kept: the window says so and the page
-  stays open. Selecting an entry that is already settled shows only how its
-  last visit ended.
+  The page is yours to read and navigate. A PDF you download there is saved
+  as the article's unless its first page with text shows it is another
+  document (a supplement, another article). One that does is not kept: the
+  window says so, the page stays open, and **Keep this PDF** saves it anyway,
+  for a scan whose text is garbled or a preprint whose title changed. If it
+  cannot be saved (the PDF library is unavailable), the window says so and
+  the PDF stays held, so you can choose **Keep this PDF** again. Downloading
+  another file replaces the held PDF. A file that is not a PDF (a citation
+  export, say), or a PDF that cannot be opened, is not kept either: the
+  window says so and the page stays open. Selecting an entry that is already
+  settled shows only how its last visit ended.
 - **Walk the queue** opens each waiting entry in turn and waits up to a minute
   for its PDF. Many robot checks (Cloudflare's, in testing) pass on their own
   this way, leaving mostly those that need a tick. Selecting an entry yourself
@@ -177,6 +190,10 @@ a half:
   is loaded ("the publisher's copy is behind a robot check"), and you are
   offered the review queue for that article; once you have passed the check
   there, open the citation again to load its PDF;
+- when the PDF the publisher's page gave was another document, or could not
+  be opened, the abstract is loaded ("the PDF the publisher's page gave is not
+  this article's", or "… could not be opened"), and you are offered the
+  review queue to download the article's own PDF;
 - when there is no PDF behind the page, the abstract is loaded as before.
 
 With the hidden browser off or unavailable, or while the review queue window

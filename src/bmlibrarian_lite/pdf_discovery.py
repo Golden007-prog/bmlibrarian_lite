@@ -43,7 +43,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, assert_never
 from urllib.parse import quote, urlparse
 
 import requests
@@ -112,6 +112,7 @@ from .pdf_download import (
     partial_download_path,
     read_body_prefix,
 )
+from .pdf_title_check import TitleCheck, TitleCheckOutcome, check_pdf_title
 from .polite_session import mount_politely
 from .search_failures import request_failure_from_exception
 
@@ -130,8 +131,8 @@ _ID_CONVERTER_ERROR_STATUS = "error"
 # ``email=<the user's address>`` (the same leak as #196/#330).
 #
 # The download path (``_try_download``) does NOT yet
-# follow it -- it still puts ``str(e)`` into the reader-facing ``error`` and
-# ``verification_warning`` fields. Those URLs are publisher and PMC ones
+# follow it -- it still puts ``str(e)`` into the reader-facing ``error``
+# field. Those URLs are publisher and PMC ones
 # rather than the credential-bearing lookups, so no secret leaks today, but
 # the migration is unfinished: see #350 before adding another handler there.
 
@@ -538,6 +539,58 @@ class _CoreFallback:
         fetch, self._fetch = self._fetch, None
         outcome = fetch(self._doi)
         return outcome.text, outcome.lookups()
+
+
+def verification_status(check: TitleCheck) -> str:
+    """A downloaded PDF's title check as the discovery's progress reports it.
+
+    Args:
+        check: The check.
+
+    Returns:
+        ``"success"`` for a match, ``"mismatch"`` for a mismatch, and
+        ``"unchecked"`` when nothing could be judged or the file could not
+        be read: never called a mismatch, nor a success.
+    """
+    match check.outcome:
+        case TitleCheckOutcome.MATCHES:
+            return "success"
+        case TitleCheckOutcome.MISMATCH:
+            return "mismatch"
+        case (
+            TitleCheckOutcome.NO_TITLE
+            | TitleCheckOutcome.NO_TEXT
+            | TitleCheckOutcome.TRANSLATED_TITLE
+            | TitleCheckOutcome.UNREADABLE
+        ):
+            return "unchecked"
+        case unknown:
+            assert_never(unknown)
+
+
+def verification_warning(check: TitleCheck) -> str | None:
+    """What a downloaded PDF's title check doubted, for the reader.
+
+    Args:
+        check: The check.
+
+    Returns:
+        ``None`` for a match, and where nothing in the title could be
+        judged against the PDF (no title words, a translated title); a
+        sentence for a mismatch, with its share, a PDF with no text, and
+        one that could not be read.
+    """
+    match check.outcome:
+        case TitleCheckOutcome.MATCHES | TitleCheckOutcome.NO_TITLE | TitleCheckOutcome.TRANSLATED_TITLE:
+            return None
+        case TitleCheckOutcome.MISMATCH:
+            return f"PDF content may not match expected document. Title match: {check.share:.0%}"
+        case TitleCheckOutcome.NO_TEXT:
+            return "PDF contains no extractable text"
+        case TitleCheckOutcome.UNREADABLE:
+            return "The PDF could not be read to check it against the title"
+        case unknown:
+            assert_never(unknown)
 
 
 class PDFDiscoverer:
@@ -960,9 +1013,9 @@ class PDFDiscoverer:
         if not expected_title:
             return None
         self._emit_progress("verification", "starting")
-        is_valid, warning = self._verify_pdf_content(pdf_path, expected_title)
-        self._emit_progress("verification", "success" if is_valid else "mismatch")
-        return None if is_valid else warning
+        check = self._verify_pdf_content(pdf_path, expected_title)
+        self._emit_progress("verification", verification_status(check))
+        return verification_warning(check)
 
     def _ask_core(self, core: _CoreFallback) -> tuple[str | None, LookupRecord]:
         """Ask CORE at a no-PDF exit, unless the discovery was cancelled.
@@ -2067,59 +2120,14 @@ class PDFDiscoverer:
         """
         return body_prefix.startswith(PDF_MAGIC_BYTES)
 
-    def _verify_pdf_content(
-        self,
-        pdf_path: Path,
-        expected_title: str,
-    ) -> Tuple[bool, Optional[str]]:
-        """
-        Verify that downloaded PDF matches expected content.
+    def _verify_pdf_content(self, pdf_path: Path, expected_title: str) -> TitleCheck:
+        """Check that a downloaded PDF's first page with text carries the expected title (#532).
 
         Args:
             pdf_path: Path to PDF file
             expected_title: Expected document title
 
         Returns:
-            Tuple of (is_valid, warning_message)
+            The check (``verification_warning`` says what it doubted).
         """
-        try:
-            import fitz  # PyMuPDF
-
-            doc = fitz.open(str(pdf_path))
-            if doc.page_count == 0:
-                return False, "PDF has no pages"
-
-            # Extract text from first page
-            first_page = doc[0]
-            text = first_page.get_text()
-            doc.close()
-
-            if not text.strip():
-                return False, "PDF contains no extractable text"
-
-            # Check if title appears in first page (fuzzy match)
-            title_words = self._extract_title_words(expected_title)
-            text_lower = text.lower()
-
-            matched_words = sum(1 for word in title_words if word in text_lower)
-            match_ratio = matched_words / len(title_words) if title_words else 0
-
-            if match_ratio < 0.5:  # Less than 50% of title words found
-                return False, f"PDF content may not match expected document. Title match: {match_ratio:.0%}"
-
-            return True, None
-
-        except Exception as e:
-            logger.warning(f"PDF verification failed: {e}")
-            return True, f"Could not verify PDF content: {e}"
-
-    def _extract_title_words(self, title: str) -> List[str]:
-        """Extract significant words from title for matching."""
-        # Remove common words and punctuation
-        stop_words = {
-            "a", "an", "the", "and", "or", "but", "in", "on", "at", "to",
-            "for", "of", "with", "by", "from", "as", "is", "was", "are",
-            "were", "been", "be", "have", "has", "had", "do", "does", "did",
-        }
-        words = re.findall(r"\b\w+\b", title.lower())
-        return [w for w in words if len(w) > 2 and w not in stop_words]
+        return check_pdf_title(pdf_path, expected_title)

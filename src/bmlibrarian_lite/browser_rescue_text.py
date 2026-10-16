@@ -11,6 +11,7 @@ No Qt: pure text from the rules' types.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import assert_never
 
@@ -24,6 +25,7 @@ from .browser_rescue import (
     stamp,
 )
 from .constants import SERVICE_OPENALEX_PDF, SERVICE_UNPAYWALL_PDF
+from .pdf_title_check import TitleCheckOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +80,33 @@ SHOWN_VISIT_NOT_A_PDF = (
     "That file was not a PDF, so it was not kept. The page stays open: "
     "download the article's own PDF."
 )
+#: Said when a person's PDF does not carry the article's title (#532); it is
+#: held, and the page stays open.
+SHOWN_VISIT_WRONG_PDF = (
+    "That PDF's first page does not carry this article's title, so it was not "
+    "kept: it may be a supplement or another article. The page stays open: "
+    "download the article's own PDF. If this one is the article (a scan whose "
+    "text is garbled, or a preprint retitled since), choose “Keep this PDF”."
+)
+#: Said when a person's PDF could not be opened (#532); the page stays open.
+SHOWN_VISIT_UNREADABLE_PDF = (
+    "That PDF could not be opened (it may need a password, or be damaged), so "
+    "it was not kept. The page stays open: download the article's PDF again, "
+    "or another copy of it."
+)
+#: Said while a person's download arrives.
+SHOWN_VISIT_DOWNLOADING = "Downloading… The file is checked when it arrives."
+#: The button that keeps a held PDF as the article's.
+KEEP_HELD_PDF_LABEL = "Keep this PDF"
+#: Said when *Keep this PDF* finds nothing held any more.
+SHOWN_VISIT_NOTHING_HELD = (
+    "There is no PDF to keep any more: a newer download replaced it, or the visit ended."
+)
+#: Said when a PDF the person keeps cannot be saved; it is still held.
+SHOWN_VISIT_HELD_NOT_SAVED = (
+    "The PDF could not be saved to the PDF library; the log says why. It is "
+    "still held: choose “Keep this PDF” again, or download it again."
+)
 #: Said when a visit's result could not be saved yet.
 VERDICT_UNSAVED = (
     "The visit's result could not be saved yet; the app keeps trying, and "
@@ -94,15 +123,40 @@ SYSTEM_BROWSER_FAILED = "The system's browser could not be opened."
 #: The interrogation tab's wait, and its offer.
 BROWSER_RESCUE_WAITING = "Trying the publisher's page in a browser…"
 REVIEW_QUEUE_OFFER_TITLE = "Robot check"
-#: True whatever led here: a check the hidden browser met, a hidden browser
-#: that is off, busy or slower than the wait, or a page it could not reach.
+#: True whatever led here but a PDF the hidden browser fetched and did not
+#: keep (``review_queue_offer``): a check it met, a hidden browser that is
+#: off, busy or slower than the wait, or a page it could not reach.
 REVIEW_QUEUE_OFFER = (
     "The publisher's copy of this article is behind a robot check and could "
     "not be fetched automatically, so what the app already had (usually the "
     "abstract) is loaded for now. In the "
-    "review queue you can open the page and tick the box; the PDF is then "
-    "saved, and opening the citation again loads it."
+    "review queue you can open the page, tick the box if it asks, and download "
+    "the article's PDF; it is then saved, and opening the citation again loads it."
 )
+#: Why the interrogation tab fell back to the abstract, for a walled copy.
+FULLTEXT_WALLED = "the publisher's copy is behind a robot check"
+#: The offer, and the cause, after the hidden browser fetched a PDF that was
+#: another document's or could not be opened (#532): no robot check is named,
+#: since there may have been none.
+REVIEW_QUEUE_OFFER_PDF_NOT_KEPT_TITLE = "The PDF was not kept"
+_REVIEW_QUEUE_OFFER_PDF_NOT_KEPT = (
+    "The PDF the publisher's page gave {why}, so it was not kept, and what the "
+    "app already had (usually the abstract) is loaded for now. In the review "
+    "queue you can open the page and download the article's own PDF; it is "
+    "then saved, and opening the citation again loads it."
+)
+_WRONG_PDF_WHY = "is not this article's (its first page does not carry the title)"
+_UNREADABLE_PDF_WHY = "could not be opened (it may need a password, or be damaged)"
+_FULLTEXT_WRONG_PDF = "the PDF the publisher's page gave is not this article's"
+_FULLTEXT_UNREADABLE_PDF = "the PDF the publisher's page gave could not be opened"
+#: Why a kept PDF's title was not checked (#532), as the window says it.
+_TITLE_UNCHECKED_WHY: dict[TitleCheckOutcome, str] = {
+    TitleCheckOutcome.NO_TITLE: "the article has no title to check it against",
+    TitleCheckOutcome.NO_TEXT: "the PDF has no text (a scan)",
+    TitleCheckOutcome.TRANSLATED_TITLE: (
+        "the article's title is a translation, and the PDF may be in its own language"
+    ),
+}
 REVIEW_QUEUE_OFFER_OPEN = "Open the review queue"
 REVIEW_QUEUE_OFFER_LATER = "Not now"
 
@@ -169,6 +223,9 @@ def verdict_text(verdict: RescueVerdict | None) -> str:
         return _NOT_VISITED
     match verdict.outcome:
         case RescueOutcome.PDF:
+            if verdict.title_unchecked is not None:
+                why = _TITLE_UNCHECKED_WHY.get(verdict.title_unchecked, verdict.title_unchecked.value)
+                return f"The PDF arrived; its title could not be checked: {why}"
             return "The PDF arrived"
         case RescueOutcome.CHALLENGE:
             if verdict.markers:
@@ -180,10 +237,57 @@ def verdict_text(verdict: RescueVerdict | None) -> str:
             return _with_status("Not found", verdict)
         case RescueOutcome.TOO_LARGE:
             return "The PDF is larger than the app downloads"
+        case RescueOutcome.WRONG_PDF:
+            return "A PDF arrived whose first page does not carry this article's title; it was not kept"
+        case RescueOutcome.UNREADABLE_PDF:
+            return "A PDF arrived that could not be opened; it was not kept"
         case RescueOutcome.TRANSPORT:
             return _with_status("Nothing was learnt: the page or its download failed", verdict)
         case unknown:
             assert_never(unknown)
+
+
+@dataclass(frozen=True)
+class QueueOffer:
+    """The interrogation tab's offer of the review queue, and why it fell back.
+
+    Attributes:
+        title: The offer's window title.
+        text: The offer.
+        cause: Why the abstract was loaded instead of the full text.
+    """
+
+    title: str
+    text: str
+    cause: str
+
+
+def review_queue_offer(verdict: RescueVerdict | None) -> QueueOffer:
+    """What the interrogation tab says when an entry waits for the reader.
+
+    Args:
+        verdict: The entry's last verdict; ``None`` before a visit, or one
+            that could not be read.
+
+    Returns:
+        For a PDF the hidden browser fetched and did not keep (another
+        document's, or one that could not be opened), an offer naming that;
+        otherwise the robot check's.
+    """
+    outcome = None if verdict is None else verdict.outcome
+    if outcome is RescueOutcome.WRONG_PDF:
+        return QueueOffer(
+            REVIEW_QUEUE_OFFER_PDF_NOT_KEPT_TITLE,
+            _REVIEW_QUEUE_OFFER_PDF_NOT_KEPT.format(why=_WRONG_PDF_WHY),
+            _FULLTEXT_WRONG_PDF,
+        )
+    if outcome is RescueOutcome.UNREADABLE_PDF:
+        return QueueOffer(
+            REVIEW_QUEUE_OFFER_PDF_NOT_KEPT_TITLE,
+            _REVIEW_QUEUE_OFFER_PDF_NOT_KEPT.format(why=_UNREADABLE_PDF_WHY),
+            _FULLTEXT_UNREADABLE_PDF,
+        )
+    return QueueOffer(REVIEW_QUEUE_OFFER_TITLE, REVIEW_QUEUE_OFFER, FULLTEXT_WALLED)
 
 
 def last_visit_text(entry: RescueEntry) -> str:
