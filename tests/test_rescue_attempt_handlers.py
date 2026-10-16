@@ -20,6 +20,7 @@ from bmlibrarian_lite.browser_rescue import HeldPdfKeep, RescueOutcome, RescueVe
 from bmlibrarian_lite.gui import rescue_attempt
 from bmlibrarian_lite.gui.rescue_attempt import RescueAttempt
 from bmlibrarian_lite.pdf_download import held_download_path, partial_download_path
+from bmlibrarian_lite.pdf_library_check import is_kept
 from bmlibrarian_lite.pdf_title_check import TitleCheckOutcome
 
 Domain = QWebEngineLoadingInfo.ErrorDomain
@@ -556,6 +557,24 @@ def test_a_person_keeps_a_held_pdf(qapp, tmp_path: Path) -> None:
     assert verdicts == [RescueVerdict(RescueOutcome.PDF)]
     assert (tmp_path / "article.pdf").read_bytes() == OTHER_PDF
     assert not _held_path(tmp_path).exists()
+    # The cached-PDF tier reads it though it lacks the title (#541)
+    assert is_kept(tmp_path / "article.pdf")
+
+
+def test_a_keep_whose_marker_cannot_be_written_keeps_the_pdf_held(
+    qapp, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without its marker the cache would set it aside: nothing changes, and the visit goes on."""
+    attempt, verdicts, _mismatched = _person_held(tmp_path)
+
+    def refuse(pdf_path: Path, contents: Path | None = None) -> None:
+        raise PermissionError("read-only library")
+
+    monkeypatch.setattr(rescue_attempt, "mark_kept", refuse)
+    assert attempt.keep_held_pdf() is HeldPdfKeep.NOT_SAVED
+    assert verdicts == []
+    assert _held_path(tmp_path).read_bytes() == OTHER_PDF
+    assert not (tmp_path / "article.pdf").exists()
 
 
 def test_a_person_s_next_download_replaces_the_held_pdf(qapp, tmp_path: Path) -> None:

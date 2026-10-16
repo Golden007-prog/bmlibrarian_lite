@@ -265,13 +265,13 @@ def test_a_person_s_visit_shows_the_page_and_saves_its_pdf(harness: dict[str, An
 
 
 def test_a_person_keeps_another_article_s_pdf_they_have_seen(harness: dict[str, Any]) -> None:
-    """Held beside the PDF path, then kept: the visit ends as a rescue, nothing left (#532)."""
+    """Held beside the PDF path, then kept: a rescue, with only its keep marker beside it (#532, #541)."""
     result = harness["out"]["shown"]["held"]
     assert result["held"], "the mismatch was never said"
     assert result["held_before_keep"] == ["article.pdf.held"]
     assert result["kept"] == "kept"
     assert result["verdict"] == {"outcome": "pdf", "http_status": None, "markers": []}
-    assert result["saved_other"] and result["left"] == []
+    assert result["saved_other"] and result["left"] == ["article.pdf.kept"]
 
 
 @pytest.mark.parametrize("name", ["gone", "abstract"])

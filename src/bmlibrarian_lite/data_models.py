@@ -425,6 +425,13 @@ class LookupSkipReason(Enum):
     #: unasked, so it leaves the question open.
     NETWORK_REFUSED = "network_refused"
 
+    #: The source served a PDF, and its first page with text does not carry
+    #: this article's title: another article's, set aside unread (#541). The
+    #: source's copy says nothing about this article, and the right PDF may
+    #: exist elsewhere, so it leaves the question open. Python's alone, as
+    #: the apps check no title yet.
+    WRONG_ARTICLE = "wrong_article"
+
 
 #: What each skip reason tells the reader, as a parenthetical in the clause.
 #: The wording is here rather than in the sentence builder so that the enum
@@ -437,6 +444,7 @@ _SKIP_REASONS: dict[LookupSkipReason, str] = {
     LookupSkipReason.NOT_SAVED: "served, but could not be saved on this device",
     LookupSkipReason.KEY_REFUSED: "the key in the settings was refused",
     LookupSkipReason.NETWORK_REFUSED: "not available from this network",
+    LookupSkipReason.WRONG_ARTICLE: "another article's PDF",
 }
 
 # The wording map is what :meth:`SourceLookupSkipped.describe` indexes, and
@@ -474,9 +482,9 @@ class SourceLookupSkipped:
 
     Raises:
         ValueError: On construction, if the service is not named, if a
-            ``NOT_SAVED`` skip names no PDF, if a ``KEY_REFUSED`` skip is
-            not CORE's or Elsevier's own lookup, or if a ``NETWORK_REFUSED``
-            skip is not Elsevier's own lookup. A skip the reader cannot
+            ``NOT_SAVED`` or ``WRONG_ARTICLE`` skip names no PDF, if a
+            ``KEY_REFUSED`` skip is not CORE's or Elsevier's own lookup, or
+            if a ``NETWORK_REFUSED`` skip is not Elsevier's own lookup. A skip the reader cannot
             attribute is not reportable, and a caching note without its
             address is told nowhere while still keeping absence unestablished.
     """
@@ -495,6 +503,8 @@ class SourceLookupSkipped:
             object.__setattr__(self, "address", stripped or None)
         if self.reason is LookupSkipReason.NOT_SAVED and self.address is None:
             raise ValueError("A PDF not saved names the PDF's address")
+        if self.reason is LookupSkipReason.WRONG_ARTICLE and self.address is None:
+            raise ValueError("Another article's PDF names the PDF's address")
         if self.reason is LookupSkipReason.KEY_REFUSED and (
             self.service not in _KEYED_SERVICES or self.address is not None
         ):

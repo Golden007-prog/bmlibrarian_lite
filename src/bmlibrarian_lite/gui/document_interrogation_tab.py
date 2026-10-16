@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from collections.abc import Callable
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from PySide6.QtWidgets import (
     QWidget,
@@ -80,6 +80,7 @@ from ..data_models import LookupRecord
 from ..exceptions import SQLiteError
 from ..elsevier_api import ElsevierCredentials
 from ..storage import LiteStorage
+from ..pdf_library_check import check_cached_pdf, forget_kept, set_aside_note
 from ..agents import LiteInterrogationAgent
 from ..pdf_utils import (
     get_pdf_base_dir,
@@ -674,7 +675,7 @@ class DocumentInterrogationTab(QWidget):
         self._current_doc_metadata = doc_dict
         self._pending_fetch_title = display_title
 
-        existing = find_existing_pdf(doc_dict)
+        existing = self._cached_article_pdf(doc_dict)
         if existing:
             self._load_pdf_file(existing, display_title)
             return
@@ -700,12 +701,35 @@ class DocumentInterrogationTab(QWidget):
         self._pdf_worker.progress.connect(self._update_progress_dialog)
         self._pdf_worker.finished.connect(lambda p: self._on_pdf_ready(p, on_success))
         self._pdf_worker.verification_warning.connect(self._on_pdf_warning)
+        self._pdf_worker.pdf_set_aside.connect(lambda note: self._add_chat_bubble(note, is_user=False))
         self._pdf_worker.paywall_detected.connect(lambda url, err: self._on_paywall_detected(url, err, on_error))
         self._pdf_worker.error.connect(lambda e: self._on_pdf_error(e, on_error))
         self._pdf_worker.cancelled.connect(
             lambda e, w=self._pdf_worker: self._on_pdf_cancelled(e, w)
         )
         self._pdf_worker.start()
+
+    def _cached_article_pdf(self, doc_dict: dict[str, Any]) -> Path | None:
+        """The PDF in the library for a document, if it carries the document's title (#541).
+
+        One that does not is another article's: it is renamed aside, never
+        read, and the reader is told where it went and how to keep it; the
+        caller then looks for the article's own PDF.
+
+        Args:
+            doc_dict: The document's identifiers and title.
+
+        Returns:
+            The PDF to read, or ``None`` when there is none or it was refused.
+        """
+        existing = find_existing_pdf(doc_dict)
+        if existing is None:
+            return None
+        found = check_cached_pdf(existing, doc_dict.get("title"))
+        note = set_aside_note(found)
+        if note is not None:
+            self._add_chat_bubble(note, is_user=False)
+        return existing if found.usable else None
 
     def _on_pdf_ready(self, file_path: str, callback=None) -> None:
         """Handle PDF download completion."""
@@ -936,7 +960,7 @@ class DocumentInterrogationTab(QWidget):
                 logger.warning(f"Failed to read cached full-text: {e}")
 
         # Check for cached PDF
-        existing_pdf = find_existing_pdf(self._current_doc_metadata)
+        existing_pdf = self._cached_article_pdf(self._current_doc_metadata)
         if existing_pdf:
             logger.info(f"load_from_citation: Found existing PDF at {existing_pdf}")
             self._load_citation_pdf(existing_pdf, citation, "Full Text (PDF - cached)")
@@ -1018,6 +1042,9 @@ class DocumentInterrogationTab(QWidget):
         # the reader replaced by opening another citation must not load its
         # article, or start a wait for it, over the one now open
         worker.progress.connect(self._for_current_fulltext(worker, self._update_progress_dialog))
+        worker.pdf_set_aside.connect(
+            lambda note: self._on_fulltext_set_aside(worker, note, display_title)
+        )
         worker.finished.connect(self._for_current_fulltext(
             worker, lambda content, path, source: self._on_fulltext_ready(content, path, source, citation)
         ))
@@ -1113,6 +1140,23 @@ class DocumentInterrogationTab(QWidget):
             return True
         logger.debug("A superseded full-text discovery reported; its outcome is not loaded")
         return False
+
+    def _on_fulltext_set_aside(self, worker: object, note: str, display_title: str) -> None:
+        """Tell the reader of PDFs a full-text discovery did not read (#541).
+
+        Told for a superseded run too, unlike its outcome: the note is about
+        files on disk, which nothing looks for again. It then names the
+        article it is about, since "this article" would read as the one now
+        open.
+
+        Args:
+            worker: The run that is reporting.
+            note: What to tell the reader.
+            display_title: The title of the article the run was for.
+        """
+        if not self._is_current_fulltext(worker):
+            note = f"For the article opened before, \u201c{display_title}\u201d: {note}"
+        self._add_chat_bubble(note, is_user=False)
 
     def _for_current_fulltext(
         self, worker: object, handler: Callable[..., None]
@@ -1465,9 +1509,19 @@ class DocumentInterrogationTab(QWidget):
             self._add_chat_bubble(f"View cleared. PDF file kept at:\n`{pdf_path}`", is_user=False)
 
     def _delete_pdf(self, pdf_path: Path) -> bool:
-        """Delete a PDF file and clean up."""
+        """Delete a PDF file, its keep marker, and its chunks.
+
+        Args:
+            pdf_path: The PDF to delete.
+
+        Returns:
+            Whether it was deleted; a failure is shown to the reader.
+        """
         try:
             if pdf_path.exists():
+                # First: a marker left behind would let the same PDF,
+                # downloaded again, be read unchecked (#541)
+                forget_kept(pdf_path)
                 pdf_path.unlink()
                 logger.info(f"Deleted PDF: {pdf_path}")
                 if self.storage and self._current_doc_metadata:

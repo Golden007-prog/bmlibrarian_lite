@@ -3022,6 +3022,10 @@ class StudyTransparencyAnalyzer:
                 doi=doi,
                 title=report.title,
             )
+            # A PDF filed for this article that is another article's was not
+            # read: said to the reader, whatever the chain then found (#541)
+            if result.set_aside_pdf_note:
+                report.warnings.append(result.set_aside_pdf_note)
 
             if result.success and result.markdown_content:
                 source = result.source_type.value

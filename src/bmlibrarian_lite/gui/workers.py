@@ -56,6 +56,7 @@ from ..data_models import (
 from .. import elsevier_api
 from ..elsevier_api import ElsevierCredentials
 from ..pdf_discovery import PDFDiscoverer, DiscoveryResult
+from ..pdf_library_check import set_aside_download_note
 from ..pdf_utils import generate_pdf_path
 from ..fulltext_discovery import FulltextDiscoverer, FulltextResult, FulltextSourceType
 from ..utils import classify_analysis_exception
@@ -204,7 +205,11 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
     Signals:
         progress: Emitted with (stage, status) during download
         finished: Emitted with file_path when download succeeds
-        verification_warning: Emitted with (file_path, warning_message) on verification mismatch
+        verification_warning: Emitted with (file_path, warning_message) when the
+            title could not be judged (a scan, an unreadable file)
+        pdf_set_aside: Emitted with what to tell the reader when downloads
+            that are another article's PDF were set aside (#541), before
+            the outcome, whatever it is (a cancel too)
         paywall_detected: Emitted with (article_url, error_message) when paywall blocks access
         error: Emitted with error message on failure
         cancelled: Emitted with the error that also ended the run, or an empty
@@ -220,6 +225,7 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
     progress = Signal(str, str)  # stage, status
     finished = Signal(str)  # file_path on success
     verification_warning = Signal(str, str)  # file_path, warning_message
+    pdf_set_aside = Signal(str)  # what to tell the reader (#541)
     paywall_detected = Signal(str, str)  # article_url, error_message
     error = Signal(str)  # error message
     cancelled = Signal(str)  # the error that also ended the run, or ""
@@ -325,6 +331,12 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
                 expected_title=title,
             )
 
+            # Whatever the outcome, a cancel too: a PDF set aside may be the
+            # article, and nothing looks for it again (#541)
+            set_aside = set_aside_download_note(result.set_aside)
+            if set_aside:
+                self.pdf_set_aside.emit(set_aside)
+
             # A cancel the discoverer honoured stopped the download, so
             # whatever it came back with describes the stop, not the article
             if self._cancelled:
@@ -378,6 +390,10 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
     Signals:
         progress: Emitted with (stage, status) during discovery
         finished: Emitted with (markdown_content, file_path, source_type) on success
+        pdf_set_aside: Emitted with what to tell the reader when PDFs that
+            are another article's were not read (#541): the library's, or
+            downloads set aside. Not terminal: emitted before the outcome,
+            whatever it is (a cancel too)
         paywall_detected: Emitted with (article_url, error_message) when paywall blocks access
         error: Emitted with error message on failure
         cancelled: Emitted with the error that also ended the run, or an empty
@@ -396,6 +412,7 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
 
     progress = Signal(str, str)  # stage, status
     finished = Signal(str, str, str)  # markdown_content, file_path, source_type
+    pdf_set_aside = Signal(str)  # what to tell the reader (#541)
     paywall_detected = Signal(str, str)  # article_url, error_message
     error = Signal(str)  # error message
     cancelled = Signal(str)  # the error that also ended the run, or ""
@@ -494,6 +511,12 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
                 doc_dict=self.doc_dict,
             )
             self.lookups = result.lookups
+
+            # Whatever the outcome, a cancel too, and before it: a PDF set
+            # aside may be the article, nothing looks for it again, and the
+            # tab shows the reader no failure's error (#541)
+            if result.set_aside_pdf_note:
+                self.pdf_set_aside.emit(result.set_aside_pdf_note)
 
             # A cancel the discoverer honoured stopped the retrieval, so
             # whatever it came back with describes the stop, not the article

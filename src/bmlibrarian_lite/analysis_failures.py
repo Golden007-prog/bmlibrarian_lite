@@ -84,6 +84,7 @@ from .constants import (
     SERVICE_ELSEVIER,
     SERVICE_OPENALEX,
     SERVICE_OPENALEX_PDF,
+    SERVICE_PDF_DOWNLOAD,
     SERVICE_UNPAYWALL,
     SERVICE_UNPAYWALL_LANDING_PAGE,
     SERVICE_UNPAYWALL_PDF,
@@ -1119,8 +1120,13 @@ def tried_sources_statement(record: LookupRecord) -> str:
             reason, could_not_ask = item.failure.describe(), not item.failure.is_answer
         else:
             reason, could_not_ask = item.describe(), True
-        named_by = _NAMED_BY.get(item.service, item.service)
-        text = f"{address_host(item.address or '')}, named by {named_by} ({reason})"
+        host = address_host(item.address or "")
+        if item.service == SERVICE_PDF_DOWNLOAD:
+            # A PDF no open-access source named (the DOI's, PMC's; #541):
+            # its host says where it was, and nothing named it
+            text = f"{host} ({reason})"
+        else:
+            text = f"{host}, named by {_NAMED_BY.get(item.service, item.service)} ({reason})"
         entries.append((_chain_rank(item.service), position, text, could_not_ask))
     entries.sort(key=lambda entry: (entry[0], entry[1]))
     ending = (

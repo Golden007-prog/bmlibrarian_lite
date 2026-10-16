@@ -62,6 +62,7 @@ from bmlibrarian_lite.pdf_discovery import (
     PDFSource,
     PDFSourceType,
 )
+from bmlibrarian_lite.pdf_download import unchecked_download_path
 from bmlibrarian_lite.pdf_title_check import TitleCheck, TitleCheckOutcome
 
 from .scripted_http_server import ScriptedAnswer, running, status_answer
@@ -239,15 +240,21 @@ def test_a_served_pdf_is_named_by_its_article_url_without_the_key(tmp_path: Path
 
 
 def test_a_served_pdf_has_its_title_checked(tmp_path: Path) -> None:
-    """As any downloaded PDF: a doubt about the title is a warning on the result."""
+    """As any downloaded PDF: a title it could not judge is a warning on the result.
+
+    A PDF that does not carry the title is refused (``test_wrong_article_pdf``, #541).
+    """
     discoverer = PDFDiscoverer(elsevier=_Elsevier(served=True))
     with patch.object(
-        PDFDiscoverer, "_verify_pdf_content", return_value=TitleCheck(TitleCheckOutcome.MISMATCH, 0.1)
+        PDFDiscoverer, "_verify_pdf_content", return_value=TitleCheck(TitleCheckOutcome.NO_TEXT)
     ) as verify:
         result = _Chain().discover(None, tmp_path, discoverer=discoverer, title="A title")
         assert result.success
-    verify.assert_called_once_with(tmp_path / "a.pdf", "A title")
-    assert result.verification_warning == "PDF content may not match expected document. Title match: 10%"
+    # Checked where it waits, before it replaces anything at the cache path (#541)
+    verify.assert_called_once_with(unchecked_download_path(tmp_path / "a.pdf"), "A title")
+    assert result.file_path == tmp_path / "a.pdf" and result.file_path.read_bytes() == PDF
+    assert not unchecked_download_path(tmp_path / "a.pdf").exists()
+    assert result.verification_warning == "PDF contains no extractable text"
 
 
 # ---- absent ------------------------------------------------------------------
@@ -864,8 +871,9 @@ def test_the_interrogation_tabs_fetch_pdf_passes_the_configured_credentials() ->
 
     tab = MagicMock()
     tab.config = _configured()
-    with patch.object(tab_module, "PDFDiscoveryWorker") as worker, \
-         patch.object(tab_module, "find_existing_pdf", lambda _d: None):
+    # No PDF in the library that is the article's (#541)
+    tab._cached_article_pdf.return_value = None
+    with patch.object(tab_module, "PDFDiscoveryWorker") as worker:
         tab_module.DocumentInterrogationTab._start_pdf_discovery(tab, {"doi": DOI}, "Title")
     assert worker.call_args.kwargs["elsevier_credentials"] == CREDENTIALS
 

@@ -70,6 +70,7 @@ from .constants import (
     RETRYABLE_HTTP_STATUSES,
     SERVICE_DOI_PUBLISHER,
     SERVICE_DOI_RESOLVER,
+    SERVICE_ELSEVIER,
     SERVICE_OPENALEX,
     SERVICE_OPENALEX_PDF,
     SERVICE_PDF_DOWNLOAD,
@@ -79,6 +80,7 @@ from .constants import (
     SERVICE_UNPAYWALL_PDF,
 )
 from .analysis_failures import (
+    address_host,
     no_pdf_sources_message,
     paywall_message,
     not_saved_note,
@@ -96,7 +98,7 @@ from .data_models import (
     SourceLookupFailure,
     SourceLookupSkipped,
 )
-from .elsevier_api import ElsevierArticleClient, ElsevierOutcome, elsevier_eligible
+from .elsevier_api import ElsevierArticleClient, ElsevierFetch, ElsevierOutcome, elsevier_eligible
 from .oa_landing_page import (
     choose_unpaywall_url,
     citation_pdf_url,
@@ -111,7 +113,9 @@ from .pdf_download import (
     discard_partial_download,
     partial_download_path,
     read_body_prefix,
+    unchecked_download_path,
 )
+from .pdf_library_check import is_kept, set_aside
 from .pdf_title_check import TitleCheck, TitleCheckOutcome, check_pdf_title
 from .polite_session import mount_politely
 from .search_failures import request_failure_from_exception
@@ -322,13 +326,19 @@ class DiscoveryResult:
         text: CORE's extracted text, when no PDF was obtained and CORE
             served the article (#480, stage C); only with ``success`` and
             no ``file_path``, and never blank.
+        wrong_article: The source served a PDF whose first page with text
+            does not carry the title: another article's, set aside unread
+            (#541). Not a ``failure``: the source answered, about another
+            article, so the right PDF may exist elsewhere.
+        set_aside: Where the discovery set aside each downloaded PDF that is
+            another article's, whatever its outcome (#541), so the reader
+            can be told and keep one the check misjudged.
 
     Raises:
         ValueError: On construction, if a successful result carries a
-            failure, a size refusal or a not-saved flag, or if more than one
-            of those three is set: each is a different answer to why no PDF
-            was obtained, and :func:`unobtained_open_access_pdf` records
-            only one. Also if CORE's ``text`` is carried by anything but a
+            failure, a size refusal, a not-saved flag or a wrong article, or
+            if more than one of those four is set: each is a different
+            answer to why no PDF was obtained, and only one is recorded. Also if CORE's ``text`` is carried by anything but a
             success without a file.
     """
 
@@ -344,6 +354,8 @@ class DiscoveryResult:
     refused_for_size: bool = False
     not_saved: bool = False
     text: str | None = None
+    wrong_article: bool = False
+    set_aside: tuple[Path, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a success that says why no PDF was obtained, or two whys."""
@@ -351,13 +363,15 @@ class DiscoveryResult:
             raise ValueError("CORE's text is a success without a file")
         if self.text is not None and not self.text.strip():
             raise ValueError("A blank text is not CORE's full text")
-        whys = sum((self.failure is not None, self.refused_for_size, self.not_saved))
+        whys = sum(
+            (self.failure is not None, self.refused_for_size, self.not_saved, self.wrong_article)
+        )
         if self.success and whys:
             raise ValueError("A downloaded PDF carries no download failure")
         if whys > 1:
             raise ValueError(
-                "A download failure, a size refusal and a copy not saved "
-                "exclude one another"
+                "A download failure, a size refusal, a copy not saved and "
+                "another article's PDF exclude one another"
             )
 
     def with_lookups(self, record: LookupRecord) -> "DiscoveryResult":
@@ -467,6 +481,26 @@ def unobtained_open_access_pdf(
             skipped=(SourceLookupSkipped(service, LookupSkipReason.OVER_SIZE_LIMIT, source.url),)
         )
     return LookupRecord()
+
+
+def wrong_article_pdf(source: "PDFSource") -> LookupRecord:
+    """Record a PDF a source served that is another article's (#541).
+
+    Any source's, open access or not: another article's PDF says nothing
+    about this one, so the question stays open. Recorded with its address,
+    under the copy's own name when an open-access source named it and under
+    the download otherwise, as a copy not saved is.
+
+    Args:
+        source: The source whose PDF was set aside.
+
+    Returns:
+        A ``WRONG_ARTICLE`` skip with the PDF's address.
+    """
+    service = _UNOBTAINED_PDF_SERVICE.get(source.source_type, SERVICE_PDF_DOWNLOAD)
+    return LookupRecord(
+        skipped=(SourceLookupSkipped(service, LookupSkipReason.WRONG_ARTICLE, source.url),)
+    )
 
 
 def usable_unpaywall_email(email: str | None) -> str | None:
@@ -673,6 +707,43 @@ class PDFDiscoverer:
     def discover_and_download(
         self,
         output_path: Path,
+        doi: str | None = None,
+        pmid: str | None = None,
+        pmcid: str | None = None,
+        title: str | None = None,
+        expected_title: str | None = None,
+        earlier_lookups: LookupRecord | None = None,
+        core_text: Callable[[str], CoreFetch] | None = None,
+    ) -> DiscoveryResult:
+        """Discover and download the PDF for a document; see :meth:`_discover_and_download`.
+
+        Args:
+            output_path: Path to save the PDF.
+            doi: Document DOI.
+            pmid: PubMed ID.
+            pmcid: PubMed Central ID.
+            title: Document title (for verification).
+            expected_title: Expected title for content verification.
+            earlier_lookups: What went unasked before this step.
+            core_text: Asks CORE for its extracted text, by the cleaned DOI.
+
+        Returns:
+            The discovery's result, carrying every downloaded PDF set aside
+            as another article's on the way (``set_aside``), whatever the
+            outcome (#541).
+        """
+        # Held by this call, never on the discoverer, so a discoverer used
+        # for two discoveries at once never mixes their PDFs
+        set_aside_paths: list[Path] = []
+        result = self._discover_and_download(
+            output_path, doi, pmid, pmcid, title, expected_title, earlier_lookups,
+            core_text, set_aside_paths=set_aside_paths,
+        )
+        return replace(result, set_aside=tuple(dict.fromkeys(set_aside_paths)))
+
+    def _discover_and_download(
+        self,
+        output_path: Path,
         doi: Optional[str] = None,
         pmid: Optional[str] = None,
         pmcid: Optional[str] = None,
@@ -680,6 +751,8 @@ class PDFDiscoverer:
         expected_title: Optional[str] = None,
         earlier_lookups: LookupRecord | None = None,
         core_text: Callable[[str], CoreFetch] | None = None,
+        *,
+        set_aside_paths: list[Path],
     ) -> DiscoveryResult:
         """
         Discover and download PDF for a document.
@@ -713,6 +786,8 @@ class PDFDiscoverer:
                 copy (#480, stage C). Its text is a success without a file
                 (``text``); a CORE that could not be asked is recorded under
                 ``SERVICE_CORE``; ``None`` asks nothing and records nothing.
+            set_aside_paths: This call's list, given where each download of
+                another article was set aside (#541).
 
         Returns:
             DiscoveryResult with success status and details
@@ -731,15 +806,16 @@ class PDFDiscoverer:
         # stage C2). A PDF it served, a cancel, or a PDF it served that could
         # not be saved ends the discovery; anything it left unsettled is
         # recorded, and the walk goes on. A PDF it offered over the size
-        # limit is a copy not obtained, held with the refused copies, ranked
-        # first (-1), and dropped with them when a later copy is obtained.
+        # limit, or one of another article (set aside, #541), is a copy not
+        # obtained, held with the refused copies, ranked first (-1), and
+        # dropped with them when a later copy is obtained.
         if self._cancelled:
             return DiscoveryResult(success=False, error="Cancelled")
         elsevier_lookups = LookupRecord()
         elsevier_copy = LookupRecord()
         if doi and self._elsevier is not None and elsevier_eligible(doi):
             ended, elsevier_lookups, elsevier_copy = self._ask_elsevier(
-                self._elsevier, doi, output_path, expected_title or title
+                self._elsevier, doi, output_path, expected_title or title, set_aside_paths
             )
             if ended is not None:
                 return ended
@@ -837,6 +913,7 @@ class PDFDiscoverer:
             source = pending.popleft()
             self._emit_progress("discovery", "found_oa" if source.is_open_access else "found")
             result = self._try_download(source, output_path, expected_title or title)
+            set_aside_paths.extend(result.set_aside)
 
             if result.success:
                 return result.with_lookups(lookups)
@@ -866,6 +943,14 @@ class PDFDiscoverer:
             # PDF settles the question. Every one is kept, in chain order.
             record = unobtained_open_access_pdf(source, result)
             rank = copy_rank.get(source.url)
+            if result.wrong_article:
+                # Any source's, held as the open-access copies are: a later
+                # source serving the article's own PDF settles it (#541). One
+                # no open-access source named is held after theirs; the
+                # reader's sentence orders entries by the chain itself.
+                record = wrong_article_pdf(source)
+                if rank is None:
+                    rank = max(copy_rank.values(), default=-1) + 1
             if record.anything_unsettled and rank is not None:
                 unobtained.append((rank, record))
 
@@ -944,6 +1029,7 @@ class PDFDiscoverer:
         doi: str,
         output_path: Path,
         expected_title: str | None,
+        set_aside_paths: list[Path],
     ) -> tuple[DiscoveryResult | None, LookupRecord, LookupRecord]:
         """Ask Elsevier's Article API for this DOI's PDF, once (#480, stage C2).
 
@@ -953,6 +1039,8 @@ class PDFDiscoverer:
             output_path: Where a served PDF is saved: the discovery's own
                 path, so the PDF cache and text extraction apply unchanged.
             expected_title: The title a served PDF is checked against.
+            set_aside_paths: The discovery's list, given where a served PDF
+                of another article was set aside (#541).
 
         Returns:
             The result that ends the discovery -- a served PDF, a cancel, or
@@ -960,21 +1048,62 @@ class PDFDiscoverer:
             go on. Then, when the discovery goes on, what Elsevier left
             unasked (a failure when it could not be asked, a skip when it
             refused the key or the network) and the copy it offered that was
-            not obtained (an ``OVER_SIZE_LIMIT`` skip with the article URL).
+            not obtained (an ``OVER_SIZE_LIMIT`` skip with the article URL,
+            or a ``WRONG_ARTICLE`` skip for a PDF of another article).
             Both are empty for an absence (a 404, the first page only).
         """
         url = elsevier.article_url(doi)
-        fetch = elsevier.fetch_pdf(doi, output_path, lambda: self._cancelled)
-        if fetch.path is not None:
-            # Whole at its path: a success, checked as any download is, even
-            # if a cancel came after the last chunk (as ``_try_download``).
-            self._emit_progress("download", "success")
-            return DiscoveryResult(
-                success=True,
-                file_path=fetch.path,
-                source=PDFSource(url=url, source_type=PDFSourceType.ELSEVIER_API),
-                verification_warning=self._verification_warning(fetch.path, expected_title),
-            ), LookupRecord(), LookupRecord()
+        # Fetched beside the cache path and checked before it replaces
+        # anything there (#541)
+        staged = unchecked_download_path(output_path)
+        try:
+            fetch = elsevier.fetch_pdf(doi, staged, lambda: self._cancelled)
+            if fetch.path is not None:
+                # Whole: a success, checked as any download is, even if a
+                # cancel came after the last chunk (as ``_try_download``).
+                self._emit_progress("download", "success")
+                check = self._check_download(fetch.path, expected_title)
+                if self._refused(output_path, fetch.path, check):
+                    # Another article's: set aside, recorded as a copy
+                    # offered and not obtained, and the walk goes on
+                    assert check is not None
+                    set_aside_paths.extend(
+                        self._set_aside_download(output_path, fetch.path, url, check)
+                    )
+                    return None, LookupRecord(), LookupRecord(skipped=(SourceLookupSkipped(
+                        SERVICE_ELSEVIER, LookupSkipReason.WRONG_ARTICLE, url
+                    ),))
+                try:
+                    fetch.path.replace(output_path)
+                except OSError:
+                    logger.error("Elsevier's PDF could not be saved in the library", exc_info=True)
+                    fetch = ElsevierFetch.not_saved()
+                else:
+                    return DiscoveryResult(
+                        success=True,
+                        file_path=output_path,
+                        source=PDFSource(url=url, source_type=PDFSourceType.ELSEVIER_API),
+                        verification_warning=(
+                            verification_warning(check) if check is not None else None
+                        ),
+                    ), LookupRecord(), LookupRecord()
+        finally:
+            discard_partial_download(staged)
+        return self._elsevier_unserved(fetch, doi, url)
+
+    def _elsevier_unserved(
+        self, fetch: ElsevierFetch, doi: str, url: str
+    ) -> tuple[DiscoveryResult | None, LookupRecord, LookupRecord]:
+        """What an Elsevier fetch that saved no PDF here comes to (#480, stage C2).
+
+        Args:
+            fetch: The fetch, which served no PDF that was kept.
+            doi: The cleaned DOI, for the log.
+            url: The article URL, which carries no key.
+
+        Returns:
+            As :meth:`_ask_elsevier`.
+        """
         if fetch.is_cancelled or self._cancelled:
             # Nothing recorded for Elsevier: we stopped asking.
             return (
@@ -998,9 +1127,9 @@ class PDFDiscoverer:
             return None, LookupRecord(), record
         return None, record, LookupRecord()
 
-    def _verification_warning(
+    def _check_download(
         self, pdf_path: Path, expected_title: str | None
-    ) -> str | None:
+    ) -> TitleCheck | None:
         """Check a saved PDF against the title expected, as every download is.
 
         Args:
@@ -1008,14 +1137,70 @@ class PDFDiscoverer:
             expected_title: The document's title; ``None`` checks nothing.
 
         Returns:
-            What the check doubted, or ``None``.
+            The check, or ``None`` when there was no title to check.
         """
         if not expected_title:
             return None
         self._emit_progress("verification", "starting")
         check = self._verify_pdf_content(pdf_path, expected_title)
         self._emit_progress("verification", verification_status(check))
-        return verification_warning(check)
+        return check
+
+    @staticmethod
+    def _refused(output_path: Path, staged: Path, check: TitleCheck | None) -> bool:
+        """Whether a whole download is refused as another article's (#541).
+
+        Args:
+            output_path: The cache path it would replace.
+            staged: Where it waits for its check.
+            check: Its title check; ``None`` when there was no title.
+
+        Returns:
+            ``True`` for a mismatch, unless a person kept these very bytes
+            at the cache path (their marker names them).
+        """
+        return (
+            check is not None
+            and check.outcome is TitleCheckOutcome.MISMATCH
+            and not is_kept(output_path, contents=staged)
+        )
+
+    @staticmethod
+    def _set_aside_download(
+        output_path: Path, staged: Path, url: str, check: TitleCheck
+    ) -> tuple[Path, ...]:
+        """Set aside a downloaded PDF that is another article's (#541).
+
+        Kept beside the cache path and told to the reader
+        (``DiscoveryResult.set_aside``): the check can be wrong, and the
+        reader can keep it (``bmll keep-pdf``). The same wrong PDF
+        downloaded again is kept once.
+
+        Args:
+            output_path: The cache path, which the set-aside name follows.
+            staged: Where the download waits; discarded by the caller if it
+                could not be set aside.
+            url: Where it was downloaded from, for the log.
+            check: Its mismatching title check.
+
+        Returns:
+            Where it was set aside; empty when it could not be (logged).
+        """
+        try:
+            moved = set_aside(output_path, contents=staged)
+        except OSError:
+            # Discarded by the caller: never at the cache path, so never read
+            logger.error(
+                "The PDF from %s is another article's and could not be set aside",
+                address_host(url), exc_info=True,
+            )
+            return ()
+        logger.warning(
+            "The PDF from %s does not carry the article's title (%.0f%% of its "
+            "word pairs); set aside as %s",
+            address_host(url), (check.share or 0.0) * 100, moved.name,
+        )
+        return (moved,)
 
     def _ask_core(self, core: _CoreFallback) -> tuple[str | None, LookupRecord]:
         """Ask CORE at a no-PDF exit, unless the discovery was cancelled.
@@ -2000,19 +2185,33 @@ class PDFDiscoverer:
                         if self._cancelled:
                             return DiscoveryResult(success=False, error="Cancelled")
                         f.write(chunk)
+                self._emit_progress("download", "success")
+                # Checked whole, before it replaces anything: another
+                # article's PDF never overwrites the one in the library (#541)
+                check = self._check_download(partial, expected_title)
+                if self._refused(output_path, partial, check):
+                    # No answer about this article: set aside, and the next
+                    # source is tried
+                    assert check is not None
+                    moved = self._set_aside_download(output_path, partial, source.url, check)
+                    return DiscoveryResult(
+                        success=False,
+                        error=(
+                            f"The PDF from {address_host(source.url)} is another "
+                            f"article's ({check.share or 0.0:.0%} of the title's word pairs)."
+                        ),
+                        wrong_article=True,
+                        set_aside=moved,
+                    )
                 partial.replace(output_path)
             finally:
                 discard_partial_download(partial)
-
-            self._emit_progress("download", "success")
 
             return DiscoveryResult(
                 success=True,
                 file_path=output_path,
                 source=source,
-                verification_warning=self._verification_warning(
-                    output_path, expected_title
-                ),
+                verification_warning=verification_warning(check) if check is not None else None,
             )
 
         except requests.exceptions.HTTPError as e:

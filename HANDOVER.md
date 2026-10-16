@@ -30,22 +30,28 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**A rescued PDF must be the article's** (#532, Python; PR #542, in review). `pdf_title_check.py`: the first
-page with text must carry ≥ `PDF_TITLE_MIN_PAIR_SHARE` (0.5) of the title's
-adjacent word pairs; survey numbers are in the constant's comment (single
-words passed 62 of 500 same-subject titles). A hidden visit's mismatch is
-`wrong_pdf` → `needs_person`; a person's is held with *Keep this PDF*
-(`HeldPdfKeep`; a failed save stays held). An unopenable or pageless `%PDF`
-is `unreadable_pdf` → `needs_person`, and a person's visit stays open past
-it. No title words, no text on any page, or a PubMed-translated `[title]`
-the page lacks keeps the PDF with `RescueVerdict.title_unchecked`, never as
-a checked one. `PDFDiscoverer._verify_pdf_content` shares the check
-(`verification_status`/`verification_warning`). Matcher limits are #543
-(errata, generic and stopword-heavy titles, stamped scans); housekeeping
-#544. **Found on the way
-(#541): 10 of 25 PDFs in a real desktop library are other articles**, and
-discovery and the cached-PDF tier never refuse one. That is the next slice
-with the most reader-facing harm.
+**Wrong-article PDFs in discovery and the library** (#541, Python; branch
+`fix/wrong-article-pdfs-541`, PR #548 in review). A PDF whose first page with text is
+found not to carry the title is not read as the article's. Every entry point checks:
+each download (`PDFDiscoverer._try_download`, Elsevier's API, Europe PMC's
+render) and each cached PDF (`fulltext_discovery` step 3, the interrogation
+tab's `_cached_article_pdf`) through `pdf_library_check`. A mismatch is
+renamed to `<pdf>.mismatch` (`-2`… for other bytes, the same bytes kept once),
+not deleted; a refused download is a `WRONG_ARTICLE` skip with its address
+(never an absence) and the next source is tried. **A download is checked
+where it waits** (`.part`/`.unchecked`), so it never overwrites the library's
+PDF. Every PDF set aside is told (`FulltextResult.set_aside_pdf_note`: chat
+via the workers' `pdf_set_aside`, transparency warning, MCP), and a refused
+library PDF keeps `absence_established` false. Only a mismatch is refused. **A person's
+keep is `<pdf>.kept`, the PDF's SHA-256**: *Keep this PDF* writes it before
+the rename; `bmll keep-pdf <path>` renames a set-aside PDF back. A second
+review round found MCP checked nothing (it gives no title: Europe PMC's is now
+used), refusals kept on the discoverer MCP shares between concurrent calls
+(now per call), a deleted PDF's keep marker left behind (`forget_kept`), the
+note dropped on a cancel, and one file told twice; all fixed, with tests that
+fail on the earlier commit. Lodged:
+**#545** (the one-off library sweep, part 3), **#546** (Swift + Android
+parity), **#547** (keep from the GUI).
 
 ## Recently landed (context)
 
@@ -62,15 +68,19 @@ Compressed once merged: the rules that still bind. Git history and the
   (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect 10/10
   `needs_person`. The apps' embedded browsers need their own spec.
   Open follow-ups: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**,
-  **#533**–**#535**, **#537**–**#540**, **#543**, **#544** (#532 is in
-  review, above).
+  **#533**–**#535**, **#537**–**#540**, **#543**, **#544**.
+- **A rescued PDF must be the article's** (#532; PR #542). `pdf_title_check`:
+  ≥ `PDF_TITLE_MIN_PAIR_SHARE` (0.5) of the title's adjacent word pairs on the
+  first page with text; no title, no text or a translated `[title]` is
+  unchecked, never a match. Matcher limits: #543.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
   download, and a download that is no PDF, or a PDF that cannot be opened,
   is discarded with the page left open; one that does not carry the title is
-  held at `<pdf>.held` until kept or replaced; leaving it records nothing. Every visit, hidden or shown, reads its
-  entry again when it starts and skips one settled meanwhile. In a shown page,
+  held at `<pdf>.held` until kept or replaced; leaving it records nothing.
+  Every visit reads its entry again when it starts and skips one settled
+  meanwhile. In a shown page,
   `createWindow` returns the page. The window never imports QtWebEngine at
   runtime. The tab waits only while a watched entry is pending, due and
   unvisited, and never past `RESCUE_READER_WAIT_LIMIT_MS`; with no hidden
@@ -86,17 +96,11 @@ Compressed once merged: the rules that still bind. Git history and the
   prepared before any `QApplication` (`gui/web_engine.py`) and is optional at
   start-up; pages go before the profile. Engine tests run only in
   `tests/browser_rescue_harness.py`'s subprocess and fail rather than skip.
-- **Detection rules** (`challenge_detection.json`): only `header_markers`
-  names are matched, never header values; Akamai by
-  `errors&#46;edgesuite&#46;net`, Cloudflare by `_cf_chl_opt`
-  (`challenge-platform` appears on ordinary pages). Change a needle only
-  against live pages and the survey, never to fit one case.
-- **Settings dialog lifecycle** (PR #518). `done()` hands running threads to
-  `gui/thread_keeper.py`; a released dialog's handlers do nothing (**a queued
-  signal still arrives after a disconnect**). **The suite collects garbage on
-  the main thread only** (`tests/main_thread_gc.py`, #517); a test that pumps
-  the shared `QApplication` inherits earlier tests' backlog. Lodged: #519.
-
+- **Detection rules** (`challenge_detection.json`): header names only, never
+  values; change a needle only against live pages and the survey.
+- **Settings dialog lifecycle** (PR #518): a released dialog's handlers do
+  nothing (**a queued signal still arrives after a disconnect**); **the suite
+  collects garbage on the main thread only** (#517). Lodged: #519.
 - **PySide6 capped `<6.12`** (#516): **check master's CI before a slice**.
 - **Machine channels, stage C2: Elsevier's article API** (all three; PR
   #507). Contract "Elsevier's Article API" + `elsevier_article.json`.
@@ -216,7 +220,8 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
-- **#541** wrong-article PDFs in discovery and the library (above).
+- **#545** sweep the PDF library for other articles' PDFs; **#546** the apps'
+  title check; **#547** keep a set-aside PDF from the GUI (all from #541).
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
   browser rescue's follow-ups**: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**, **#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
@@ -411,8 +416,7 @@ enables DEBUG; **#245** the transparency CLIs take the NCBI key only as
 - **PubMed parsers (Swift + Android)**: **#402** the year comes from
   `DateCompleted`, not `PubDate`; **#403** Swift appends a translated
   `<OtherAbstract>`; **#404** Android's `ArticleId` has no `<Reference>` guard.
-- **#190** CI never builds the iOS app target; cheapest guard: fail when a
-  `.swift` file under `ios/MedicalFactChecker/Sources/` belongs to no target.
+- **#190** CI never builds the iOS app target (guard: a `.swift` file in no target).
 
 ### Transparency parity and pricing
 
@@ -464,23 +468,17 @@ enables DEBUG; **#245** the transparency CLIs take the NCBI key only as
   the store in an **earlier build's** model shape first (`StoreMigrationTests`
   shows how, with a snapshot `@Model` in the test); that is the only path that
   reaches the duplicate-checksum exception and an unclassified migration error.
-- **A silent SwiftPM hang** is the manifest binary stuck behind `syspolicyd`
-  (7–11 min per invocation; `--disable-sandbox` does not prevent it):
-  `swiftc -typecheck` first, then chain build, test and `xcodebuild` in one
-  background job. The lasting fix is the user's: Privacy & Security →
-  Developer Tools.
+- **A silent SwiftPM hang** is `syspolicyd` (7–11 min per binary):
+  `swiftc -typecheck` first, then chain build, test and `xcodebuild` once.
 - **`swift test` compiles neither app target's platform-guarded sources.** On a
   macOS host every `#if os(iOS)` file becomes nothing, and the SPM target excludes
   `Sources/macOS` — so a break behind either guard is invisible to it *and* to
   the other platform's `xcodebuild`. Touching iOS-only view code means
   `xcodebuild -scheme MedicalFactChecker -destination 'platform=iOS
   Simulator,name=<device>' build`; CI runs neither (**#190**).
-- Adding a Swift file either app needs? It must be in `project.pbxproj` — a file
-  on disk and absent from the project compiles nowhere, which is how the iOS
-  target sat unbuildable, and a **duplicate pbxproj UUID silently drops the file
-  from the build** with "cannot find X in scope" in an unrelated file as the only
-  symptom. `xcode_project_guards.py` checks duplicate IDs and out-of-repo
-  references, not absent files, so check the new IDs are unused before building.
+- Adding a Swift file either app needs? It must be in `project.pbxproj`, and
+  a **duplicate pbxproj UUID silently drops it** ("cannot find X in scope"
+  elsewhere); `xcode_project_guards.py` does not check absent files.
 - 0 failures from `pytest tests/` (Python is the reference), `swift test` in
   `Packages/BioMedLit` and in `ios/MedicalFactChecker`, and `./gradlew test` in
   `android/MedicalFactChecker`; the macOS app builds with `xcodebuild -scheme

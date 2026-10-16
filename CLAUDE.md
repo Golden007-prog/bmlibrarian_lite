@@ -60,9 +60,10 @@ core_api.py           # CoreTextClient: CORE's extracted text by DOI (user's key
 elsevier_api.py       # ElsevierArticleClient: Elsevier's article API, keyed PDF by DOI (10.1016/ only); ElsevierFetch, ElsevierSession
 keyed_service_session.py # KeyedServiceSession: a keyed service's 429 pause, refused key, refused network (process-wide)
 bot_walls.py          # Bot-wall challenge pages recognised from an answer (#480): WALL_MARKERS, challenge_markers
-pdf_download.py       # PDF download helpers: body prefix, .part and .held files, MAX_PDF_SIZE
+pdf_download.py       # PDF download helpers: body prefix, .part, .unchecked and .held files, MAX_PDF_SIZE
 pdf_discovery.py      # PDF source discovery
 pdf_title_check.py    # Is a PDF the article? Its first page's share of the title's word pairs (#532)
+pdf_library_check.py  # A cached PDF found not to carry the title is not read: .mismatch set-aside, .kept marker, bmll keep-pdf (#541)
 browser_rescue.py     # Walled PDFs queued for the embedded browser: states, verdicts, what is queued
 browser_rescue_text.py # What the reader reads about the rescue queue: labels, sentences
 rescue_queue_store.py # The browser rescue queue's table

@@ -179,11 +179,14 @@ error in the pass's slots is logged and never leaves the pass busy (#525).
   to `held_download_path`, `<pdf>.held`, out of the way of the partial file,
   which discovery also writes), `download_mismatched` is emitted, and the
   window shows *Keep this PDF*: `BrowserRescueService.keep_shown_pdf` →
-  `RescueAttempt.keep_held_pdf` renames it into place and ends the visit as
-  a rescue, since the check misreads scans with garbled text and preprints
-  retitled between versions. It returns `HeldPdfKeep`: `KEPT`,
-  `NOTHING_HELD`, or `NOT_SAVED` when the rename fails, in which case the
-  file stays held and the visit goes on; the window says each. The next
+  `RescueAttempt.keep_held_pdf` writes its keep marker (`<pdf>.kept`, the
+  held file's SHA-256; `pdf_library_check.mark_kept`), renames it into place
+  and ends the visit as a rescue, since the check misreads scans with
+  garbled text and preprints retitled between versions. Without the marker
+  the cached-PDF tier would set it aside as another article's (#541). It
+  returns `HeldPdfKeep`: `KEPT`, `NOTHING_HELD`, or `NOT_SAVED` when the
+  marker or the rename fails, in which case the file stays held and the
+  visit goes on; the window says each. The next
   download (`download_started`, which hides the button), leaving, or the
   visit's end discards it.
   Leaving the visit (another entry, *Dismiss*, closing the window, quit) is
