@@ -289,3 +289,94 @@ def test_the_reader_is_told_a_pdf_that_could_not_be_moved(
 def test_a_usable_pdf_has_nothing_to_tell(tmp_path: Path) -> None:
     """The control: no sentence for a PDF that is read."""
     assert set_aside_note(check_cached_pdf(write_pdf(tmp_path / "a.pdf", TITLE), TITLE)) is None
+
+
+# -- the PR review's findings -----------------------------------------------------
+
+
+def test_an_unreadable_earlier_set_aside_does_not_block_a_later_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The next name is taken, rather than leaving the PDF in the library for good."""
+    import bmlibrarian_lite.pdf_library_check as module
+
+    first = tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}"
+    write_pdf(first, OTHER)
+    pdf = write_pdf(tmp_path / "a.pdf", "Renal physiology in the aged rat")
+    real = module.pdf_digest
+
+    def unreadable_first(path: Path) -> str:
+        if path == first:
+            raise PermissionError("unreadable")
+        return real(path)
+
+    monkeypatch.setattr(module, "pdf_digest", unreadable_first)
+
+    assert set_aside(pdf) == tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}-2"
+    assert first.is_file()
+
+
+def test_setting_aside_a_staged_download_names_it_after_the_cache_path(tmp_path: Path) -> None:
+    """A download waiting for its check goes to the PDF's set-aside name; the PDF stays."""
+    pdf = write_pdf(tmp_path / "a.pdf", TITLE)
+    staged = write_pdf(tmp_path / "a.pdf.unchecked", OTHER)
+
+    moved = set_aside(pdf, contents=staged)
+
+    assert moved == tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}"
+    assert not staged.exists()
+    assert pdf.is_file()
+
+
+def test_a_keep_whose_marker_cannot_be_written_changes_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Marked before the rename: a failed marker leaves the set-aside PDF where it was."""
+    moved = set_aside(write_pdf(tmp_path / "a.pdf", OTHER))
+
+    def refuse(self: Path, data: str, encoding: str | None = None) -> int:
+        raise PermissionError("read-only library")
+
+    monkeypatch.setattr(Path, "write_text", refuse)
+
+    with pytest.raises(PermissionError):
+        keep_pdf(moved)
+
+    assert moved.is_file()
+    assert not (tmp_path / "a.pdf").exists()
+
+
+def test_a_marker_vouches_for_a_download_of_the_bytes_kept(tmp_path: Path) -> None:
+    """The same bytes downloaded again are the person's kept PDF."""
+    pdf = write_pdf(tmp_path / "a.pdf", OTHER)
+    mark_kept(pdf)
+    again = tmp_path / "a.pdf.unchecked"
+    again.write_bytes(pdf.read_bytes())
+
+    assert is_kept(pdf, contents=again)
+
+
+def test_a_pdf_that_could_not_be_moved_is_told_with_the_keep_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reader can still keep it in place."""
+    pdf = write_pdf(tmp_path / "a.pdf", OTHER)
+    monkeypatch.setattr(Path, "rename", lambda self, target: (_ for _ in ()).throw(OSError("x")))
+
+    note = set_aside_note(check_cached_pdf(pdf, TITLE))
+
+    assert note is not None and f'bmll keep-pdf "{pdf}"' in note
+
+
+def test_downloads_set_aside_are_told_with_the_keep_command(tmp_path: Path) -> None:
+    """One or more, each named; none, nothing said."""
+    from bmlibrarian_lite.pdf_library_check import set_aside_download_note
+
+    one = tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}"
+    two = tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}-2"
+
+    assert set_aside_download_note(()) is None
+    single = set_aside_download_note((one,))
+    assert single is not None and one.name in single and f'bmll keep-pdf "{one}"' in single
+    both = set_aside_download_note((one, two))
+    assert both is not None and one.name in both and two.name in both

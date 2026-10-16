@@ -1308,6 +1308,10 @@ PDF_HELD_SUFFIX = ".held"
 # cache looks only for ``.pdf``, so a set-aside PDF is never read as the
 # article's again; it is kept, never deleted, for the reader to judge.
 PDF_MISMATCH_SUFFIX = ".mismatch"
+# Appended to a PDF's cache path while a download that arrived whole waits for
+# its title check (#541): only a PDF that passes replaces the file at the cache
+# path, so another article's PDF never overwrites the one already there.
+PDF_UNCHECKED_SUFFIX = ".unchecked"
 # Appended to a PDF a person kept as the article's though the title check
 # doubted it (#532, #541): a marker file holding the PDF's SHA-256, so it
 # vouches for those bytes alone and a later download in its place is checked.

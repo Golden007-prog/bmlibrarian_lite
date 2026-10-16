@@ -105,3 +105,19 @@ class _NoWorker:
     def __call__(self, *_args: Any, **_kwargs: Any) -> Any:
         """Calling one does nothing."""
         return None
+
+
+def test_a_download_set_aside_during_a_citation_load_is_told(
+    qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    """The full-text worker's notice reaches the chat; its failure's error reaches only the log."""
+    from tests.test_interrogation_degradation import StubFulltextWorker, StubPdfWorker
+
+    monkeypatch.setattr(tab_module, "FulltextDiscoveryWorker", StubFulltextWorker)
+    monkeypatch.setattr(tab_module, "PDFDiscoveryWorker", StubPdfWorker)
+    widget = make_tab(tmp_path, monkeypatch)
+    widget.load_from_citation(make_citation())
+
+    widget._fulltext_worker.pdf_set_aside.emit("A PDF downloaded for this article was set aside.")
+
+    assert widget._bubbles.last == "A PDF downloaded for this article was set aside."

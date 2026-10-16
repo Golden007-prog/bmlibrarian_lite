@@ -62,6 +62,7 @@ from bmlibrarian_lite.pdf_discovery import (
     PDFSource,
     PDFSourceType,
 )
+from bmlibrarian_lite.pdf_download import unchecked_download_path
 from bmlibrarian_lite.pdf_title_check import TitleCheck, TitleCheckOutcome
 
 from .scripted_http_server import ScriptedAnswer, running, status_answer
@@ -249,7 +250,10 @@ def test_a_served_pdf_has_its_title_checked(tmp_path: Path) -> None:
     ) as verify:
         result = _Chain().discover(None, tmp_path, discoverer=discoverer, title="A title")
         assert result.success
-    verify.assert_called_once_with(tmp_path / "a.pdf", "A title")
+    # Checked where it waits, before it replaces anything at the cache path (#541)
+    verify.assert_called_once_with(unchecked_download_path(tmp_path / "a.pdf"), "A title")
+    assert result.file_path == tmp_path / "a.pdf" and result.file_path.read_bytes() == PDF
+    assert not unchecked_download_path(tmp_path / "a.pdf").exists()
     assert result.verification_warning == "PDF contains no extractable text"
 
 

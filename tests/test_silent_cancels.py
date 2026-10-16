@@ -286,6 +286,9 @@ class FakeDiscoveryResult:
         # What went unsettled; the worker keeps it for the interrogation tab (#480)
         self.lookups = LookupRecord()
         self.source_type = MagicMock(value="europepmc_xml")
+        # No PDF set aside as another article's (#541)
+        self.set_aside: tuple[Any, ...] = ()
+        self.set_aside_pdf_note: str | None = None
 
 
 def make_discovery_worker(kind: type, doc_dict: dict[str, Any], tmp_path: Any) -> Any:
@@ -1374,6 +1377,7 @@ class StubWorker:
             progress = Signal(str, str)
             finished = Signal(str, str, str)
             verification_warning = Signal(str, str)
+            pdf_set_aside = Signal(str)
             paywall_detected = Signal(str, str)
             error = Signal(str)
             cancelled = Signal(str)

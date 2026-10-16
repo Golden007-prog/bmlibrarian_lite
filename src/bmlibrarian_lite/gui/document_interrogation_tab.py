@@ -701,6 +701,7 @@ class DocumentInterrogationTab(QWidget):
         self._pdf_worker.progress.connect(self._update_progress_dialog)
         self._pdf_worker.finished.connect(lambda p: self._on_pdf_ready(p, on_success))
         self._pdf_worker.verification_warning.connect(self._on_pdf_warning)
+        self._pdf_worker.pdf_set_aside.connect(lambda note: self._add_chat_bubble(note, is_user=False))
         self._pdf_worker.paywall_detected.connect(lambda url, err: self._on_paywall_detected(url, err, on_error))
         self._pdf_worker.error.connect(lambda e: self._on_pdf_error(e, on_error))
         self._pdf_worker.cancelled.connect(
@@ -1041,6 +1042,9 @@ class DocumentInterrogationTab(QWidget):
         # the reader replaced by opening another citation must not load its
         # article, or start a wait for it, over the one now open
         worker.progress.connect(self._for_current_fulltext(worker, self._update_progress_dialog))
+        worker.pdf_set_aside.connect(self._for_current_fulltext(
+            worker, lambda note: self._add_chat_bubble(note, is_user=False)
+        ))
         worker.finished.connect(self._for_current_fulltext(
             worker, lambda content, path, source: self._on_fulltext_ready(content, path, source, citation)
         ))

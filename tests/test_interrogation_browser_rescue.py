@@ -73,6 +73,7 @@ class StubFulltextWorker(QObject):
 
     progress = Signal(str, str)
     finished = Signal(str, str, str)
+    pdf_set_aside = Signal(str)
     paywall_detected = Signal(str, str)
     error = Signal(str)
     cancelled = Signal(str)

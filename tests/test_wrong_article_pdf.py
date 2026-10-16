@@ -478,7 +478,7 @@ def test_mcp_tells_the_agent_of_a_pdf_set_aside(tmp_path: Path, success: bool) -
     payload = _handle_fulltext({"pmid": "1"}, ctx)
 
     assert payload["success"] is success
-    assert "does not carry this article's title" in payload["library_pdf_note"]
+    assert "does not carry this article's title" in payload["set_aside_pdf_note"]
 
 
 def test_mcp_says_nothing_of_a_library_with_no_pdf_refused(tmp_path: Path) -> None:
@@ -493,7 +493,7 @@ def test_mcp_says_nothing_of_a_library_with_no_pdf_refused(tmp_path: Path) -> No
     )
     ctx.interrogation_agent.load_document.return_value = "pmid-1"
 
-    assert "library_pdf_note" not in _handle_fulltext({"pmid": "1"}, ctx)
+    assert "set_aside_pdf_note" not in _handle_fulltext({"pmid": "1"}, ctx)
 
 
 def test_the_transparency_report_tells_of_a_pdf_set_aside(
@@ -514,4 +514,154 @@ def test_the_transparency_report_tells_of_a_pdf_set_aside(
     text = StudyTransparencyAnalyzer(email="test@example.com")._discover_fulltext(report)
 
     assert text == "# Article\nContent."
-    assert result.library_pdf_note in report.warnings
+    assert result.set_aside_pdf_note in report.warnings
+
+
+# -- the PR review's findings: the reader is told of downloads, and the library's PDF survives
+
+
+def test_a_set_aside_download_is_carried_to_the_reader(tmp_path: Path) -> None:
+    """On success and failure alike, with where it went."""
+    failed = _discover([_unpaywall()], {UNPAYWALL_PDF: ANOTHER_ARTICLE}, tmp_path / "x")
+    succeeded = _discover(
+        [_unpaywall(), _publisher()],
+        {UNPAYWALL_PDF: ANOTHER_ARTICLE, PUBLISHER_PDF: THIS_ARTICLE},
+        tmp_path / "y",
+    )
+
+    assert failed.set_aside == (tmp_path / "x" / f"a.pdf{PDF_MISMATCH_SUFFIX}",)
+    assert succeeded.set_aside == (tmp_path / "y" / f"a.pdf{PDF_MISMATCH_SUFFIX}",)
+
+
+def test_a_wrong_download_never_overwrites_the_pdf_at_the_cache_path(tmp_path: Path) -> None:
+    """Checked before it replaces anything: the library's own PDF is untouched."""
+    (tmp_path / "a.pdf").write_bytes(THIS_ARTICLE)
+
+    result = _discover([_unpaywall()], {UNPAYWALL_PDF: ANOTHER_ARTICLE}, tmp_path)
+
+    assert not result.success
+    assert (tmp_path / "a.pdf").read_bytes() == THIS_ARTICLE
+    assert not (tmp_path / "a.pdf.part").exists()
+
+
+def test_a_download_of_the_pdf_a_person_kept_is_kept(tmp_path: Path) -> None:
+    """The same bytes the person kept are theirs, though they lack the title."""
+    kept = tmp_path / "a.pdf"
+    kept.write_bytes(ANOTHER_ARTICLE)
+    mark_kept(kept)
+
+    result = _discover([_unpaywall()], {UNPAYWALL_PDF: ANOTHER_ARTICLE}, tmp_path)
+
+    assert result.success
+    assert result.set_aside == ()
+
+
+def test_the_chain_tells_the_reader_of_a_download_set_aside(library: Path) -> None:
+    """``set_aside_pdf_note`` names the download and ends a failure's error."""
+    discoverer = _chain(library)
+    wrong = PDFSource(url=UNPAYWALL_PDF, source_type=PDFSourceType.UNPAYWALL_OA, is_open_access=True)
+
+    def build(*args: Any, **kwargs: Any) -> PDFDiscoverer:
+        pdf = PDFDiscoverer(unpaywall_email="test@example.com")
+        pdf._discover_sources = lambda doi, pmid, pmcid: ([wrong], LookupRecord())  # type: ignore[method-assign]
+        pdf._session = _Session({UNPAYWALL_PDF: ANOTHER_ARTICLE})  # type: ignore[assignment]
+        return pdf
+
+    with patch("bmlibrarian_lite.fulltext_discovery.PDFDiscoverer", build):
+        result = discoverer.discover_fulltext(doi=DOI, title=TITLE)
+
+    assert not result.success
+    assert len(result.set_aside_downloads) == 1
+    assert result.set_aside_pdf_note is not None
+    assert result.set_aside_pdf_note in (result.error or "")
+    assert "bmll keep-pdf" in (result.error or "")
+    assert not result.absence_established
+
+
+def test_no_absence_while_a_library_pdf_was_refused(tmp_path: Path) -> None:
+    """The check can be wrong: the refused PDF may be this article's text."""
+    refused = _refused_result(tmp_path, success=False)
+    from dataclasses import replace
+
+    from bmlibrarian_lite.fulltext_discovery import FulltextResult
+
+    absent = FulltextResult(success=False, source_type=FulltextSourceType.NOT_FOUND)
+    assert absent.absence_established
+    assert not replace(absent, refused_library_pdf=refused.refused_library_pdf).absence_established
+
+
+def test_europe_pmc_s_render_never_overwrites_the_library_s_pdf(library: Path) -> None:
+    """Another article's render leaves the cached PDF as it was."""
+    from bmlibrarian_lite.pdf_utils import generate_pdf_path
+
+    cached = _cached(library, THIS_ARTICLE)
+    _render(library, ANOTHER_ARTICLE)
+
+    assert generate_pdf_path({"doi": DOI}, library).read_bytes() == THIS_ARTICLE
+    assert cached.with_name(cached.name + PDF_MISMATCH_SUFFIX).read_bytes() == ANOTHER_ARTICLE
+
+
+def test_europe_pmc_s_render_of_a_kept_pdf_is_read(library: Path) -> None:
+    """The person's keep holds for the render as for the cache."""
+    mark_kept(_cached(library, ANOTHER_ARTICLE))
+
+    assert _render(library, ANOTHER_ARTICLE).success
+
+
+def test_the_pdf_worker_tells_the_reader_of_a_download_set_aside(tmp_path: Path) -> None:
+    """Before its outcome, whatever the outcome."""
+    pytest.importorskip("PySide6")
+    from bmlibrarian_lite.gui.workers import PDFDiscoveryWorker
+
+    set_aside = tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}"
+
+    class _Discoverer:
+        def discover_and_download(self, **_kwargs: Any) -> DiscoveryResult:
+            return DiscoveryResult(success=False, error="none", set_aside=(set_aside,))
+
+        def cancel(self) -> None:
+            """Ignored."""
+
+    worker = PDFDiscoveryWorker({"doi": DOI, "title": TITLE}, tmp_path)
+    worker._build_discoverer = lambda: _Discoverer()  # type: ignore[method-assign,assignment,return-value]
+    told: list[str] = []
+    order: list[str] = []
+    worker.pdf_set_aside.connect(lambda note: (told.append(note), order.append("note")))
+    worker.error.connect(lambda _e: order.append("error"))
+
+    worker._discover()
+
+    assert order == ["note", "error"]
+    assert set_aside.name in told[0] and "bmll keep-pdf" in told[0]
+
+
+def test_the_fulltext_worker_tells_the_reader_on_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A success is no reason to keep a set-aside PDF quiet."""
+    pytest.importorskip("PySide6")
+    from bmlibrarian_lite.gui.workers import FulltextDiscoveryWorker
+
+    result = _refused_result(tmp_path, success=True)
+    worker = FulltextDiscoveryWorker({"doi": DOI, "title": TITLE})
+    monkeypatch.setattr(worker, "_build_discoverer", lambda: _Fulltext(result))
+    told: list[str] = []
+    worker.pdf_set_aside.connect(told.append)
+
+    worker._discover()
+
+    assert told == [result.set_aside_pdf_note]
+
+
+class _Fulltext:
+    """A full-text discoverer answering one result."""
+
+    def __init__(self, result: Any) -> None:
+        self.result = result
+
+    def discover_fulltext(self, **_kwargs: Any) -> Any:
+        """The result."""
+        return self.result
+
+    def cancel(self) -> None:
+        """Ignored."""

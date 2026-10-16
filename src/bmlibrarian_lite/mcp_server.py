@@ -632,8 +632,9 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
         ``interrogation_available``: whether ``ask_document`` can answer
         about it. A load failure used to be logged and nothing else, so the
         caller's next call failed with nothing having said why (#264).
-        ``library_pdf_note``, on success and failure alike, when a PDF filed
-        for the article was another article's and was not read (#541).
+        ``set_aside_pdf_note``, on success and failure alike, when a PDF in
+        the library or a download was another article's and was not read
+        (#541).
     """
     pmid = args.get("pmid")
     doi = args.get("doi")
@@ -681,8 +682,8 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
                 or "Whether a full text is available was not established."
             ),
         }
-        if result.library_pdf_note:
-            failed["library_pdf_note"] = result.library_pdf_note
+        if result.set_aside_pdf_note:
+            failed["set_aside_pdf_note"] = result.set_aside_pdf_note
         return failed
 
     title = result.article_info.title if result.article_info else "Unknown"
@@ -697,8 +698,8 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
     }
     # A PDF filed for this article that is another article's was not read
     # (#541): the agent can tell its user where it went
-    if result.library_pdf_note:
-        payload["library_pdf_note"] = result.library_pdf_note
+    if result.set_aside_pdf_note:
+        payload["set_aside_pdf_note"] = result.set_aside_pdf_note
 
     # Load into interrogation agent for subsequent ask_document calls. The
     # text was retrieved either way, so this is not a failed retrieval -- but

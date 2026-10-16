@@ -56,6 +56,7 @@ from ..data_models import (
 from .. import elsevier_api
 from ..elsevier_api import ElsevierCredentials
 from ..pdf_discovery import PDFDiscoverer, DiscoveryResult
+from ..pdf_library_check import set_aside_download_note
 from ..pdf_utils import generate_pdf_path
 from ..fulltext_discovery import FulltextDiscoverer, FulltextResult, FulltextSourceType
 from ..utils import classify_analysis_exception
@@ -204,7 +205,11 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
     Signals:
         progress: Emitted with (stage, status) during download
         finished: Emitted with file_path when download succeeds
-        verification_warning: Emitted with (file_path, warning_message) on verification mismatch
+        verification_warning: Emitted with (file_path, warning_message) when the
+            title could not be judged (a scan, an unreadable file)
+        pdf_set_aside: Emitted with what to tell the reader when downloads
+            that are another article's PDF were set aside (#541), before
+            the outcome
         paywall_detected: Emitted with (article_url, error_message) when paywall blocks access
         error: Emitted with error message on failure
         cancelled: Emitted with the error that also ended the run, or an empty
@@ -220,6 +225,7 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
     progress = Signal(str, str)  # stage, status
     finished = Signal(str)  # file_path on success
     verification_warning = Signal(str, str)  # file_path, warning_message
+    pdf_set_aside = Signal(str)  # what to tell the reader (#541)
     paywall_detected = Signal(str, str)  # article_url, error_message
     error = Signal(str)  # error message
     cancelled = Signal(str)  # the error that also ended the run, or ""
@@ -331,6 +337,11 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
                 self._end(self.cancelled, "")
                 return
 
+            # Whatever the outcome: a PDF set aside may be the article (#541)
+            set_aside = set_aside_download_note(result.set_aside)
+            if set_aside:
+                self.pdf_set_aside.emit(set_aside)
+
             if result.success:
                 if result.verification_warning:
                     self.verification_warning.emit(
@@ -396,6 +407,7 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
 
     progress = Signal(str, str)  # stage, status
     finished = Signal(str, str, str)  # markdown_content, file_path, source_type
+    pdf_set_aside = Signal(str)  # what to tell the reader (#541)
     paywall_detected = Signal(str, str)  # article_url, error_message
     error = Signal(str)  # error message
     cancelled = Signal(str)  # the error that also ended the run, or ""
@@ -500,6 +512,11 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
             if self._cancelled:
                 self._end(self.cancelled, "")
                 return
+
+            # Whatever the outcome, and before it: a PDF set aside may be
+            # the article, and a failure's error reaches only the log (#541)
+            if result.set_aside_pdf_note:
+                self.pdf_set_aside.emit(result.set_aside_pdf_note)
 
             if result.success:
                 file_path = str(result.file_path) if result.file_path else ""

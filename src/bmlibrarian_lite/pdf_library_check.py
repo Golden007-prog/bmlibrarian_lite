@@ -148,11 +148,14 @@ def mark_kept(pdf_path: Path, contents: Path | None = None) -> None:
     kept_marker_path(pdf_path).write_text(digest, encoding="ascii")
 
 
-def is_kept(pdf_path: Path) -> bool:
+def is_kept(pdf_path: Path, contents: Path | None = None) -> bool:
     """Whether a person kept this PDF, as it is now.
 
     Args:
-        pdf_path: The PDF.
+        pdf_path: The PDF, at the name the cache finds it by.
+        contents: Bytes to compare with the marker instead of
+            ``pdf_path``'s: a download of the PDF the person kept, waiting
+            for its check.
 
     Returns:
         ``True`` when its marker holds its digest; ``False`` with no marker,
@@ -162,13 +165,32 @@ def is_kept(pdf_path: Path) -> bool:
     if not marker.exists():
         return False
     try:
-        return marker.read_text(encoding="ascii").strip() == pdf_digest(pdf_path)
+        digest = pdf_digest(contents if contents is not None else pdf_path)
+        return marker.read_text(encoding="ascii").strip() == digest
     except (OSError, UnicodeDecodeError):
         logger.warning("The keep marker of %s could not be read", pdf_path.name, exc_info=True)
         return False
 
 
-def set_aside(pdf_path: Path) -> Path:
+def _same_bytes(path: Path, digest: str) -> bool:
+    """Whether a file already set aside holds the bytes of this digest.
+
+    Args:
+        path: An earlier set-aside file.
+        digest: The digest of the PDF being set aside.
+
+    Returns:
+        ``False`` too for one that cannot be read (logged): the next name is
+        taken, so an unreadable earlier file never blocks a later one.
+    """
+    try:
+        return path.is_file() and pdf_digest(path) == digest
+    except OSError:
+        logger.warning("%s could not be read to compare it", path.name, exc_info=True)
+        return False
+
+
+def set_aside(pdf_path: Path, contents: Path | None = None) -> Path:
     """Rename a PDF aside, where the cache does not look, never over another.
 
     The first free name of ``<pdf>.mismatch``, ``<pdf>.mismatch-2``, ... is
@@ -176,7 +198,10 @@ def set_aside(pdf_path: Path) -> Path:
     the same wrong download, set aside on every run, is kept once.
 
     Args:
-        pdf_path: The PDF.
+        pdf_path: The PDF's name in the cache, which the set-aside names
+            follow.
+        contents: The file holding the PDF, when it is not at ``pdf_path``
+            (a download waiting for its check); ``pdf_path`` when ``None``.
 
     Returns:
         Where its bytes now are.
@@ -185,17 +210,18 @@ def set_aside(pdf_path: Path) -> Path:
         OSError: When it cannot be read, renamed or removed; it is then
             where it was.
     """
+    source = contents if contents is not None else pdf_path
     digest: str | None = None
     for number in count(1):
         suffix = PDF_MISMATCH_SUFFIX if number == 1 else f"{PDF_MISMATCH_SUFFIX}-{number}"
         target = pdf_path.with_name(pdf_path.name + suffix)
         if not target.exists():
-            pdf_path.rename(target)
+            source.rename(target)
             return target
         if digest is None:
-            digest = pdf_digest(pdf_path)
-        if target.is_file() and pdf_digest(target) == digest:
-            pdf_path.unlink()
+            digest = pdf_digest(source)
+        if _same_bytes(target, digest):
+            source.unlink()
             return target
     raise AssertionError("count() does not end")  # pragma: no cover
 
@@ -223,12 +249,16 @@ def keep_pdf(path: Path) -> Path:
         pdf_path = path.with_name(named.group("pdf"))
         if pdf_path.exists():
             raise FileExistsError(f"{pdf_path.name} is already in the library")
+        # Marked first: renamed back without its marker, it would be set
+        # aside again. A marker left by a failed rename names these bytes
+        # alone, so it vouches for no other PDF.
+        mark_kept(pdf_path, contents=path)
         path.rename(pdf_path)
     elif path.name.endswith(_PDF_EXTENSION):
         pdf_path = path
+        mark_kept(pdf_path)
     else:
         raise ValueError(f"{path.name} is neither a PDF nor one set aside")
-    mark_kept(pdf_path)
     logger.info("Kept %s as its article's, as the reader asked", pdf_path.name)
     return pdf_path
 
@@ -288,8 +318,30 @@ def set_aside_note(found: CachedPdfCheck) -> str | None:
         f"carry this article's title{carried}, so it was not read as this article."
     )
     if found.set_aside_to is None:
-        return f"{lead} It could not be moved aside."
+        return (
+            f"{lead} It could not be moved aside (the log says why); if it is the "
+            f"article, keep it with: {KEEP_PDF_COMMAND} \"{found.path}\""
+        )
     return (
         f"{lead} It was renamed {found.set_aside_to.name}; if it is the article, "
         f"keep it with: {KEEP_PDF_COMMAND} \"{found.set_aside_to}\""
     )
+
+
+def set_aside_download_note(paths: tuple[Path, ...]) -> str | None:
+    """Tell the reader the PDFs downloaded for an article that were not read (#541).
+
+    Args:
+        paths: Where each PDF that does not carry the title was set aside.
+
+    Returns:
+        A sentence naming each, with how to keep one; ``None`` for none.
+    """
+    if not paths:
+        return None
+    if len(paths) == 1:
+        lead = f"A PDF downloaded for this article does not carry its title, so it was not read; it was saved as {paths[0].name}."
+    else:
+        names = ", ".join(path.name for path in paths)
+        lead = f"{len(paths)} PDFs downloaded for this article do not carry its title, so they were not read; they were saved as {names}."
+    return f"{lead} If one is the article, keep it with: {KEEP_PDF_COMMAND} \"{paths[0]}\""

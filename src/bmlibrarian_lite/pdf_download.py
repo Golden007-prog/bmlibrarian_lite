@@ -16,7 +16,7 @@ import logging
 from collections.abc import Iterator
 from pathlib import Path
 
-from .constants import MAX_PDF_SIZE, PDF_HELD_SUFFIX, PDF_PARTIAL_SUFFIX
+from .constants import MAX_PDF_SIZE, PDF_HELD_SUFFIX, PDF_PARTIAL_SUFFIX, PDF_UNCHECKED_SUFFIX
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,7 @@ __all__ = [
     "held_download_path",
     "partial_download_path",
     "read_body_prefix",
+    "unchecked_download_path",
 ]
 
 
@@ -77,6 +78,19 @@ def held_download_path(output_path: Path) -> Path:
         apart from :func:`partial_download_path`, which discovery writes too.
     """
     return output_path.with_name(output_path.name + PDF_HELD_SUFFIX)
+
+
+def unchecked_download_path(output_path: Path) -> Path:
+    """Where a whole PDF waits for its title check before it replaces the cached one (#541).
+
+    Args:
+        output_path: Where the PDF is to end up.
+
+    Returns:
+        ``output_path`` with :data:`PDF_UNCHECKED_SUFFIX` appended, beside it,
+        so the rename into place stays on one filesystem.
+    """
+    return output_path.with_name(output_path.name + PDF_UNCHECKED_SUFFIX)
 
 
 def discard_partial_download(partial: Path) -> None:
