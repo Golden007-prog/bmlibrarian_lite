@@ -16,7 +16,9 @@ import PDFKit
 /// check asks whether the first page with text carries the title: the share
 /// of the title's adjacent word pairs (each pair in the title's word order,
 /// found anywhere on the page) that the page also has. Single words are not
-/// enough: an article on the same subject shares most of them.
+/// enough: an article on the same subject shares most of them. A title the
+/// page carries whole, read with no word breaks on either side, is carried
+/// too: PDFKit can space a word apart on a title line.
 ///
 /// A check can also find nothing to judge by — a title with no words, a PDF
 /// with no text (a scan), a title PubMed translated from the article's own
@@ -225,6 +227,27 @@ public enum PDFTitleChecker {
         return readings.map { readingShare($0, joined: joined, split: split) }.max()
     }
 
+    /// Whether the page carries the whole title, word breaks ignored (#546).
+    ///
+    /// The title's words and the page's are each joined with nothing between
+    /// them, so a word the text layer spaced apart (`res ponse`) or words it
+    /// ran together (`ClinicalOutcome`) read alike. Only a title of at least
+    /// ``BioMedLitConstants/pdfTitleMinJoinedCharacters`` letters and numbers
+    /// counts, so a short one cannot match inside a longer word.
+    ///
+    /// - Parameters:
+    ///   - pageText: The text of the page read.
+    ///   - title: The article's title, as stored; markup is not counted.
+    /// - Returns: Whether the joined title appears in the joined page.
+    public static func carriesWholeTitle(pageText: String, title: String) -> Bool {
+        let joinedTitle = words(replacing(tag, in: title, with: "")).joined()
+        // Counted and searched by code point, as Python's `len` and `in` are
+        guard joinedTitle.unicodeScalars.count >= BioMedLitConstants.pdfTitleMinJoinedCharacters else {
+            return false
+        }
+        return words(pageText).joined().range(of: joinedTitle, options: .literal) != nil
+    }
+
     /// Whether the text of a PDF's first page with text carries a title.
     ///
     /// - Parameters:
@@ -232,13 +255,17 @@ public enum PDFTitleChecker {
     ///   - title: The article's title.
     /// - Returns: ``PDFTitleCheck/noTitle`` when the title has no words,
     ///   ``PDFTitleCheck/noText`` when the page has none; otherwise the share
-    ///   judged against the bar, except that a translated title the page does
-    ///   not carry is ``PDFTitleCheck/translatedTitle``, not a mismatch.
+    ///   judged against the bar, except that a title the page carries whole,
+    ///   word breaks ignored (``carriesWholeTitle(pageText:title:)``), matches
+    ///   with a share of 1, and a translated title the page does not carry is
+    ///   ``PDFTitleCheck/translatedTitle``, not a mismatch.
     public static func judge(pageText: String, title: String) -> PDFTitleCheck {
         guard let share = titlePairShare(pageText: pageText, title: title) else { return .noTitle }
         guard !words(pageText).isEmpty else { return .noText }
         let check = PDFTitleCheck.compared(share: share)
-        if check.refusesPDF && isTranslated(title) { return .translatedTitle }
+        guard check.refusesPDF else { return check }
+        if carriesWholeTitle(pageText: pageText, title: title) { return .matches(share: 1) }
+        if isTranslated(title) { return .translatedTitle }
         return check
     }
 

@@ -105,6 +105,35 @@ class WrongArticleRecordingTest {
         assertFalse(setAside.exists())
     }
 
+    /**
+     * Another article's PDF that can be neither renamed nor deleted ends the walk:
+     * every PDF of a document is saved under one name, so the next candidate would
+     * be handed that file and refused under its own address. The question stays open.
+     */
+    @Test
+    fun `a refused PDF that cannot be moved ends the walk`() = runTest {
+        val asked = mutableListOf<String>()
+        var openAlexAsked = false
+        try {
+            val recorded = document().recordingFullTextFetch(
+                found(wrong, right),
+                downloadPdf = { url ->
+                    asked += url
+                    download(url).also { folder.root.setWritable(false) }
+                },
+                askOpenAlex = { _, _ -> openAlexAsked = true; emptyList() },
+                askCore = noCore
+            )
+            assertEquals(listOf(wrong), asked)
+            assertFalse(openAlexAsked)
+            val expected = OpenAccessShortfall.wrongArticle(OpenAccessSource.PDF, wrong)
+            assertEquals(FullTextResult.DoiUrl(doiLink(doi), expected), recorded.result)
+            assertNull(recorded.document.pdfPath)
+        } finally {
+            folder.root.setWritable(true)
+        }
+    }
+
     // ==================== Europe PMC's render ====================
 
     @Test

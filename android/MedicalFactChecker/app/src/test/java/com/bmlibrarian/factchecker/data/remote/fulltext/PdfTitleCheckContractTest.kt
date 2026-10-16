@@ -44,6 +44,7 @@ class PdfTitleCheckContractTest {
     fun `the bounds are the contract's`() {
         assertEquals(Constants.PDF_TITLE_MIN_PAIR_SHARE, contract["min_pair_share"]!!.jsonPrimitive.double, 0.0)
         assertEquals(Constants.PDF_TITLE_PAGES_READ, contract["pages_read"]!!.jsonPrimitive.int)
+        assertEquals(Constants.PDF_TITLE_MIN_JOINED_CHARACTERS, contract["min_joined_characters"]!!.jsonPrimitive.int)
         assertEquals(PdfTitleCheck.OUTCOME_NAMES, contract["outcomes"]!!.jsonArray.map { it.jsonPrimitive.content })
     }
 

@@ -22,6 +22,10 @@ import androidx.lifecycle.SavedStateHandle
 import com.bmlibrarian.factchecker.data.local.dao.DocumentDao
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
+import com.bmlibrarian.factchecker.data.remote.fulltext.PdfDownload
+import com.bmlibrarian.factchecker.data.remote.fulltext.writeTitledPdf
+import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
+import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
 import com.bmlibrarian.factchecker.data.repository.SettingsRepository
 import com.bmlibrarian.factchecker.domain.model.AppSettings
 import com.bmlibrarian.factchecker.util.Constants
@@ -32,6 +36,9 @@ import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
@@ -50,6 +57,9 @@ import java.io.File
  * record; a PDF the chain returns is shown as the local file it is, never as a
  * link, since Elsevier's URL needs the key.
  */
+/** How long a test waits for a state reached through a real PDF read off the main thread. */
+private const val TIMEOUT_MS = 10_000L
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class FullTextViewModelElsevierTest {
 
@@ -162,6 +172,23 @@ class FullTextViewModelElsevierTest {
         assertFalse("${viewModel.state.value}", viewModel.state.value is FullTextViewModel.FullTextState.PdfContent)
     }
 
+    /**
+     * A refused PDF that was the stored one is forgotten (#546): left behind, it
+     * would read as full text in hand, and a fetch that brings no PDF would keep it.
+     */
+    @Test
+    fun `a refused stored PDF's path is forgotten`() {
+        val pdf = pdfOnDisk()
+        every { fullTextService.getCachedPdfPath("d") } returns pdf.absolutePath
+        coEvery { fullTextService.refusesAsAnotherArticle(pdf.absolutePath, "t") } returns true
+
+        open(document.copy(pdfPath = pdf.absolutePath))
+
+        // Forgotten at once, and the fetch that follows does not write it back
+        coVerify(atLeast = 1) { documentDao.update(match { it.id == "d" && it.pdfPath == null }) }
+        coVerify(exactly = 0) { documentDao.update(match { it.pdfPath != null }) }
+    }
+
     /** The control: a cached PDF that is not refused opens from disk. */
     @Test
     fun `a cached PDF of this article opens from disk`() {
@@ -175,6 +202,34 @@ class FullTextViewModelElsevierTest {
             viewModel.state.value
         )
         coVerify(exactly = 0) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * A render of another article kept as a link, for a document with no DOI, is
+     * told as such beside the link (#546).
+     */
+    @Test
+    fun `a render of another article kept as a link is told`() = runBlocking {
+        val render = "https://europepmc.org/articles/PMC1/pdf"
+        val saved = File(folder.root, "d.pdf")
+        coEvery { fullTextService.downloadPdf(render, "d") } answers {
+            writeTitledPdf(saved, "Using Effect Size - or Why the P Value Is Not Enough\nGail M. Sullivan")
+            PdfDownload.Saved(saved.path)
+        }
+        val viewModel = open(
+            document.copy(doi = null, title = "Caffeine and blood pressure: a critical review"),
+            answer = FullTextService.FullTextResult.EuropePmcPdf(render)
+        )
+
+        val state = withTimeout(TIMEOUT_MS) {
+            viewModel.state.first { it is FullTextViewModel.FullTextState.WebUrl }
+        } as FullTextViewModel.FullTextState.WebUrl
+
+        assertEquals(render, state.url)
+        assertEquals(
+            OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, render).notice,
+            state.openAccessNotice
+        )
     }
 
     /** A file that exists but is not a PDF (empty, or a page) is not opened as the article. */

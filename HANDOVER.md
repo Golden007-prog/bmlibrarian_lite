@@ -29,22 +29,20 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Wrong-article PDFs in the apps** (#546, Swift + Android; branch
-`fix/pdf-title-check-parity-546`, PR in review). The desktop's title check
-(#532/#541) ported with a shared contract,
-`fulltext_parity/pdf_title_check.json` (56 rows; every platform's case folding
-measured equal to Python's `casefold` on all 137,936 letters and numbers after
-NFKC: Swift maps Cherokee and nine Old Cyrillic forms, Kotlin the dotless ı, ẞ
-and Cherokee). A refused PDF is set aside as `<cached name>.mismatch` and never
-read; the refusal is `wrong_article`, a skip **with its address**, told as a
-source not asked, never an absence. New source `europepmc_pdf` ("Europe PMC",
-first in chain order). Swift checks at `extractText(fromCachedPDF:title:)`
-(every download and cached copy; `fetchFullText(…, title:)`, the app passes
-`document.title`; injectable `titleChecker`). Android checks in the recording
-walk, in the chain for Elsevier's PDF (`fetchFullText(…, title)`), and in the
-viewer before a cached PDF is shown (`FullTextService.refusesAsAnotherArticle`);
-text via iText. **Android's render of another article ends the fetch** (#556).
-Lodged: #555 (R8, unrelated), #556, #557 (stored documents), #558 (keep).
+**Wrong-article PDFs in the apps** (#546, Swift + Android; PR in review). The
+desktop's title check (#532/#541) ported, contract `pdf_title_check.json` (64
+rows; each platform's case folding equals Python's `casefold` on all 137,936
+letters and numbers). **The shared rule gained a route** (maintainer's call):
+the whole title, word breaks ignored (≥ 20 letters/numbers), also matches, as
+PDFKit and iText split and join title words; on 1,491 knowledgebase PDFs, right
+PDFs refused went 18/38/42 → 17/12/18 (MuPDF/PDFKit/iText), no other title more
+matched (`constants.py`). A refused PDF is set aside as `.mismatch`, never read;
+the refusal is `wrong_article`, a skip **with its address**, never an absence;
+new source `europepmc_pdf`. Swift checks at `extractText(fromCachedPDF:title:)`
+(the app passes `document.title`); Android in the recording walk, in the chain
+for Elsevier's PDF and in the viewer (`refusesAsAnotherArticle`), via iText.
+**Android's render of another article ends the fetch** (#556). Lodged: #555
+(R8, unrelated), #556, #557 (stored documents), #558 (keep).
 
 ## Recently landed (context)
 

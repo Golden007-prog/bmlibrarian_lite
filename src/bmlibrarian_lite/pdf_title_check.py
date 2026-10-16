@@ -10,7 +10,10 @@ would then feed the article's transparency rating. The check asks whether the
 first page with text carries the title: the share of the title's adjacent
 word pairs (each pair in the title's word order, found anywhere on the page)
 that the page also has. Single words are not enough: an article on the same
-subject shares most of them (see ``PDF_TITLE_MIN_PAIR_SHARE``).
+subject shares most of them (see ``PDF_TITLE_MIN_PAIR_SHARE``). A title the
+page carries whole, read with no word breaks on either side, is carried too:
+a text layer can space a word apart or run words together on a title line
+(see ``PDF_TITLE_MIN_JOINED_CHARACTERS``).
 
 A check can also find nothing to judge by: a title with no words, a PDF with
 no text at all (a scan), a title PubMed translated from the article's own
@@ -27,7 +30,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from .constants import PDF_TITLE_MIN_PAIR_SHARE, PDF_TITLE_PAGES_READ
+from .constants import (
+    PDF_TITLE_MIN_JOINED_CHARACTERS,
+    PDF_TITLE_MIN_PAIR_SHARE,
+    PDF_TITLE_PAGES_READ,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +88,8 @@ class TitleCheck:
     Attributes:
         outcome: What it found.
         share: The share of the title's word pairs the pages carry, from 0
-            to 1, when text was compared; ``None`` otherwise.
+            to 1, when text was compared (1 for a title carried whole, word
+            breaks ignored); ``None`` otherwise.
 
     Raises:
         ValueError: On construction, for a share missing from a comparison,
@@ -193,6 +201,28 @@ def _reading_share(title_words: list[str], joined: list[str], split: list[str]) 
     return sum(1 for pair in wanted if pair in have) / len(wanted)
 
 
+def carries_whole_title(page_text: str, title: str) -> bool:
+    """Whether the page carries the whole title, word breaks ignored (#546).
+
+    The title's words and the page's are each joined with nothing between
+    them, so a word the text layer spaced apart (``res ponse``) or words it ran
+    together (``ClinicalOutcome``) read alike. Only a title of at least
+    ``PDF_TITLE_MIN_JOINED_CHARACTERS`` letters and numbers counts, so a short
+    one cannot match inside a longer word.
+
+    Args:
+        page_text: The text of the pages read.
+        title: The article's title, as stored; markup is not counted.
+
+    Returns:
+        Whether the joined title appears in the joined page.
+    """
+    joined_title = "".join(_words(_TAG.sub("", title)))
+    if len(joined_title) < PDF_TITLE_MIN_JOINED_CHARACTERS:
+        return False
+    return joined_title in "".join(_words(page_text))
+
+
 def title_pair_share(page_text: str, title: str) -> float | None:
     """The share of a title's adjacent word pairs that the page text also has.
 
@@ -228,9 +258,11 @@ def judge_title(page_text: str, title: str) -> TitleCheck:
         ``NO_TITLE`` when the title has no words, ``NO_TEXT`` when the pages
         have none; otherwise ``MATCHES`` when at least
         ``PDF_TITLE_MIN_PAIR_SHARE`` of the title's word pairs are there, and
-        ``MISMATCH`` when fewer are, each with the share. A translated title
-        (in square brackets) the pages do not carry is ``TRANSLATED_TITLE``,
-        not a mismatch: the PDF may carry it in the article's own language.
+        ``MISMATCH`` when fewer are, each with the share. A title the pages
+        carry whole with word breaks ignored (:func:`carries_whole_title`)
+        matches with a share of 1, all of it carried. A translated title (in
+        square brackets) the pages do not carry is ``TRANSLATED_TITLE``, not a
+        mismatch: the PDF may carry it in the article's own language.
     """
     share = title_pair_share(page_text, title)
     if share is None:
@@ -238,7 +270,11 @@ def judge_title(page_text: str, title: str) -> TitleCheck:
     if not _words(page_text):
         return TitleCheck(TitleCheckOutcome.NO_TEXT)
     check = TitleCheck.compared(share)
-    if check.outcome is TitleCheckOutcome.MISMATCH and _is_translated(title):
+    if check.outcome is not TitleCheckOutcome.MISMATCH:
+        return check
+    if carries_whole_title(page_text, title):
+        return TitleCheck(TitleCheckOutcome.MATCHES, 1.0)
+    if _is_translated(title):
         return TitleCheck(TitleCheckOutcome.TRANSLATED_TITLE)
     return check
 

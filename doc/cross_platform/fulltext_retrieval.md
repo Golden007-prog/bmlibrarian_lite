@@ -911,13 +911,18 @@ function get_cached_pdf_path(article_id: string, url: string) -> string | null:
 A source can serve another article's PDF: a publisher's script redirects, a
 DOI resolves to the wrong file, a supplement stands in for the article. Ten of
 25 PDFs in a real desktop library were other articles, and each was read as the
-article it was filed under. So every PDF is checked against the article's title
-before its text is used or it is shown, on all three platforms; the judgement is
+article it was filed under. So every PDF a fetch obtains or reuses is checked
+against the article's title, on all three platforms; the judgement is
 `doc/cross_platform/fulltext_parity/pdf_title_check.json` (Python's
 `pdf_title_check.py`, BioMedLit's `PDFTitleChecker`, Android's `PdfTitleChecker`).
 
 - **The check.** The first page with text (an image-only cover is passed over)
-  must carry at least half of the title's adjacent word pairs. A title with no
+  must carry at least half of the title's adjacent word pairs, or the whole
+  title read with no word breaks (at least 20 letters and numbers), since PDFKit
+  spaces words apart and iText runs them together on some title lines: on 1,491
+  knowledgebase PDFs against their own titles that route took the refusals of
+  right PDFs from 18/38/42 (MuPDF/PDFKit/iText) to 17/12/18, with no more of
+  1,491 other titles matched (`PDF_TITLE_MIN_JOINED_CHARACTERS`). A title with no
   words, a page with no text, a title PubMed translated (in square brackets) or a
   file that cannot be read is judged by nothing: never a match, never a mismatch.
   **Only a mismatch refuses a PDF.** The text is NFKC-normalised and fully
@@ -928,7 +933,10 @@ before its text is used or it is shown, on all three platforms; the judgement is
   every cached PDF passes before its text is read (`extractText(fromCachedPDF:)`),
   given the title by `fetchFullText(…, title:)`; Android in the recording walk
   (each open-access candidate and the render), in the chain for Elsevier's PDF,
-  and in the viewer before a cached PDF is shown.
+  and in the viewer before a cached PDF is shown (a refused one that was the
+  stored PDF is forgotten). Swift checks at fetch time only: a document stored
+  before the check keeps its text and PDF until fetched again (#557). With PDF
+  extraction off nothing is downloaded, so a tier's link is handed over unchecked.
 - **What follows.** The PDF is set aside beside its name with `.mismatch`, never
   deleted (the check can be wrong), and never read. The refusal is a skip with the
   PDF's address, `wrong_article`, told "{host}, named by {source} (another

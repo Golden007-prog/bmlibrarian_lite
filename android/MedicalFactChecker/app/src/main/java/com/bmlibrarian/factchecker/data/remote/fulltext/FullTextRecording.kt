@@ -24,6 +24,7 @@ import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
 import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
 import com.bmlibrarian.factchecker.domain.model.OpenAccessUnsettledReason
 import com.bmlibrarian.factchecker.util.Constants
+import java.io.File
 import java.util.Date
 
 /**
@@ -152,6 +153,10 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
 ): RecordedFetch {
     var shortfall: OpenAccessShortfall? = null
     val tried = mutableListOf<String>()
+    // Set when another article's PDF could be neither renamed nor deleted: every
+    // PDF of a document is saved under one name, so the next candidate's download
+    // would be handed that file from the cache and refused under its own address
+    var cacheBlocked = false
 
     /** Walk [steps]; the recorded fetch when a copy was served, else null. */
     suspend fun walk(steps: List<OpenAccessStep>): RecordedFetch? {
@@ -174,6 +179,11 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
                             shortfall = OpenAccessShortfall.adding(
                                 OpenAccessShortfall.wrongArticle(step.namedBy.refusedAs, step.pdfUrl), shortfall
                             )
+                            if (File(download.path).exists()) {
+                                // Logged by the set-aside; the question stays open
+                                cacheBlocked = true
+                                return null
+                            }
                         }
                         PdfDownload.NotSaved -> {
                             val linked = found.copy(notSaved = true)
@@ -190,7 +200,7 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
     }
 
     walk(result.steps)?.let { return it }
-    if (!result.openAlexAsked) {
+    if (!result.openAlexAsked && !cacheBlocked) {
         walk(askOpenAlex(result.doi, tried.toList()))?.let { return it }
     }
     // CORE's extracted text (#480, stage C): every candidate failed, so it can

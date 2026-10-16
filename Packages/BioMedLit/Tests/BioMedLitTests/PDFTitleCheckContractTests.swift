@@ -38,6 +38,7 @@ final class PDFTitleCheckContractTests: XCTestCase {
         let contract = try contract()
         XCTAssertEqual(contract["min_pair_share"] as? Double, BioMedLitConstants.pdfTitleMinPairShare)
         XCTAssertEqual(contract["pages_read"] as? Int, BioMedLitConstants.pdfTitlePagesRead)
+        XCTAssertEqual(contract["min_joined_characters"] as? Int, BioMedLitConstants.pdfTitleMinJoinedCharacters)
         XCTAssertEqual(contract["outcomes"] as? [String], PDFTitleCheck.outcomeNames)
     }
 

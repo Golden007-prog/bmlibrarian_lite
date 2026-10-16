@@ -25,7 +25,9 @@ import java.util.Locale
  * whether the first page with text carries the title: the share of the title's
  * adjacent word pairs (each pair in the title's word order, found anywhere on the
  * page) that the page also has. Single words are not enough: an article on the
- * same subject shares most of them.
+ * same subject shares most of them. A title the page carries whole, read with no
+ * word breaks on either side, is carried too: iText can run a title line's words
+ * together.
  *
  * A check can also find nothing to judge by: a title with no words, a PDF with no
  * text (a scan), a title PubMed translated from the article's own language, a file
@@ -124,7 +126,7 @@ object PdfTitleChecker {
      * whole, which may hold bracketed parts of its own (`[[18F]FDG PET in ...]`),
      * with at most a full stop after.
      */
-    private val TRANSLATED_TITLE = Regex("""$WHITESPACE*\[(?:[^\[\]]|\[[^\[\]]*])*]\.?$WHITESPACE*""")
+    private val TRANSLATED_TITLE = Regex("""$WHITESPACE*\[(?:[^\[\]]|\[[^\[\]]*\])*\]\.?$WHITESPACE*""")
 
     /** The soft hyphen: where a word may break, never a separator of words. */
     private const val SOFT_HYPHEN = "­"
@@ -239,20 +241,47 @@ object PdfTitleChecker {
     }
 
     /**
+     * Whether the page carries the whole title, word breaks ignored (#546).
+     *
+     * The title's words and the page's are each joined with nothing between them,
+     * so a word the text layer spaced apart (`res ponse`) or words it ran together
+     * (`ClinicalOutcome`) read alike. Only a title of at least
+     * [Constants.PDF_TITLE_MIN_JOINED_CHARACTERS] letters and numbers counts, so a
+     * short one cannot match inside a longer word.
+     *
+     * @param pageText The text of the page read
+     * @param title The article's title, as stored; markup is not counted
+     * @return Whether the joined title appears in the joined page
+     */
+    fun carriesWholeTitle(pageText: String, title: String): Boolean {
+        val joinedTitle = words(TAG_PATTERN.replace(title, "")).joinToString("")
+        // Counted by code point, as Python's `len` is: a letter beyond the BMP is one
+        if (joinedTitle.codePointCount(0, joinedTitle.length) < Constants.PDF_TITLE_MIN_JOINED_CHARACTERS) return false
+        return joinedTitle in words(pageText).joinToString("")
+    }
+
+    /**
      * Whether the text of a PDF's first page with text carries a title.
      *
      * @param pageText The text of the page read
      * @param title The article's title
      * @return [PdfTitleCheck.NoTitle] when the title has no words,
      *   [PdfTitleCheck.NoText] when the page has none; otherwise the share judged
-     *   against the bar, except that a translated title the page does not carry is
-     *   [PdfTitleCheck.TranslatedTitle], not a mismatch
+     *   against the bar, except that a title the page carries whole, word breaks
+     *   ignored ([carriesWholeTitle]), matches with a share of 1, and a translated
+     *   title the page does not carry is [PdfTitleCheck.TranslatedTitle], not a
+     *   mismatch
      */
     fun judge(pageText: String, title: String): PdfTitleCheck {
         val share = titlePairShare(pageText, title) ?: return PdfTitleCheck.NoTitle
         if (words(pageText).isEmpty()) return PdfTitleCheck.NoText
         val check = PdfTitleCheck.compared(share)
-        return if (check.refusesPdf && isTranslated(title)) PdfTitleCheck.TranslatedTitle else check
+        return when {
+            !check.refusesPdf -> check
+            carriesWholeTitle(pageText, title) -> PdfTitleCheck.Matches(1.0)
+            isTranslated(title) -> PdfTitleCheck.TranslatedTitle
+            else -> check
+        }
     }
 
     /**
@@ -289,8 +318,11 @@ object PdfTitleChecker {
     fun check(file: File, title: String): PdfTitleCheck {
         if (titleReadings(title).none { it.isNotEmpty() }) return PdfTitleCheck.NoTitle
         val text = try {
-            PdfDocument(PdfReader(file)).use { document ->
-                if (document.numberOfPages == 0) null else openingText(document)
+            // The reader closed too when the document cannot be built from it
+            PdfReader(file).use { reader ->
+                PdfDocument(reader).use { document ->
+                    if (document.numberOfPages == 0) null else openingText(document)
+                }
             }
         } catch (e: IOException) {
             Log.w(TAG, "${file.name} could not be read to check its title", e)
@@ -298,6 +330,11 @@ object PdfTitleChecker {
         } catch (e: ITextException) {
             // iText's own: a damaged file, a password (BadPasswordException)
             Log.w(TAG, "${file.name} could not be read to check its title", e)
+            return PdfTitleCheck.Unreadable
+        } catch (e: StackOverflowError) {
+            // A page tree nested past the stack (a damaged or hostile file): the
+            // file's, and the app must not die of it
+            Log.w(TAG, "${file.name} is nested too deeply to read for its title", e)
             return PdfTitleCheck.Unreadable
         } catch (e: RuntimeException) {
             // iText documents no closed set of errors, and no caller may be left

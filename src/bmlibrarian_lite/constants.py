@@ -1335,6 +1335,15 @@ PDF_TITLE_MIN_PAIR_SHARE = 0.5
 # image-only cover) are passed over. A second page adds body text and
 # references, which matched other articles' titles more often in the survey.
 PDF_TITLE_PAGES_READ = 1
+# A title whose words, joined with nothing between them, run to at least this
+# many letters and numbers is also taken as carried when it appears whole in the
+# page's words joined the same way (#546): a text layer can space a word apart
+# ("cur r ent", PDFKit) or run words together ("OptimizingClinicalOutcome",
+# iText) on a title line. On 1,491 knowledgebase PDFs against their own titles,
+# the word pairs alone refused 18 (MuPDF), 38 (PDFKit) and 42 (iText); with the
+# whole title too, 17, 12 and 18; and of 1,491 other titles, none more matched on
+# any of the three. The bound keeps a short title from matching inside a word.
+PDF_TITLE_MIN_JOINED_CHARACTERS = 20
 
 # ---------------------------------------------------------------------------
 # Browser rescue (#480, stage 2): an open-access PDF a bot wall kept from our

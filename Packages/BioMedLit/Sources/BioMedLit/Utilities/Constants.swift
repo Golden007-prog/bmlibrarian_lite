@@ -495,6 +495,12 @@ public enum BioMedLitConstants {
     /// The pages with text read for the title; pages with none before them
     /// (an image-only cover) are passed over. Python's `PDF_TITLE_PAGES_READ`.
     public static let pdfTitlePagesRead = 1
+    /// A title whose words, joined with nothing between, run to at least this
+    /// many letters and numbers is also carried when it appears whole in the
+    /// page's words joined the same way: PDFKit can space a word apart on a
+    /// title line ("cur r ent"). Python's `PDF_TITLE_MIN_JOINED_CHARACTERS`
+    /// (#546), whose comment holds the survey.
+    public static let pdfTitleMinJoinedCharacters = 20
     /// What the reader is told of a PDF that is another article's (#541,
     /// #546), Python's `LookupSkipReason.WRONG_ARTICLE` words.
     public static let wrongArticleReason = "another article's PDF"

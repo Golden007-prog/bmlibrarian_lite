@@ -284,6 +284,15 @@ object Constants {
     const val PDF_TITLE_PAGES_READ = 1
 
     /**
+     * A title whose words, joined with nothing between, run to at least this many
+     * letters and numbers is also carried when it appears whole in the page's words
+     * joined the same way: iText can run a title line's words together
+     * ("OptimizingClinicalOutcome"). Python's `PDF_TITLE_MIN_JOINED_CHARACTERS`
+     * (#546), whose comment holds the survey.
+     */
+    const val PDF_TITLE_MIN_JOINED_CHARACTERS = 20
+
+    /**
      * The extension a PDF of another article is set aside with, beside its cached
      * name, which the cache never looks for. Python's `PDF_MISMATCH_SUFFIX`.
      */

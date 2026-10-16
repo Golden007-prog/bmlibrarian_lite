@@ -9,7 +9,11 @@ import fitz
 import pytest
 
 from bmlibrarian_lite import pdf_title_check
-from bmlibrarian_lite.constants import PDF_TITLE_MIN_PAIR_SHARE, PDF_TITLE_PAGES_READ
+from bmlibrarian_lite.constants import (
+    PDF_TITLE_MIN_JOINED_CHARACTERS,
+    PDF_TITLE_MIN_PAIR_SHARE,
+    PDF_TITLE_PAGES_READ,
+)
 from bmlibrarian_lite.pdf_title_check import (
     TitleCheck,
     TitleCheckOutcome,
@@ -57,6 +61,7 @@ def test_the_bounds_are_the_contracts() -> None:
     """One bar, one page read, one set of outcomes on every platform."""
     assert CONTRACT["min_pair_share"] == PDF_TITLE_MIN_PAIR_SHARE
     assert CONTRACT["pages_read"] == PDF_TITLE_PAGES_READ
+    assert CONTRACT["min_joined_characters"] == PDF_TITLE_MIN_JOINED_CHARACTERS
     assert CONTRACT["outcomes"] == [outcome.value for outcome in TitleCheckOutcome]
 
 

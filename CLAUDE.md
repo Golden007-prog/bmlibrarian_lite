@@ -62,7 +62,7 @@ keyed_service_session.py # KeyedServiceSession: a keyed service's 429 pause, ref
 bot_walls.py          # Bot-wall challenge pages recognised from an answer (#480): WALL_MARKERS, challenge_markers
 pdf_download.py       # PDF download helpers: body prefix, .part, .unchecked and .held files, MAX_PDF_SIZE
 pdf_discovery.py      # PDF source discovery
-pdf_title_check.py    # Is a PDF the article? Its first page's share of the title's word pairs (#532)
+pdf_title_check.py    # Is a PDF the article? Its first page's share of the title's word pairs, or the whole title (#532, #546)
 pdf_library_check.py  # A cached PDF found not to carry the title is not read: .mismatch set-aside, .kept marker, bmll keep-pdf (#541)
 browser_rescue.py     # Walled PDFs queued for the embedded browser: states, verdicts, what is queued
 browser_rescue_text.py # What the reader reads about the rescue queue: labels, sentences
@@ -86,7 +86,7 @@ exceptions.py         # Custom exception hierarchy
 
 **Android** (`android/MedicalFactChecker/`):
 - data/local: Room DB + DAOs
-- data/remote: PubMed, Europe PMC, LLM, Unpaywall, FullText APIs (incl. PmcOpenData, PMC's open-data bucket; OpenAlex; Core, CORE's extracted text; Elsevier, Elsevier's API PDFs with a key; KeyedServiceSession, CORE's and Elsevier's session state; BotWalls, bot-wall challenge pages)
+- data/remote: PubMed, Europe PMC, LLM, Unpaywall, FullText APIs (incl. PmcOpenData, PMC's open-data bucket; OpenAlex; Core, CORE's extracted text; Elsevier, Elsevier's API PDFs with a key; KeyedServiceSession, CORE's and Elsevier's session state; BotWalls, bot-wall challenge pages; PdfTitleCheck, another article's PDF)
 - domain: Models, WorkflowState, workflow/ (scoring, searching, reporting)
 - ui: Compose screens + ViewModels (factcheck, report, history, settings, fulltext, onboarding)
 - ui/components: DocumentCard (with transparency), FullTextSourceBadge, SortingControls
@@ -97,7 +97,7 @@ exceptions.py         # Custom exception hierarchy
 
 Shared iOS/macOS components:
 - `JATS/`: XML parsing → HTML/Markdown (JATSXMLParser, JATSModels)
-- `Services/`: EuropePMCService, PubMedService, FullTextService, PMCOpenData (PMC's open-data bucket), OpenAlex, CORE (extracted text), Elsevier (PDFs, with a key), KeyedServiceSession (CORE's and Elsevier's session state), BotWalls (bot-wall challenge pages)
+- `Services/`: EuropePMCService, PubMedService, FullTextService, PMCOpenData (PMC's open-data bucket), OpenAlex, CORE (extracted text), Elsevier (PDFs, with a key), KeyedServiceSession (CORE's and Elsevier's session state), BotWalls (bot-wall challenge pages), PDFTitleCheck (another article's PDF)
 - `Transparency/`: Study transparency analysis
   - `Analysis/`: TransparencyScorer, FundingAnalyzer, COIAnalyzer, DataAvailabilityAnalyzer, TrialComplianceAnalyzer
   - `Models/`: TransparencyModels, TransparencyConstants
