@@ -121,7 +121,7 @@ class FullTextServiceElsevierTest {
 
     /** Elsevier answering every DOI with [fetch]. */
     private fun elsevierAnswering(fetch: ElsevierFetch?): ElsevierService = mockk {
-        coEvery { fetchPdf(any()) } returns fetch
+        coEvery { fetchPdf(any(), any()) } returns fetch
     }
 
     /** The real service against the local server, with [key]; nothing paced or retried. */
@@ -161,31 +161,29 @@ class FullTextServiceElsevierTest {
         core = mockk(relaxed = true)
 
         assertEquals(FullTextResult.ElsevierPdf(localPdf), fetch())
-        coVerify(exactly = 1) { elsevier.fetchPdf(doi) }
+        coVerify(exactly = 1) { elsevier.fetchPdf(doi, any()) }
         coVerify(exactly = 0) { unpaywallApi.getWorkByDoi(any(), any()) }
         coVerify(exactly = 0) { core.fetchText(any()) }
     }
 
     /**
-     * Elsevier's PDF of another article is set aside, told under the article URL it
-     * was asked by, and Unpaywall is asked (#546).
+     * Elsevier's PDF of another article (set aside by the fetch, #546, #560) is told
+     * under the article URL it was asked by, and Unpaywall is asked.
      */
     @Test
-    fun `Elsevier's PDF of another article is set aside and Unpaywall is asked`() = runTest {
-        val served = writeTitledPdf(cache.root.resolve("elsevier-wrong.pdf"), "Using Effect Size\nGail M. Sullivan")
+    fun `Elsevier's PDF of another article is told and Unpaywall is asked`() = runTest {
         unpaywallKnowsNothing()
-        elsevier = elsevierAnswering(ElsevierFetch.Served(served.path))
+        elsevier = elsevierAnswering(ElsevierFetch.WrongArticle)
 
         val result = service().fetchFullText(null, doi, "1", email, title = "Caffeine and blood pressure").getOrThrow()
 
         val expected = OpenAccessShortfall.wrongArticle(OpenAccessSource.ELSEVIER, Elsevier.articleUrl(doi))
         assertEquals(FullTextResult.DoiUrl(doiLink(doi), expected), result)
         coVerify(exactly = 1) { unpaywallApi.getWorkByDoi(any(), any()) }
-        assertFalse("never served again", served.exists())
-        assertTrue(File(served.path + Constants.PDF_MISMATCH_SUFFIX).isFile)
+        coVerify(exactly = 1) { elsevier.fetchPdf(doi, "Caffeine and blood pressure") }
     }
 
-    /** The control: Elsevier's PDF that carries the title is the result. */
+    /** The control: Elsevier's PDF served (checked by the fetch) is the result. */
     @Test
     fun `Elsevier's PDF of this article is the result`() = runTest {
         val served = writeTitledPdf(cache.root.resolve("elsevier-right.pdf"), "Caffeine and blood pressure\nAbstract")
@@ -205,7 +203,7 @@ class FullTextServiceElsevierTest {
             elsevier = elsevierAnswering(ElsevierFetch.Served(localPdf))
             val result = service().fetchFullText(null, stored, "1", email).getOrThrow()
             assertEquals(stored, FullTextResult.ElsevierPdf(localPdf), result)
-            coVerify(exactly = 1) { elsevier.fetchPdf(doi) }
+            coVerify(exactly = 1) { elsevier.fetchPdf(doi, any()) }
         }
     }
 
@@ -344,7 +342,7 @@ class FullTextServiceElsevierTest {
         elsevier = elsevierAnswering(ElsevierFetch.Served(localPdf))
 
         assertEquals(FullTextResult.EuropePmcPdf("https://europepmc.org/a.pdf"), fetch())
-        coVerify(exactly = 0) { elsevier.fetchPdf(any()) }
+        coVerify(exactly = 0) { elsevier.fetchPdf(any(), any()) }
     }
 
     /** Only when nothing earlier obtained the article. */
@@ -358,7 +356,7 @@ class FullTextServiceElsevierTest {
         elsevier = elsevierAnswering(ElsevierFetch.Served(localPdf))
 
         assertTrue(fetch() is FullTextResult.EuropePmcXml)
-        coVerify(exactly = 0) { elsevier.fetchPdf(any()) }
+        coVerify(exactly = 0) { elsevier.fetchPdf(any(), any()) }
     }
 
     /** Not saved: the walk goes on, and a copy Unpaywall serves settles it. */

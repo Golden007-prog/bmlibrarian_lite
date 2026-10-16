@@ -372,11 +372,13 @@ object PdfTitleChecker {
  *
  * Read off the main thread: iText parses the page.
  *
- * @param path The saved PDF
+ * @param path The saved PDF, or a download waiting for its check
  * @param title The article's title; null checks nothing
+ * @param cacheName The cache name a refused file's set-aside name follows: the
+ *   file itself, unless it is a download waiting beside that name (#561)
  * @return Whether it was refused
  */
-internal suspend fun refusedAsAnotherArticle(path: String, title: String?): Boolean {
+internal suspend fun refusedAsAnotherArticle(path: String, title: String?, cacheName: File = File(path)): Boolean {
     val file = File(path)
     // A missing file is never refused (it would read as unreadable), so it is
     // answered here without a thread hop
@@ -397,7 +399,7 @@ internal suspend fun refusedAsAnotherArticle(path: String, title: String?): Bool
             "${file.name} is another article's: its first page with text carries $percent% of the " +
                 "title's word pairs; set aside unread"
         )
-        setAsideWrongArticle(file)
+        setAsideWrongArticle(file, cacheName)
         true
     }
 }

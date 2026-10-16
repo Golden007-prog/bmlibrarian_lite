@@ -358,7 +358,7 @@ class FullTextViewModel @Inject constructor(
         // why (#478, #480)
         val (recorded, result) = doc.recordingFullTextFetch(
             chainResult,
-            downloadPdf = { url -> fullTextService.downloadPdf(url, doc.id) },
+            downloadPdf = { url -> fullTextService.downloadPdf(url, doc.id, doc.title) },
             askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
             askCore = { doi -> fullTextService.askCore(doi) }
         )

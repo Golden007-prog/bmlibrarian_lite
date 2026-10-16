@@ -171,8 +171,12 @@ public enum ElsevierAnswer: Equatable, Sendable {
 
 /// What asking Elsevier for one article's PDF learned.
 enum ElsevierFetch: Equatable {
-    /// The PDF, saved at this local path: never a link, as Elsevier's URL needs the key.
+    /// The PDF the cache held at this local path: never a link, as Elsevier's URL needs
+    /// the key. Checked against the title when it is read.
     case served(localPath: String)
+    /// The PDF Elsevier just served, waiting at `stagedPath` beside its cache name
+    /// `cachePath` until its title check lets it in (#560).
+    case downloaded(stagedPath: String, cachePath: String)
     /// No PDF of this article for this requestor: nothing recorded, the chain goes on.
     case absent
     /// Elsevier could not be asked, or its answer could not be read.

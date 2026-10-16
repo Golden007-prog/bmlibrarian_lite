@@ -508,6 +508,11 @@ public enum BioMedLitConstants {
     /// The extension a PDF of another article is set aside with, beside its
     /// cached name, which the cache never looks for. Python's `PDF_MISMATCH_SUFFIX`.
     public static let pdfMismatchSuffix = ".mismatch"
+    /// The suffix a download waits under, beside its cache name, until its
+    /// title check lets it replace that name (#560). Python's
+    /// `PDF_UNCHECKED_SUFFIX`; here each download adds its own UUID before it,
+    /// since two services in one process can fetch the same article at once.
+    public static let pdfUncheckedSuffix = ".unchecked"
     /// The whitespace HTTP allows around a header's value (RFC 9110's OWS): a
     /// space or a tab, and nothing else, so every platform trims a value alike.
     public static let httpHeaderWhitespace = CharacterSet(charactersIn: " \t")

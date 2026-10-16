@@ -931,23 +931,38 @@ against the article's title, on all three platforms; the judgement is
   measured equal to it on every letter and number of Python's Unicode table
   (macOS's ICU knows letters Python 3.12 does not, so a page using one can still
   differ).
-- **Where.** Every download and every cached PDF a run reuses: Python at each
-  download and the cached-PDF tier (`pdf_library_check`); Swift at the one place
-  every cached PDF passes before its text is read (`extractText(fromCachedPDF:)`),
-  given the title by `fetchFullText(…, title:)`; Android in the recording walk
-  (each open-access candidate and the render), in the chain for Elsevier's PDF,
-  and in the viewer before a cached PDF is shown (a refused one that was the
-  stored PDF is forgotten). Swift checks at fetch time only: a document stored
-  before the check keeps its text and PDF until fetched again (#557). On Swift,
-  with PDF extraction off nothing is downloaded, so a tier's link is handed over
-  unchecked; on both apps a PDF served that could not be saved is offered as its
-  link, unchecked.
-- **What follows.** The PDF is set aside beside its name with `.mismatch` (the
-  check can be wrong), and never read. Swift caches by address, so it keeps one
-  set-aside per address and leaves a file it could not move in place, read again
-  only through the check. Android caches every PDF of a document under one name,
-  so it keeps one set-aside per document, deletes a file it could not rename, and
-  ends the walk when it can do neither. The refusal is a skip with the
+- **Where.** Every download and every cached PDF a run reuses. **A download is
+  checked where it waits, beside its cache name, before it replaces anything
+  there** (#541, #560, #561), so another article's PDF never takes the cache
+  name, never overwrites this article's cached copy, and is never read from the
+  cache by a second fetch of the same article running at the same time. Python
+  stages at `unchecked_download_path` and checks the cached-PDF tier
+  (`pdf_library_check`). Swift writes each download under its own name
+  (`<cache name>.<UUID>.unchecked`), checks it there (`admit`), and checks a
+  cached PDF where every one passes before its text is read
+  (`extractText(fromCachedPDF:)`), given the title by `fetchFullText(…, title:)`;
+  Elsevier's PDF is staged the same way. Android checks each download's partial
+  file (`<id>.pdf.<n>.part`) in `downloadPdf` and in Elsevier's fetch, Elsevier's
+  cached PDF in that fetch, and a cached PDF in the viewer before it is shown (a
+  refused one that was the stored PDF is forgotten). **Android's `downloadPdf`
+  never answers from the cache** (#561): it caches every PDF of a document under
+  one name, so a cached file says nothing about the address asked, and the walk
+  would have told it, or its refusal, as that address's. **A cached PDF gone by
+  the time it is read** (another fetch's check set it aside meanwhile) is no copy
+  served: Swift asks that source again, once, and the download is judged on its
+  own (gone again, that PDF is recorded unsettled, `request_failed` with its
+  address, with no link kept); Android's Elsevier fetch asks as on a miss. Swift checks at fetch time
+  only: a document stored before the check keeps its text and PDF until fetched
+  again (#557). On Swift, with PDF extraction off nothing is downloaded, so a
+  tier's link is handed over unchecked; on both apps a PDF served that could not
+  be saved is offered as its link, unchecked.
+- **What follows.** The PDF is set aside under its cache name with `.mismatch`
+  (the check can be wrong), and never read. Swift caches by address, so it keeps
+  one set-aside per address and leaves a cached file it could not move in place,
+  read again only through the check. Android caches every PDF of a document under
+  one name, so it keeps one set-aside per document and deletes a file it could
+  not rename; a refused download never took the cache name, so the walk goes on
+  past it. The refusal is a skip with the
   PDF's address, `wrong_article`, told "{host}, named by {source} (another
   article's PDF)" as a source not asked: **it is never an absence**, and a copy
   served later settles the question as any does. An open-access candidate's

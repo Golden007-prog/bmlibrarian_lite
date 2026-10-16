@@ -22,6 +22,7 @@ import android.content.Context
 import com.bmlibrarian.factchecker.data.remote.europepmc.EuropePMCService
 import com.bmlibrarian.factchecker.domain.model.RequestFailure
 import com.bmlibrarian.factchecker.domain.model.RequestFailureKind
+import com.bmlibrarian.factchecker.util.Constants
 import io.mockk.every
 import io.mockk.mockk
 import java.io.File
@@ -79,7 +80,9 @@ class FullTextServicePdfDownloadTest {
         server.shutdown()
     }
 
-    private suspend fun download(): PdfDownload = service.downloadPdf(server.url("/a.pdf").toString(), "d")
+    /** Download `/a.pdf` for document `d`, checked against [title] when one is given. */
+    private suspend fun download(title: String? = null): PdfDownload =
+        service.downloadPdf(server.url("/a.pdf").toString(), "d", title)
 
     private fun cachedFiles(): List<String> =
         cache.root.walkTopDown().filter { it.isFile }.map { it.name }.toList()
@@ -237,7 +240,7 @@ class FullTextServicePdfDownloadTest {
             assertEquals(
                 address,
                 PdfDownload.Failed(RequestFailure(RequestFailureKind.REQUEST_FAILED)),
-                service.downloadPdf(address, "d")
+                service.downloadPdf(address, "d", null)
             )
         }
         assertEquals(0, server.requestCount)
@@ -289,16 +292,118 @@ class FullTextServicePdfDownloadTest {
         assertEquals("<html>login</html>", File(cache.root, "fulltext_pdfs/d.pdf.corrupt").readText())
     }
 
-    /** The control: a cached PDF is served without asking again. */
+    /**
+     * A cached PDF is never handed over for an address (#561): every PDF of a document
+     * is cached under one name, so the file says nothing about the address asked, and
+     * the address is asked.
+     */
     @Test
-    fun `a cached PDF is served without a request`() = runTest {
-        File(cache.root, "fulltext_pdfs/d.pdf").apply {
+    fun `a cached PDF is never answered for an address, which is asked`() = runTest {
+        val cached = File(cache.root, "fulltext_pdfs/d.pdf").apply {
             parentFile?.mkdirs()
-            writeBytes(pdfBytes)
+            writeText("%PDF-1.4 an earlier download")
         }
+        server.enqueue(MockResponse().setBody(Buffer().write(pdfBytes)))
 
-        assertTrue(download() is PdfDownload.Saved)
-        assertEquals(0, server.requestCount)
+        val saved = download() as PdfDownload.Saved
+
+        assertEquals(1, server.requestCount)
+        assertEquals(cached.absolutePath, saved.path)
+        assertArrayEquals(pdfBytes, cached.readBytes())
+    }
+
+    // ==================== The title check (#546, #561) ====================
+
+    private val title = "Caffeine and blood pressure: a critical review"
+
+    /** A PDF's bytes whose first page carries [firstPage]. */
+    private fun titledPdfBytes(firstPage: String): ByteArray =
+        writeTitledPdf(File(cache.newFolder(), "titled.pdf"), firstPage).readBytes()
+
+    private val anotherArticle: ByteArray
+        get() = titledPdfBytes("Using Effect Size - or Why the P Value Is Not Enough\nGail M. Sullivan")
+    private val thisArticle: ByteArray
+        get() = titledPdfBytes("$title\nAbstract")
+
+    private val cachedPdf: File get() = File(cache.root, "fulltext_pdfs/d.pdf")
+    private val setAside: File get() = File(cache.root, "fulltext_pdfs/d.pdf" + Constants.PDF_MISMATCH_SUFFIX)
+
+    /** Every file in the PDF cache directory, by name. */
+    private fun pdfCache(): List<String> =
+        File(cache.root, "fulltext_pdfs").listFiles().orEmpty().map { it.name }.sorted()
+
+    /**
+     * Another article's PDF is judged where it waits, set aside beside the cache name,
+     * and never takes it: this article's PDF cached there stays.
+     */
+    @Test
+    fun `another article's PDF is set aside and leaves the cached PDF alone`() = runTest {
+        val kept = thisArticle
+        cachedPdf.apply { parentFile?.mkdirs() }.writeBytes(kept)
+        val served = anotherArticle
+        server.enqueue(MockResponse().setBody(Buffer().write(served)))
+
+        assertSame(PdfDownload.WrongArticle, download(title))
+
+        assertArrayEquals(kept, cachedPdf.readBytes())
+        assertArrayEquals(served, setAside.readBytes())
+        assertEquals("no partial file left", listOf("d.pdf", "d.pdf.mismatch"), pdfCache())
+    }
+
+    /** The control: this article's PDF is saved under the cache name. */
+    @Test
+    fun `this article's PDF is saved`() = runTest {
+        val served = thisArticle
+        server.enqueue(MockResponse().setBody(Buffer().write(served)))
+
+        val saved = download(title) as PdfDownload.Saved
+
+        assertEquals(cachedPdf.absolutePath, saved.path)
+        assertArrayEquals(served, cachedPdf.readBytes())
+        assertEquals(listOf("d.pdf"), pdfCache())
+    }
+
+    /** With no title nothing is checked: another article's PDF is saved. */
+    @Test
+    fun `with no title nothing is checked`() = runTest {
+        server.enqueue(MockResponse().setBody(Buffer().write(anotherArticle)))
+        assertTrue(download(title = null) is PdfDownload.Saved)
+        assertFalse(setAside.exists())
+    }
+
+    /**
+     * A PDF the check could not judge is kept, never refused: a scan has no text to
+     * compare, and a truncated PDF cannot be read. Only a mismatch refuses.
+     */
+    @Test
+    fun `a PDF the check cannot judge is kept`() = runTest {
+        val unjudged = mapOf(
+            "a scan" to titledPdfBytes(""),
+            "a truncated PDF" to "%PDF-1.7\n1 0 obj\n<<".toByteArray()
+        )
+        for ((name, body) in unjudged) {
+            server.enqueue(MockResponse().setBody(Buffer().write(body)))
+            assertTrue(name, download(title) is PdfDownload.Saved)
+            assertArrayEquals(name, body, cachedPdf.readBytes())
+            assertFalse(name, setAside.exists())
+        }
+    }
+
+    /**
+     * #561: a stale cached PDF of another article is never blamed on the address
+     * asked. Asked, the address answers for itself: here a 404.
+     */
+    @Test
+    fun `a stale cached PDF of another article is never told as the address's`() = runTest {
+        val stale = anotherArticle
+        cachedPdf.apply { parentFile?.mkdirs() }.writeBytes(stale)
+        server.enqueue(MockResponse().setResponseCode(404))
+
+        assertEquals(PdfDownload.Failed(RequestFailure.forHttpStatus(404)), download(title))
+
+        assertEquals(1, server.requestCount)
+        assertFalse("nothing set aside: the cached file was not asked about", setAside.exists())
+        assertArrayEquals(stale, cachedPdf.readBytes())
     }
 
     @Test

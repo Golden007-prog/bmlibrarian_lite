@@ -75,7 +75,7 @@ class FullTextViewModelOpenAccessShortfallTest {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         fullTextService = mockk(relaxed = true) {
             every { getCachedPdfPath(any()) } returns null
-            coEvery { downloadPdf(any(), any()) } returns notFound
+            coEvery { downloadPdf(any(), any(), any()) } returns notFound
             // A relaxed MockK answers a suspend call with null, not an empty list
             coEvery { openAlexSteps(any(), any()) } returns emptyList()
             // CORE with no key, as for a user without one: a relaxed mock would invent an answer
@@ -151,7 +151,7 @@ class FullTextViewModelOpenAccessShortfallTest {
         )
         for ((answer, downloaded) in answers) {
             documentDao = mockk(relaxed = true)
-            coEvery { fullTextService.downloadPdf(any(), any()) } returns (downloaded?.let(PdfDownload::Saved) ?: notFound)
+            coEvery { fullTextService.downloadPdf(any(), any(), any()) } returns (downloaded?.let(PdfDownload::Saved) ?: notFound)
             val unsettled = document.copy(fullTextOpenAccessShortfallJson = throttled.toJson())
 
             open(unsettled, answer)
@@ -180,13 +180,13 @@ class FullTextViewModelOpenAccessShortfallTest {
     @Test
     fun `a PDF is shown when downloaded and linked when not`() {
         val pdfUrl = "https://repo.example.org/a.pdf"
-        coEvery { fullTextService.downloadPdf(any(), any()) } returns PdfDownload.Saved("/cache/a.pdf")
+        coEvery { fullTextService.downloadPdf(any(), any(), any()) } returns PdfDownload.Saved("/cache/a.pdf")
         assertEquals(
             FullTextViewModel.FullTextState.PdfContent("/cache/a.pdf", "t", "Unpaywall"),
             open(document, unpaywallPdfs(pdfUrl)).state.value
         )
 
-        coEvery { fullTextService.downloadPdf(any(), any()) } returns notFound
+        coEvery { fullTextService.downloadPdf(any(), any(), any()) } returns notFound
         assertEquals(
             FullTextViewModel.FullTextState.WebUrl(pdfUrl, "t", FullTextLinkKind.UNDOWNLOADED_PDF),
             open(document, FullTextService.FullTextResult.EuropePmcPdf(pdfUrl)).state.value
@@ -222,7 +222,7 @@ class FullTextViewModelOpenAccessShortfallTest {
     fun `OpenAlex is asked through the service once Unpaywall's PDFs failed`() {
         val unpaywallPdf = "https://repo.example.org/a.pdf"
         val openAlexPdf = "https://oa.example.org/b.pdf"
-        coEvery { fullTextService.downloadPdf(openAlexPdf, any()) } returns PdfDownload.Saved("/cache/b.pdf")
+        coEvery { fullTextService.downloadPdf(openAlexPdf, any(), any()) } returns PdfDownload.Saved("/cache/b.pdf")
         coEvery { fullTextService.openAlexSteps("10.1/x", listOf(unpaywallPdf)) } returns
             listOf(OpenAccessStep.Candidate(openAlexPdf, PdfNamer.OPENALEX))
 
@@ -243,7 +243,7 @@ class FullTextViewModelOpenAccessShortfallTest {
     @Test
     fun `a PDF not saved is linked with the caching note`() {
         val pdfUrl = "https://repo.example.org/a.pdf"
-        coEvery { fullTextService.downloadPdf(any(), any()) } returns PdfDownload.NotSaved
+        coEvery { fullTextService.downloadPdf(any(), any(), any()) } returns PdfDownload.NotSaved
         val note = OpenAccessShortfall.notSavedNote(pdfUrl, linkKept = true)
 
         val viewModel = open(document, unpaywallPdfs(pdfUrl))
@@ -263,7 +263,7 @@ class FullTextViewModelOpenAccessShortfallTest {
     @Test
     fun `a Europe PMC PDF not saved is linked with the caching note`() {
         val pdfUrl = "https://europepmc.org/render/a.pdf"
-        coEvery { fullTextService.downloadPdf(any(), any()) } returns PdfDownload.NotSaved
+        coEvery { fullTextService.downloadPdf(any(), any(), any()) } returns PdfDownload.NotSaved
 
         assertEquals(
             FullTextViewModel.FullTextState.WebUrl(
@@ -289,7 +289,7 @@ class FullTextViewModelOpenAccessShortfallTest {
             fullTextFetchedAt = java.util.Date(),
             fullTextPdfNotSavedFrom = stored
         )
-        coEvery { fullTextService.downloadPdf(any(), any()) } returns PdfDownload.NotSaved
+        coEvery { fullTextService.downloadPdf(any(), any(), any()) } returns PdfDownload.NotSaved
 
         val state = open(linkOnly, unpaywallPdfs(served)).state.value
 

@@ -29,41 +29,35 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Wrong-article PDFs in the apps** (#546, Swift + Android; PR #559). The
-desktop's title check (#532/#541) ported, contract `pdf_title_check.json` (66
-rows; each platform's case folding equals Python's `casefold` on all 137,936
-letters and numbers of Python's Unicode table; Swift drops a soft hyphen
-literally and takes the private-use areas out of its letters, which Apple's ICU
-reads differently). **The shared rule gained a route** (maintainer's call):
-the whole title, word breaks ignored (≥ 20 letters/numbers), also matches, as
-PDFKit and iText split and join title words; on 1,491 knowledgebase PDFs, right
-PDFs refused went 18/38/42 → 17/12/18 (MuPDF/PDFKit/iText), no other title more
-matched (`constants.py`). A refused PDF is set aside as `.mismatch`, never read;
-the refusal is `wrong_article`, a skip **with its address**, never an absence;
-new source `europepmc_pdf`. Swift checks at `extractText(fromCachedPDF:title:)`
-(the app passes `document.title`); Android in the recording walk, in the chain
-for Elsevier's PDF and in the viewer (`refusesAsAnotherArticle`), via iText.
-**Android's render of another article ends the fetch** (#556): on the DOI
-link, or with no DOI on no link (`OpenAccessNotEstablished`, recording
-nothing); no platform keeps a link to a refused PDF. A refused stored PDF takes
-its source and fetch date with it. Lodged: #555 (R8, unrelated), #556, #557
-(stored documents), #558 (keep), #560 (Swift: a download checked after it
-reaches the cache path), #561 (Android: a cached PDF blamed on a source never
-asked).
+**A refused PDF and the cache, in the apps** (#560 Swift, #561 Android;
+branch `fix/refused-pdf-cache-560-561`, PR pending merge). **Every download is
+now checked where it waits, beside its cache name, on all three platforms**
+(Python's `unchecked_download_path`): Swift stages each download as
+`<cache name>.<UUID>.unchecked` (open-access copies, the render and Elsevier's
+PDF; `admit` checks, then `rename(2)` into place); Android checks the partial
+(`<id>.pdf.<n>.part`) inside `downloadPdf` and Elsevier's fetch
+(`PdfDownload.WrongArticle`, `ElsevierFetch.WrongArticle`). **Android's
+`downloadPdf` never answers from the cache** (one name per document says
+nothing about the address), so the walk's `cacheBlocked` stop is gone. A cached
+PDF gone by read time (another fetch set it aside) is no copy served: Swift
+re-asks that source once (`PDFTierOutcome.vanished`; gone again is
+`request_failed`, no link), Android's Elsevier fetch asks as on a miss. Contract: `fulltext_retrieval.md`, "A PDF of another
+article".
 
 ## Recently landed (context)
 
 Compressed once merged: the rules that still bind. Git history and the
 `doc/cross_platform/` READMEs carry the rest.
 
-- **Wrong-article PDFs on the desktop** (#532, #541; PRs #542, #548).
-  `pdf_title_check`: ≥ 0.5 of the title's adjacent word pairs on the first page
-  with text; no title, no text or a translated `[title]` is unchecked, never a
-  match (limits: #543). Every download and cached PDF is checked; a mismatch is renamed
-  `<pdf>.mismatch` (numbered for other bytes), **a download is checked where it
-  waits** (`.part`/`.unchecked`), a refusal is a `WRONG_ARTICLE` skip with its
-  address, every set-aside PDF is told, and a person's keep is `<pdf>.kept` (the
-  SHA-256; `bmll keep-pdf`). Open: #545, #547.
+- **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559). Contract
+  `pdf_title_check.json`: ≥ 0.5 of the title's adjacent word pairs on the first
+  page with text, or the whole title with word breaks ignored (≥ 20
+  letters/numbers); no title, no text or a translated `[title]` is unchecked,
+  never a match (limits: #543). A mismatch is set aside as `.mismatch`, never
+  read; the refusal is `wrong_article`, a skip **with its address**, never an
+  absence; no platform keeps a link to a refused PDF. Desktop only: numbered
+  set-asides, a person's keep `<pdf>.kept` (`bmll keep-pdf`). **Android's render
+  of another article ends the fetch** (#556). Open: #545, #547, #555–#558.
 - **Bot-walled PDFs: the desktop browser rescue** (#480, closed; stages 1–3,
   PRs #521, #529, #536). Spec
   `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, developer doc
@@ -78,18 +72,13 @@ Compressed once merged: the rules that still bind. Git history and the
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
-  download, and a download that is no PDF, or a PDF that cannot be opened,
-  is discarded with the page left open; one that does not carry the title is
-  held at `<pdf>.held` until kept or replaced; leaving it records nothing.
-  Every visit reads its entry again when it starts and skips one settled
-  meanwhile. In a shown page,
-  `createWindow` returns the page. The window never imports QtWebEngine at
-  runtime. The tab waits only while a watched entry is pending, due and
-  unvisited, and never past `RESCUE_READER_WAIT_LIMIT_MS`; with no hidden
-  pass, or while the window holds the browser, it does not wait. Only the
-  current full-text discovery's signals count: opening another citation lets
-  the running one go. A queue the tab cannot write or read still names the
-  robot check, never "could not be retrieved".
+  download: no PDF or an unreadable one is discarded with the page left open;
+  one without the title is held at `<pdf>.held` until kept or replaced. Every
+  visit re-reads its entry and skips one settled meanwhile; a shown page's
+  `createWindow` returns the page; the window never imports QtWebEngine at
+  runtime. The tab waits only for a watched, pending, due, unvisited entry,
+  never past `RESCUE_READER_WAIT_LIMIT_MS`; only the current discovery's
+  signals count. A queue the tab cannot use still names the robot check.
 - **Stage 2's rules that bind:** a challenged copy is never a paywall (D1).
   A visit that learnt nothing (no answer, a network error, 408/429/5xx with
   no marker) is `transport`: the entry stays pending, retried no sooner than
@@ -221,8 +210,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 - **#545** sweep the PDF library for other articles' PDFs (CLI only, the
   maintainer's call); **#547** keep a set-aside PDF from the GUI (both from
-  #541); **#555** Android release builds fail R8; **#556**–**#558**, **#560**,
-  **#561** (#546's).
+  #541); **#555** Android release builds fail R8; **#556**–**#558** (#546's).
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
   browser rescue's follow-ups**: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**, **#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.

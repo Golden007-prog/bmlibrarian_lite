@@ -412,7 +412,7 @@ final class FullTextServiceElsevierTests: RecordingLoggerTestCase {
         XCTAssertTrue(core.isPaused)
         StubURLProtocol.routes[elsevierHost] = (200, pdfBody)
         let fetch = try await makeService(elsevierSession: session).fetchElsevierPDF(doi: doi, cacheKey: cacheKey)
-        XCTAssertEqual(fetch, .served(localPath: cachedPath))
+        try assertDownloaded(fetch)
     }
 
     // MARK: - The key and the token
@@ -631,7 +631,8 @@ final class FullTextServiceElsevierTests: RecordingLoggerTestCase {
         StubURLProtocol.routes["repo.example.org"] = (200, pdfBody)
         let elsevierFile = FullTextService.cacheFilename(key: cacheKey, url: articleURL)
         let result = try await makeService(writeCachedPDF: { data, url in
-            if url.lastPathComponent == elsevierFile { throw CocoaError(.fileWriteOutOfSpace) }
+            // The file a download waits in for its title check begins with its cache name (#560)
+            if url.lastPathComponent.hasPrefix(elsevierFile) { throw CocoaError(.fileWriteOutOfSpace) }
             try FullTextService.writeAtomically(data, to: url)
         }).fetchFullText(pmcId: nil, doi: doi, pmid: "")
         XCTAssertEqual(result.content, .unpaywall(pdfURL: URL(string: repo)!))
@@ -729,12 +730,24 @@ final class FullTextServiceElsevierTests: RecordingLoggerTestCase {
         try plantCachedPDF(Data("<html>not a pdf</html>".utf8))
         StubURLProtocol.routes[elsevierHost] = (200, pdfBody)
         let fetch = try await makeService().fetchElsevierPDF(doi: doi, cacheKey: cacheKey)
-        XCTAssertEqual(fetch, .served(localPath: cachedPath))
+        try assertDownloaded(fetch)
         XCTAssertEqual(elsevierRequests, 1)
         let aside = URL(fileURLWithPath: cachedPath)
             .appendingPathExtension(BioMedLitConstants.quarantinedPDFExtension).path
         XCTAssertTrue(FileManager.default.fileExists(atPath: aside), "the corrupt entry was set aside")
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: cachedPath)), pdfBody)
+    }
+
+    /// A fresh fetch leaves the PDF waiting beside its cache name for its title
+    /// check (#560), never at the name itself; the waiting file is removed here.
+    private func assertDownloaded(_ fetch: ElsevierFetch, file: StaticString = #filePath, line: UInt = #line) throws {
+        guard case .downloaded(let staged, let cache) = fetch else {
+            return XCTFail("expected a download waiting for its check, got \(fetch)", file: file, line: line)
+        }
+        defer { FullTextService.discardStaged(staged) }
+        XCTAssertEqual(cache, cachedPath, file: file, line: line)
+        XCTAssertNotEqual(staged, cachedPath, file: file, line: line)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staged)), pdfBody, file: file, line: line)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cachedPath), "not cached before its check", file: file, line: line)
     }
 
     // MARK: - Extraction off
@@ -758,7 +771,7 @@ final class FullTextServiceElsevierTests: RecordingLoggerTestCase {
         let service = makeService(elsevierRetry: .oneRetry)
         let start = Date()
         let fetch = try await service.fetchElsevierPDF(doi: doi, cacheKey: cacheKey)
-        XCTAssertEqual(fetch, .served(localPath: cachedPath))
+        try assertDownloaded(fetch)
         XCTAssertEqual(elsevierRequests, 2)
         XCTAssertGreaterThanOrEqual(
             Date().timeIntervalSince(start), BioMedLitConstants.elsevierMinimumInterval * 0.9

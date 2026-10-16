@@ -517,19 +517,16 @@ class FullTextService @Inject constructor(
             // Asked by the DOI cleaned as Python's `_clean_doi` cleans it, so a DOI
             // stored as `https://www.doi.org/10.1016/...` is Elsevier's too
             val elsevierDoi = Core.bareDoi(usableDoi)
-            when (val fetched = elsevier.fetchPdf(elsevierDoi)) {
-                is ElsevierFetch.Served -> {
-                    if (!refusedAsAnotherArticle(fetched.localPath, title)) {
-                        return@withContext Result.success(FullTextResult.ElsevierPdf(fetched.localPath))
-                    }
-                    // Another article's, set aside: recorded under the article URL it
-                    // was asked by (no key in it), as Python's is, and Unpaywall is asked
-                    listOf(
-                        OpenAccessStep.Unsettled(
-                            OpenAccessShortfall.wrongArticle(OpenAccessSource.ELSEVIER, Elsevier.articleUrl(elsevierDoi))
-                        )
+            when (val fetched = elsevier.fetchPdf(elsevierDoi, title)) {
+                // Checked against the title by the fetch (#546, #560)
+                is ElsevierFetch.Served -> return@withContext Result.success(FullTextResult.ElsevierPdf(fetched.localPath))
+                // Another article's, set aside: recorded under the article URL it
+                // was asked by (no key in it), as Python's is, and Unpaywall is asked
+                ElsevierFetch.WrongArticle -> listOf(
+                    OpenAccessStep.Unsettled(
+                        OpenAccessShortfall.wrongArticle(OpenAccessSource.ELSEVIER, Elsevier.articleUrl(elsevierDoi))
                     )
-                }
+                )
                 null -> emptyList()
                 else -> listOfNotNull(elsevierShortfall(fetched, usableDoi)?.let { OpenAccessStep.Unsettled(it) })
             }
@@ -622,7 +619,8 @@ class FullTextService @Inject constructor(
      * not-saved note carries a link, and Elsevier's URL can never be one); the
      * service logged its cause at ERROR. A 404 or a first page adds nothing.
      *
-     * @param fetched What Elsevier answered; never [ElsevierFetch.Served]
+     * @param fetched What Elsevier answered; never [ElsevierFetch.Served] or
+     *   [ElsevierFetch.WrongArticle], which the chain handles itself
      * @param doi The DOI, for the log
      * @return The shortfall, or null when it settled nothing open
      */
@@ -635,7 +633,7 @@ class FullTextService @Inject constructor(
         ElsevierFetch.NetworkRefused -> OpenAccessShortfall.ELSEVIER_NETWORK_REFUSED
         ElsevierFetch.NotSaved ->
             OpenAccessShortfall(OpenAccessSource.ELSEVIER, RequestFailure(RequestFailureKind.REQUEST_FAILED))
-        ElsevierFetch.Absent, is ElsevierFetch.Served -> null
+        ElsevierFetch.Absent, is ElsevierFetch.Served, ElsevierFetch.WrongArticle -> null
     }
 
     /**
@@ -1052,27 +1050,38 @@ class FullTextService @Inject constructor(
     }
 
     /**
-     * Download a PDF to local cache.
+     * Download a PDF to local cache: the PDF at [pdfUrl], always asked for.
+     *
+     * Never answered from the cache (#561): every PDF of a document is cached under
+     * one name, `<id>.pdf`, whatever address it came from, so a cached file says
+     * nothing about [pdfUrl], and the recording would have told it, or its refusal,
+     * as that address's. The viewer reads the cache itself ([getCachedPdfPath]).
      *
      * A body that does not begin with `%PDF` ([looksLikePdf]) is refused
      * before anything is written, as a challenge page or a malformed one. A
-     * PDF is written to `<id>.pdf.part` and renamed into place only once it
-     * has arrived whole, so a page served in the PDF's place, or a download
-     * that broke off, is never returned as cached (#478). The partial file is
-     * removed on every other outcome. A cached file that is not a PDF, written by an earlier build, is
-     * quarantined and fetched again (fulltext_retrieval.md, "Cache Read
-     * Validation").
+     * PDF is written to a partial file of its own (`<id>.pdf.<n>.part`, so two
+     * downloads of one document never write the same file) and, once it has
+     * arrived whole, checked there against [title] (#546, #561): another article's
+     * is set aside as `<id>.pdf.mismatch` and never takes the cache name, so it
+     * neither replaces this article's cached PDF nor is served by another fetch.
+     * Only then is it renamed into place, so a page served in the PDF's place, or
+     * a download that broke off, is never returned as cached (#478). The partial
+     * file is removed on every other outcome. A cached file that is not a PDF,
+     * written by an earlier build, is quarantined (fulltext_retrieval.md, "Cache
+     * Read Validation").
      *
      * @param pdfUrl URL of the PDF to download.
      * @param documentId Document ID for file naming.
+     * @param title The document's title the PDF is checked against; null checks nothing.
      * @return The cached file; why the source did not serve the PDF (the status,
      *   the transport failure, `CHALLENGED` with its status for a bot wall's
      *   challenge page (#480), `MALFORMED_RESPONSE` for any other body that is
      *   not a PDF, or `REQUEST_FAILED` for an address that cannot be requested);
-     *   or [PdfDownload.NotSaved] when the cache could not be written.
+     *   [PdfDownload.WrongArticle] for another article's PDF; or
+     *   [PdfDownload.NotSaved] when the cache could not be written.
      * @throws CancellationException if the caller cancelled.
      */
-    suspend fun downloadPdf(pdfUrl: String, documentId: String): PdfDownload = withContext(Dispatchers.IO) {
+    suspend fun downloadPdf(pdfUrl: String, documentId: String, title: String?): PdfDownload = withContext(Dispatchers.IO) {
         try {
             val cacheDir = File(context.cacheDir, PDF_CACHE_DIR).apply {
                 if (!exists()) mkdirs()
@@ -1081,11 +1090,7 @@ class FullTextService @Inject constructor(
             val fileName = "${documentId}.pdf"
             val localFile = File(cacheDir, fileName)
 
-            if (isCachedPdf(localFile)) {
-                Log.d(TAG, "Using cached PDF: ${localFile.absolutePath}")
-                return@withContext PdfDownload.Saved(localFile.absolutePath)
-            }
-            if (localFile.exists()) {
+            if (localFile.exists() && !isCachedPdf(localFile)) {
                 Log.w(TAG, "Quarantining a cached file that is not a PDF: ${localFile.absolutePath}")
                 quarantineCachedFile(localFile, File(cacheDir, "$fileName$PDF_CORRUPT_SUFFIX"))
             }
@@ -1130,11 +1135,24 @@ class FullTextService @Inject constructor(
                     )
                 }
 
-                val partial = File(cacheDir, "$fileName$PDF_PARTIAL_SUFFIX")
+                val partial = try {
+                    File.createTempFile("$fileName.", PDF_PARTIAL_SUFFIX, cacheDir)
+                } catch (e: IOException) {
+                    throw CacheWriteException(e)
+                }
                 try {
                     body.byteStream().use { input -> input.copyToCache(partial) }
-                    if (!isCachedPdf(partial) || !partial.renameTo(localFile)) {
+                    if (!isCachedPdf(partial)) {
                         // The body began as a PDF, so a file that does not is the cache's fault
+                        Log.e(TAG, "Could not cache the PDF at ${localFile.absolutePath}")
+                        return@withContext PdfDownload.NotSaved
+                    }
+                    // Judged where it waits (#561), set aside under the cache name's
+                    // set-aside name when refused (logged by the check)
+                    if (refusedAsAnotherArticle(partial.path, title, cacheName = localFile)) {
+                        return@withContext PdfDownload.WrongArticle
+                    }
+                    if (!partial.renameTo(localFile)) {
                         Log.e(TAG, "Could not cache the PDF at ${localFile.absolutePath}")
                         return@withContext PdfDownload.NotSaved
                     }

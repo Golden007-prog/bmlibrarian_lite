@@ -63,6 +63,14 @@ sealed class PdfDownload {
      */
     object NotSaved : PdfDownload()
 
+    /**
+     * The source served another article's PDF: its first page with text does not
+     * carry the document's title (#546). Checked where the download waited, before
+     * it replaced the cached file (#561), and set aside beside that name unread; it
+     * says nothing about this article, so the walk goes on.
+     */
+    object WrongArticle : PdfDownload()
+
     /** The saved file's path, or null when nothing was saved. */
     val savedPath: String?
         get() = (this as? Saved)?.path
@@ -115,22 +123,24 @@ internal fun quarantineCachedFile(file: File, quarantine: File) {
 }
 
 /**
- * Set a saved PDF of another article aside, so the cache never serves it again (#546).
+ * Set a PDF of another article aside, so the cache never serves it again (#546).
  *
- * Renamed beside itself with [Constants.PDF_MISMATCH_SUFFIX], which no lookup
+ * Renamed to its cache name with [Constants.PDF_MISMATCH_SUFFIX], which no lookup
  * reads, rather than deleted: the check can be wrong (a preprint retitled between
  * versions), as Python's `pdf_library_check` keeps its set-aside PDFs. One copy per
  * name is kept, the latest, replacing an earlier one: the app has no keep to
  * restore one by. A rename that fails is logged and the file deleted instead, as
- * [quarantineCachedFile] does, so the next source's download does not find it in
- * its place; a file that can be neither is still there, and the open-access walk
- * stops on it rather than blame the next source for it.
+ * [quarantineCachedFile] does. A download is set aside from where it waited for
+ * its check (#561), so it never took the cache name; a cached file the viewer
+ * refused that can be neither moved nor deleted stays, and is refused again each
+ * time it is read.
  *
- * @param file The saved PDF
+ * @param file The PDF: the cached file, or a download waiting for its check
+ * @param cacheName The cache name its set-aside name follows; the file itself by default
  * @return Where it was set aside, or null when it could not be moved
  */
-internal fun setAsideWrongArticle(file: File): File? {
-    val aside = File(file.parentFile, file.name + Constants.PDF_MISMATCH_SUFFIX)
+internal fun setAsideWrongArticle(file: File, cacheName: File = file): File? {
+    val aside = File(cacheName.parentFile, cacheName.name + Constants.PDF_MISMATCH_SUFFIX)
     if (aside.exists()) aside.delete()
     if (file.renameTo(aside)) return aside
     Log.e(TAG, "Could not set aside the PDF of another article at ${file.absolutePath}; deleting it")

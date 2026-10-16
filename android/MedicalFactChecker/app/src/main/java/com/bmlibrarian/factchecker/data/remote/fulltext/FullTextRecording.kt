@@ -24,7 +24,6 @@ import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
 import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
 import com.bmlibrarian.factchecker.domain.model.OpenAccessUnsettledReason
 import com.bmlibrarian.factchecker.util.Constants
-import java.io.File
 import java.util.Date
 
 /**
@@ -59,14 +58,16 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  * one served and not saved also gets the caching note. Elsevier's PDF arrives
  * already saved, and is recorded as the local file it is (#480, stage C2).
  *
- * Every PDF saved here is checked against the document's title (#546): one whose
- * first page with text does not carry it is another article's, set aside unread
- * ([refusedAsAnotherArticle]); an open-access candidate's is recorded as a
+ * Every PDF downloaded here is checked against the document's title by the
+ * download itself, before it is cached (#546, #561): one whose first page with
+ * text does not carry it is another article's, set aside unread
+ * ([PdfDownload.WrongArticle]); an open-access candidate's is recorded as a
  * wrong-article skip with its address and the walk goes on, a render's ends the
  * fetch on the DOI link, or with none on no link ([renderOfAnotherArticle]).
  *
  * @param result What the chain returned
- * @param downloadPdf Downloads a PDF URL
+ * @param downloadPdf Downloads a PDF URL, always asking it (never a cached file,
+ *   which could be another address's, #561), and checks it against the title
  * @param askOpenAlex Asks OpenAlex for its steps, given the DOI and the
  *   addresses tried or refused; called at most once, and only when no
  *   Unpaywall copy was served (#480). Required: a caller that left it out
@@ -90,9 +91,8 @@ suspend fun DocumentEntity.recordingFullTextFetch(
     is FullTextResult.EuropePmcPdf -> when (val download = downloadPdf(result.pdfUrl)) {
         PdfDownload.NotSaved ->
             RecordedFetch(recording(result, pdfPath = null).copy(fullTextPdfNotSavedFrom = result.pdfUrl), result)
-        is PdfDownload.Saved ->
-            if (refusedAsAnotherArticle(download.path, title)) renderOfAnotherArticle(result)
-            else RecordedFetch(recording(result, download.path), result)
+        is PdfDownload.Saved -> RecordedFetch(recording(result, download.path), result)
+        PdfDownload.WrongArticle -> renderOfAnotherArticle(result)
         is PdfDownload.Failed -> RecordedFetch(recording(result, pdfPath = null), result)
     }
     // Already saved by the chain: a local file, never a URL to download (#480, stage C2)
@@ -137,10 +137,10 @@ private fun DocumentEntity.renderOfAnotherArticle(result: FullTextResult.EuropeP
  * the absence open (#498); absent, or without a key, it adds nothing.
  * Otherwise the DOI link carries every shortfall met, in chain order: an
  * unsettled lookup, or a candidate refused under its namer's source with its
- * address (#478's rule).
+ * address (#478's rule), or another article's PDF with its address (#546).
  *
  * @param result The steps the chain found
- * @param downloadPdf Downloads a PDF URL
+ * @param downloadPdf Downloads a PDF URL, checked against the title
  * @param askOpenAlex Asks OpenAlex for its steps, given the DOI and the
  *   addresses tried or refused, in chain order
  * @param askCore Asks CORE for its extracted text, given the DOI
@@ -154,10 +154,6 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
 ): RecordedFetch {
     var shortfall: OpenAccessShortfall? = null
     val tried = mutableListOf<String>()
-    // Set when another article's PDF could be neither renamed nor deleted: every
-    // PDF of a document is saved under one name, so the next candidate's download
-    // would be handed that file from the cache and refused under its own address
-    var cacheBlocked = false
 
     /** Walk [steps]; the recorded fetch when a copy was served, else null. */
     suspend fun walk(steps: List<OpenAccessStep>): RecordedFetch? {
@@ -171,21 +167,13 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
                     tried += step.addresses
                     val found = FullTextResult.OpenAccessPdf(step.pdfUrl, result.doi, step.namedBy)
                     when (val download = downloadPdf(step.pdfUrl)) {
-                        is PdfDownload.Saved -> {
-                            if (!refusedAsAnotherArticle(download.path, title)) {
-                                return RecordedFetch(recording(found, download.path), found)
-                            }
-                            // Another article's, set aside (#546): it settles nothing
-                            // about this one, so the walk goes on, as for a copy refused
-                            shortfall = OpenAccessShortfall.adding(
-                                OpenAccessShortfall.wrongArticle(step.namedBy.refusedAs, step.pdfUrl), shortfall
-                            )
-                            if (File(download.path).exists()) {
-                                // Logged by the set-aside; the question stays open
-                                cacheBlocked = true
-                                return null
-                            }
-                        }
+                        is PdfDownload.Saved -> return RecordedFetch(recording(found, download.path), found)
+                        // Another article's, set aside by the download (#546, #561): it
+                        // settles nothing about this one, so the walk goes on, as for a
+                        // copy refused
+                        PdfDownload.WrongArticle -> shortfall = OpenAccessShortfall.adding(
+                            OpenAccessShortfall.wrongArticle(step.namedBy.refusedAs, step.pdfUrl), shortfall
+                        )
                         PdfDownload.NotSaved -> {
                             val linked = found.copy(notSaved = true)
                             return RecordedFetch(recording(linked, pdfPath = null), linked)
@@ -201,7 +189,7 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
     }
 
     walk(result.steps)?.let { return it }
-    if (!result.openAlexAsked && !cacheBlocked) {
+    if (!result.openAlexAsked) {
         walk(askOpenAlex(result.doi, tried.toList()))?.let { return it }
     }
     // CORE's extracted text (#480, stage C): every candidate failed, so it can

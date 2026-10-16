@@ -445,7 +445,7 @@ class ReportViewModel @Inject constructor(
                         // named that could not be downloaded is the DOI link (#478)
                         val (updatedDoc, fullTextResult) = document.recordingFullTextFetch(
                             chainResult,
-                            downloadPdf = { url -> fullTextService.downloadPdf(url, document.id) },
+                            downloadPdf = { url -> fullTextService.downloadPdf(url, document.id, document.title) },
                             askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
                             askCore = { doi -> fullTextService.askCore(doi) }
                         )
