@@ -40,18 +40,28 @@ import java.util.Locale
 sealed class PdfTitleCheck(val outcomeName: String) {
     /**
      * The page read carries the title: at least [Constants.PDF_TITLE_MIN_PAIR_SHARE]
-     * of its word pairs.
+     * of its word pairs, or the whole title with word breaks ignored
+     * ([PdfTitleChecker.carriesWholeTitle]).
      *
-     * @property share The share of the title's word pairs the page carries, 0 to 1
+     * @property share The share of the title's word pairs the page carries, 0 to 1;
+     *   1 when only the whole title matched
      */
-    data class Matches(override val share: Double) : PdfTitleCheck("matches")
+    data class Matches(override val share: Double) : PdfTitleCheck("matches") {
+        init {
+            require(share in 0.0..1.0) { "a share runs from 0 to 1, not $share" }
+        }
+    }
 
     /**
      * The page read has text, and too little of the title.
      *
      * @property share The share of the title's word pairs the page carries, 0 to 1
      */
-    data class Mismatch(override val share: Double) : PdfTitleCheck("mismatch")
+    data class Mismatch(override val share: Double) : PdfTitleCheck("mismatch") {
+        init {
+            require(share in 0.0..1.0) { "a share runs from 0 to 1, not $share" }
+        }
+    }
 
     /** The title has no words: there is nothing to check against. */
     data object NoTitle : PdfTitleCheck("no_title")
@@ -69,7 +79,10 @@ sealed class PdfTitleCheck(val outcomeName: String) {
     /** The file could not be read as a PDF, needs a password, or has no pages. */
     data object Unreadable : PdfTitleCheck("unreadable")
 
-    /** The share of the title's word pairs the page carries, when text was compared; null otherwise. */
+    /**
+     * The share of the title's word pairs the page carries, when text was
+     * compared (1 when only the whole title matched); null otherwise.
+     */
     open val share: Double?
         get() = null
 
@@ -365,12 +378,19 @@ object PdfTitleChecker {
  */
 internal suspend fun refusedAsAnotherArticle(path: String, title: String?): Boolean {
     val file = File(path)
-    // No file is never refused (it would read as unreadable), so it is answered
-    // here without a thread hop
+    // A missing file is never refused (it would read as unreadable), so it is
+    // answered here without a thread hop
     if (title == null || !file.isFile) return false
     return withContext(Dispatchers.IO) {
         val check = PdfTitleChecker.check(file, title)
-        if (!check.refusesPdf) return@withContext false
+        if (!check.refusesPdf) {
+            // Told apart from a match in the log: a PDF kept unjudged was never
+            // checked. Unreadable was logged by the check, with its cause
+            if (check.share == null && check != PdfTitleCheck.Unreadable) {
+                Log.i("PdfTitleChecker", "${file.name} kept unjudged: ${check.outcomeName}")
+            }
+            return@withContext false
+        }
         val percent = Math.round((check.share ?: 0.0) * PERCENT)
         Log.w(
             "PdfTitleChecker",

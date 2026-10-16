@@ -595,7 +595,7 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
          * stored `key_refused` skip is Elsevier's when the source it names is
          * `elsevier`, and CORE's otherwise (core, another source, or none): only
          * they are skipped so. A stored `wrong_article` skip keeps its address and
-         * source (Unpaywall's PDF for a source that names none); without an address
+         * source (Unpaywall's PDF for a source that names no PDF); without an address
          * it reads by its failure. Any other skip reads by its failure.
          *
          * @param stored The stored value, untrusted

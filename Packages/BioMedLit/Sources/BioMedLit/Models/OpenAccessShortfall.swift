@@ -620,7 +620,7 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
     /// `key_refused` skip is Elsevier's when the source it names is `elsevier`,
     /// and CORE's otherwise: only they are skipped so. A stored `wrong_article`
     /// skip keeps its address and source (Unpaywall's PDF for a source that
-    /// names none); without an address it reads by its failure. Any other skip
+    /// names no PDF); without an address it reads by its failure. Any other skip
     /// reads by its failure.
     ///
     /// - Parameter stored: The stored value, untrusted.

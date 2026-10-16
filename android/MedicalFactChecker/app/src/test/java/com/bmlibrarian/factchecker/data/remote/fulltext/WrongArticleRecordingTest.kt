@@ -20,7 +20,7 @@ import java.io.File
  * A PDF the recording saves is checked against the document's title (#546): another
  * article's is set aside unread, recorded as a wrong-article skip with its address,
  * and never an absence. An open-access candidate's lets the walk go on; a render's
- * ends the fetch on a link.
+ * ends the fetch on the DOI link, or with no DOI on no link.
  */
 class WrongArticleRecordingTest {
     @get:Rule
@@ -106,6 +106,29 @@ class WrongArticleRecordingTest {
     }
 
     /**
+     * A PDF the check could not judge is kept, never refused: a scan has no text to
+     * compare, and a truncated PDF cannot be read. Only a mismatch refuses.
+     */
+    @Test
+    fun `a PDF the check cannot judge is kept`() = runTest {
+        val unjudged = mapOf<String, (File) -> Unit>(
+            "a scan" to { file -> writeTitledPdf(file, "") },
+            "a truncated PDF" to { file -> file.writeText("%PDF-1.7\n1 0 obj\n<<") }
+        )
+        for ((name, write) in unjudged) {
+            val recorded = document().recordingFullTextFetch(
+                found(wrong),
+                downloadPdf = { write(saved); PdfDownload.Saved(saved.path) },
+                askOpenAlex = noOpenAlex,
+                askCore = noCore
+            )
+            assertEquals(name, FullTextResult.OpenAccessPdf(wrong, doi, PdfNamer.UNPAYWALL), recorded.result)
+            assertEquals(name, saved.path, recorded.document.pdfPath)
+            assertFalse(name, setAside.exists())
+        }
+    }
+
+    /**
      * Another article's PDF that can be neither renamed nor deleted ends the walk:
      * every PDF of a document is saved under one name, so the next candidate would
      * be handed that file and refused under its own address. The question stays open.
@@ -152,16 +175,23 @@ class WrongArticleRecordingTest {
         )
     }
 
-    /** With no DOI to link to, the render's link is kept, as a render not downloaded is (#471). */
+    /**
+     * With no DOI to link to, nothing is: the render's link names that other article.
+     * Nothing is recorded, so the fetch stays on offer, and the reader is told why.
+     */
     @Test
-    fun `a render of another article with no DOI keeps the render's link, told`() = runTest {
-        val recorded = document(doi = null)
-            .recordingFullTextFetch(FullTextResult.EuropePmcPdf(render), download, noOpenAlex, noCore)
-        assertEquals(FullTextResult.EuropePmcPdf(render), recorded.result)
-        assertNull(recorded.document.pdfPath)
+    fun `a render of another article with no DOI ends on no link, told`() = runTest {
+        val stored = document(doi = null)
+        val recorded = stored.recordingFullTextFetch(FullTextResult.EuropePmcPdf(render), download, noOpenAlex, noCore)
+        val expected = OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, render)
+        assertEquals(FullTextResult.OpenAccessNotEstablished(expected), recorded.result)
+        assertEquals("recorded nothing", stored, recorded.document)
+        assertTrue(setAside.isFile)
         assertEquals(
-            OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, render),
-            recorded.document.openAccessShortfall
+            "No source provided this article's full text. Failed to obtain a PDF from the following tried " +
+                "sources: europepmc.org, named by Europe PMC (another article's PDF). A freely available copy " +
+                "may exist. Whether this document is open access was not established.",
+            (recorded.result as FullTextResult.OpenAccessNotEstablished).reason
         )
     }
 

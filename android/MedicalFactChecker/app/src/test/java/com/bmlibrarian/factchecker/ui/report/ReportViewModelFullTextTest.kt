@@ -117,6 +117,14 @@ class ReportViewModelFullTextTest {
         assertEquals(throttled, written.openAccessShortfall)
     }
 
+    /** The chain is given the document's title, which Elsevier's PDF is checked against (#546). */
+    @Test
+    fun `the chain is asked with the document's title`() {
+        fetch(document, FullTextService.FullTextResult.DoiUrl("https://doi.org/10.1/x"))
+
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), "t") }
+    }
+
     @Test
     fun `a settled answer clears an earlier shortfall`() {
         val unsettled = document.copy(fullTextOpenAccessShortfallJson = throttled.toJson())

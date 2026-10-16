@@ -939,8 +939,9 @@ public actor FullTextService {
     ///     the article's JATS, when it could not be read (#480). Consulted
     ///     only when Europe PMC left no shortfall, so the reader is given one
     ///     sentence.
-    ///   - openAccessShortfall: Why the copies after the render (Elsevier's
-    ///     API, Unpaywall's and OpenAlex's PDFs, CORE) left one unassessed.
+    ///   - openAccessShortfall: Why the open-access copies (a render of
+    ///     another article, Elsevier's API, Unpaywall's and OpenAlex's PDFs,
+    ///     CORE) left one unassessed.
     ///   - articleName: How the log names the article.
     /// - Returns: The error to throw.
     static func exhaustedChainError(
@@ -2893,6 +2894,13 @@ public actor FullTextService {
                 )
                 Self.setAsideWrongArticle(at: path)
                 return .wrongArticle
+            }
+            // Told apart from a match in the log: a PDF kept unjudged was never checked
+            if check.share == nil {
+                BioMedLitLib.logger?.info(
+                    "PDF \(path) kept unjudged by the title check: \(check.outcomeName)",
+                    category: .fullText
+                )
             }
         }
         let extraction = extractor.extract(from: URL(fileURLWithPath: path))

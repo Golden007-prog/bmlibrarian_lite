@@ -362,7 +362,7 @@ class FullTextViewModel @Inject constructor(
             askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
             askCore = { doi -> fullTextService.askCore(doi) }
         )
-        if (result !is FullTextResult.NotEstablished) {
+        if (result !is FullTextResult.NotEstablished && result !is FullTextResult.OpenAccessNotEstablished) {
             documentDao.update(recorded)
             _document.value = recorded
         }
@@ -397,11 +397,7 @@ class FullTextViewModel @Inject constructor(
             }
             is FullTextResult.EuropePmcPdf -> {
                 Log.d(TAG, "Got Europe PMC PDF URL for ${doc.id}: ${result.pdfUrl}")
-                pdfOrLink(
-                    recorded.pdfPath, result.pdfUrl, doc.title, "Europe PMC", recorded.fullTextPdfNotSavedFrom,
-                    // A render of another article kept as a link is told so (#546)
-                    openAccessNotice = recorded.openAccessShortfall?.notice
-                )
+                pdfOrLink(recorded.pdfPath, result.pdfUrl, doc.title, "Europe PMC", recorded.fullTextPdfNotSavedFrom)
             }
             is FullTextResult.OpenAccessPdf -> {
                 Log.d(TAG, "Got ${result.namedBy.label} PDF URL for ${doc.id}: ${result.pdfUrl}")
@@ -436,6 +432,11 @@ class FullTextViewModel @Inject constructor(
                 Log.d(TAG, "Full text not established for ${doc.id}: ${result.failure.describe()}")
                 FullTextState.Error(message = result.reason, canRetry = true)
             }
+            is FullTextResult.OpenAccessNotEstablished -> {
+                // Nothing to link to, and not a fact about the article (#546)
+                Log.d(TAG, "Full text not established for ${doc.id}: ${result.shortfall.notice}")
+                FullTextState.Error(message = result.reason, canRetry = true)
+            }
         }
     }
 
@@ -445,13 +446,19 @@ class FullTextViewModel @Inject constructor(
      * aside would still read as full text in hand, and a fetch that brings no PDF
      * would write it back.
      *
+     * Its source and fetch date go with it, as the refresh clears them: a record
+     * keeping its PDF source without the PDF reads as link-only, whose cards say
+     * a PDF of this article was found ([FullTextLinkKind.UNDOWNLOADED_PDF]), and
+     * stays so when the fetch that follows records nothing ([FullTextResult.NotEstablished]).
+     * Reached only for a record with no text, which the viewer would have shown.
+     *
      * @param doc The document
      * @param path The PDF set aside
      * @return The document as saved, unchanged when its PDF was another file
      */
     private suspend fun forgettingPdf(doc: DocumentEntity, path: String): DocumentEntity {
         if (doc.pdfPath != path) return doc
-        val forgotten = doc.copy(pdfPath = null)
+        val forgotten = doc.copy(pdfPath = null, fullTextSource = null, fullTextFetchedAt = null)
         documentDao.update(forgotten)
         _document.value = forgotten
         return forgotten
@@ -468,8 +475,6 @@ class FullTextViewModel @Inject constructor(
      *   null. The link shown is then that PDF's, so it is told as
      *   [FullTextLinkKind.PDF_NOT_SAVED] with the caching note saying only its
      *   link is kept: the two agree, and agree with the link offered.
-     * @param openAccessNotice What was left unsettled, told beside a link; null
-     *   when nothing was.
      * @return The state to show.
      */
     private fun pdfOrLink(
@@ -477,8 +482,7 @@ class FullTextViewModel @Inject constructor(
         pdfUrl: String,
         title: String,
         source: String,
-        notSavedFrom: String?,
-        openAccessNotice: String? = null
+        notSavedFrom: String?
     ): FullTextState =
         if (localPath != null) {
             FullTextState.PdfContent(pdfPath = localPath, title = title, source = source)
@@ -487,7 +491,6 @@ class FullTextViewModel @Inject constructor(
                 url = pdfUrl,
                 title = title,
                 kind = if (notSavedFrom != null) FullTextLinkKind.PDF_NOT_SAVED else FullTextLinkKind.UNDOWNLOADED_PDF,
-                openAccessNotice = openAccessNotice,
                 pdfNotSavedNote = notSavedFrom?.let { OpenAccessShortfall.notSavedNote(it, linkKept = true) }
             )
         }

@@ -272,8 +272,8 @@ object Constants {
     /**
      * A PDF is taken as the article's when its first page with text carries at
      * least this share of the title's adjacent word pairs (#532, #546). Python's
-     * `PDF_TITLE_MIN_PAIR_SHARE`, measured on 1,500 desktop PDFs; contract:
-     * `doc/cross_platform/fulltext_parity/pdf_title_check.json`.
+     * `PDF_TITLE_MIN_PAIR_SHARE`, measured on 1,500 knowledgebase PDFs (500, then
+     * two held-out 500s); contract: `doc/cross_platform/fulltext_parity/pdf_title_check.json`.
      */
     const val PDF_TITLE_MIN_PAIR_SHARE = 0.5
 

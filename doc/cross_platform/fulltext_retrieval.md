@@ -918,7 +918,8 @@ against the article's title, on all three platforms; the judgement is
 
 - **The check.** The first page with text (an image-only cover is passed over)
   must carry at least half of the title's adjacent word pairs, or the whole
-  title read with no word breaks (at least 20 letters and numbers), since PDFKit
+  title read with no word breaks (at least 20 letters and numbers, counted by
+  code point after case folding), since PDFKit
   spaces words apart and iText runs them together on some title lines: on 1,491
   knowledgebase PDFs against their own titles that route took the refusals of
   right PDFs from 18/38/42 (MuPDF/PDFKit/iText) to 17/12/18, with no more of
@@ -927,7 +928,9 @@ against the article's title, on all three platforms; the judgement is
   file that cannot be read is judged by nothing: never a match, never a mismatch.
   **Only a mismatch refuses a PDF.** The text is NFKC-normalised and fully
   case-folded as Python's `str.casefold` folds it; each platform's folding was
-  measured equal to it on every letter and number.
+  measured equal to it on every letter and number of Python's Unicode table
+  (macOS's ICU knows letters Python 3.12 does not, so a page using one can still
+  differ).
 - **Where.** Every download and every cached PDF a run reuses: Python at each
   download and the cached-PDF tier (`pdf_library_check`); Swift at the one place
   every cached PDF passes before its text is read (`extractText(fromCachedPDF:)`),
@@ -935,21 +938,28 @@ against the article's title, on all three platforms; the judgement is
   (each open-access candidate and the render), in the chain for Elsevier's PDF,
   and in the viewer before a cached PDF is shown (a refused one that was the
   stored PDF is forgotten). Swift checks at fetch time only: a document stored
-  before the check keeps its text and PDF until fetched again (#557). With PDF
-  extraction off nothing is downloaded, so a tier's link is handed over unchecked.
-- **What follows.** The PDF is set aside beside its name with `.mismatch`, never
-  deleted (the check can be wrong), and never read. The refusal is a skip with the
+  before the check keeps its text and PDF until fetched again (#557). On Swift,
+  with PDF extraction off nothing is downloaded, so a tier's link is handed over
+  unchecked; on both apps a PDF served that could not be saved is offered as its
+  link, unchecked.
+- **What follows.** The PDF is set aside beside its name with `.mismatch` (the
+  check can be wrong), and never read. Swift caches by address, so it keeps one
+  set-aside per address and leaves a file it could not move in place, read again
+  only through the check. Android caches every PDF of a document under one name,
+  so it keeps one set-aside per document, deletes a file it could not rename, and
+  ends the walk when it can do neither. The refusal is a skip with the
   PDF's address, `wrong_article`, told "{host}, named by {source} (another
   article's PDF)" as a source not asked: **it is never an absence**, and a copy
   served later settles the question as any does. An open-access candidate's
   refusal lets the walk go on; Elsevier's lets Unpaywall be asked. Europe PMC's
   render is recorded under `europepmc_pdf`, told first: Swift goes on down the
-  chain, Android ends the fetch on the DOI link (or the render's link with no
-  DOI), as a render it could not download ends it (#471). No link to a refused
-  PDF is kept as a fallback.
+  chain; Android ends the fetch, as a render it could not download ends it
+  (#471), on the DOI link, or with no DOI on no link at all, told as BioMedLit's
+  `openAccessNotEstablished` is and recording nothing (#556). No platform keeps a
+  link to a refused PDF.
 - **The desktop only** keeps a person's override (`<pdf>.kept`, `bmll keep-pdf`),
   numbers distinct set-aside copies, and tells the reader where a PDF was set
-  aside; the apps keep the latest copy per cached name.
+  aside; the apps keep the latest copy per cached name, as above.
 
 ## OpenAlex's Locations (#480)
 

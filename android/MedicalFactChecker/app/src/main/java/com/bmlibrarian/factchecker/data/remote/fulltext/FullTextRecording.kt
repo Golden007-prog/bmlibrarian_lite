@@ -63,7 +63,7 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  * first page with text does not carry it is another article's, set aside unread
  * ([refusedAsAnotherArticle]); an open-access candidate's is recorded as a
  * wrong-article skip with its address and the walk goes on, a render's ends the
- * fetch on a link ([renderOfAnotherArticle]).
+ * fetch on the DOI link, or with none on no link ([renderOfAnotherArticle]).
  *
  * @param result What the chain returned
  * @param downloadPdf Downloads a PDF URL
@@ -76,8 +76,9 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  *   (#480, stage C). Null is no key: nothing asked, nothing recorded. Required,
  *   with no default, for the same reason as [askOpenAlex]
  * @return The document to store, and the result to show; the document is
- *   unchanged for [FullTextResult.NotEstablished], which is not a fact about
- *   the article and leaves the fetch on offer (#434)
+ *   unchanged for [FullTextResult.NotEstablished] and
+ *   [FullTextResult.OpenAccessNotEstablished], which are not facts about the
+ *   article and leave the fetch on offer (#434, #546)
  */
 suspend fun DocumentEntity.recordingFullTextFetch(
     result: FullTextResult,
@@ -103,9 +104,11 @@ suspend fun DocumentEntity.recordingFullTextFetch(
  * A Europe PMC render that is another article's PDF, set aside (#546).
  *
  * The chain returned the render before the later tiers ran, so this fetch ends on
- * it, as a render that could not be downloaded does (#471): on the DOI link when
- * the document has a DOI, else on the render's link, never on the PDF. Either way
- * the wrong-article shortfall is stored and told, and the absence stays open.
+ * it, as a render that could not be downloaded does (#471), but never on the
+ * render's link, which names that other article: on the DOI link with the
+ * wrong-article shortfall stored and told, or, with no DOI, on
+ * [FullTextResult.OpenAccessNotEstablished], which records nothing and tells the
+ * shortfall, as BioMedLit's chain ends. Either way the absence stays open.
  *
  * @param result The render the chain returned
  * @return The document to store, and the result to show
@@ -113,9 +116,7 @@ suspend fun DocumentEntity.recordingFullTextFetch(
 private fun DocumentEntity.renderOfAnotherArticle(result: FullTextResult.EuropePmcPdf): RecordedFetch {
     val shortfall = OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, result.pdfUrl)
     val usableDoi = doi?.trim()?.ifEmpty { null }
-        ?: return RecordedFetch(
-            recording(result, pdfPath = null).copy(fullTextOpenAccessShortfallJson = shortfall.toJson()), result
-        )
+        ?: return RecordedFetch(this, FullTextResult.OpenAccessNotEstablished(shortfall))
     val link = FullTextResult.DoiUrl(doiLink(usableDoi), shortfall)
     return RecordedFetch(recording(link, pdfPath = null), link)
 }
@@ -310,5 +311,5 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
         fullTextOpenAccessShortfallJson = null,
         fullTextPdfNotSavedFrom = null
     )
-    is FullTextResult.NotEstablished -> this
+    is FullTextResult.NotEstablished, is FullTextResult.OpenAccessNotEstablished -> this
 }

@@ -263,6 +263,27 @@ class FullTextService @Inject constructor(
             val reason: String
                 get() = notEstablishedMessage(source.serviceName, failure)
         }
+
+        /**
+         * No source provided the full text, and an open-access copy went
+         * unassessed: nothing was left to link to (#546).
+         *
+         * What a Europe PMC render of another article comes to for a document
+         * with no DOI: the render's link names that article, so none is kept,
+         * and without a DOI there is no publisher's page to offer. BioMedLit's
+         * `FullTextError.openAccessNotEstablished`, worded the same. Like
+         * [NotEstablished], a claim about us, not the article: callers record
+         * nothing, so the fetch stays on offer.
+         *
+         * @property shortfall Why the open-access copy went unassessed
+         */
+        data class OpenAccessNotEstablished(
+            val shortfall: OpenAccessShortfall
+        ) : FullTextResult(hasContent = false) {
+            /** The sentence shown to the reader: the shortfall's own, as BioMedLit's. */
+            val reason: String
+                get() = "No source provided this article's full text. ${shortfall.notice}"
+        }
     }
 
     /**
@@ -1202,6 +1223,7 @@ class FullTextService @Inject constructor(
             is FullTextResult.DoiUrl -> Constants.FULLTEXT_SOURCE_DOI
             is FullTextResult.Unavailable -> null
             is FullTextResult.NotEstablished -> null
+            is FullTextResult.OpenAccessNotEstablished -> null
         }
     }
 }

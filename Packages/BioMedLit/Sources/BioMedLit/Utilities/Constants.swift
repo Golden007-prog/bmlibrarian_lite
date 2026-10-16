@@ -489,8 +489,9 @@ public enum BioMedLitConstants {
 
     /// A PDF is taken as the article's when its first page with text carries
     /// at least this share of the title's adjacent word pairs (#532, #546).
-    /// Python's `PDF_TITLE_MIN_PAIR_SHARE`, measured on 1,500 desktop PDFs;
-    /// contract: `doc/cross_platform/fulltext_parity/pdf_title_check.json`.
+    /// Python's `PDF_TITLE_MIN_PAIR_SHARE`, measured on 1,500 knowledgebase
+    /// PDFs (500, then two held-out 500s); contract:
+    /// `doc/cross_platform/fulltext_parity/pdf_title_check.json`.
     public static let pdfTitleMinPairShare = 0.5
     /// The pages with text read for the title; pages with none before them
     /// (an image-only cover) are passed over. Python's `PDF_TITLE_PAGES_READ`.

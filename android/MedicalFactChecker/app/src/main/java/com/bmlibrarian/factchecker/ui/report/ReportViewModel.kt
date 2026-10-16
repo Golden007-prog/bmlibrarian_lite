@@ -465,6 +465,8 @@ class ReportViewModel @Inject constructor(
 
                         if (fullTextResult is FullTextService.FullTextResult.NotEstablished) {
                             _events.send(ReportUiEvent.ShowSnackbar(fullTextResult.reason))
+                        } else if (fullTextResult is FullTextService.FullTextResult.OpenAccessNotEstablished) {
+                            _events.send(ReportUiEvent.ShowSnackbar(fullTextResult.reason))
                         } else if (!fullTextResult.hasContent) {
                             _events.send(ReportUiEvent.ShowSnackbar("Full text not available"))
                         }

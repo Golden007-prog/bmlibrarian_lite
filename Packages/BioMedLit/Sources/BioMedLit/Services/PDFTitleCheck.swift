@@ -27,7 +27,8 @@ import PDFKit
 /// A share exists exactly when text was compared, by construction.
 public enum PDFTitleCheck: Sendable, Equatable {
     /// The page read carries the title: at least
-    /// ``BioMedLitConstants/pdfTitleMinPairShare`` of its word pairs.
+    /// ``BioMedLitConstants/pdfTitleMinPairShare`` of its word pairs, or the
+    /// whole title with word breaks ignored (a share of 1).
     case matches(share: Double)
     /// The page read has text, and too little of the title.
     case mismatch(share: Double)
@@ -58,7 +59,8 @@ public enum PDFTitleCheck: Sendable, Equatable {
     public static let outcomeNames = ["matches", "mismatch", "no_title", "no_text", "translated_title", "unreadable"]
 
     /// The share of the title's word pairs the page carries, from 0 to 1,
-    /// when text was compared; `nil` otherwise.
+    /// when text was compared (1 when only the whole title matched); `nil`
+    /// otherwise.
     public var share: Double? {
         switch self {
         case .matches(let share), .mismatch(let share): return share
@@ -79,7 +81,8 @@ public enum PDFTitleCheck: Sendable, Equatable {
     /// - Returns: ``matches(share:)`` when it reaches the bar, else
     ///   ``mismatch(share:)``.
     public static func compared(share: Double) -> PDFTitleCheck {
-        share >= BioMedLitConstants.pdfTitleMinPairShare ? .matches(share: share) : .mismatch(share: share)
+        precondition((0...1).contains(share), "a share runs from 0 to 1, not \(share)")
+        return share >= BioMedLitConstants.pdfTitleMinPairShare ? .matches(share: share) : .mismatch(share: share)
     }
 }
 
@@ -89,8 +92,13 @@ public enum PDFTitleChecker {
     /// vertical tab, NEL and the four information separators. Spelt out so
     /// the three platforms' engines read one set.
     private static let whitespace = #"[\s\p{Z}\u000B\u0085\u001C-\u001F]"#
+    /// The private-use areas, taken out of every letter class: Apple's ICU
+    /// reads some of them as letters (U+F882), which Python's and Java's
+    /// tables do not, so a private-use glyph in a text layer would join two
+    /// words here and split them there.
+    private static let privateUse = #"[\x{E000}-\x{F8FF}\x{F0000}-\x{10FFFF}]"#
     /// A word character as Python's `\w` has it: a letter, a number, `_`.
-    private static let wordCharacter = #"[\p{L}\p{N}_]"#
+    private static let wordCharacter = #"[[\p{L}\p{N}_]-"# + privateUse + "]"
 
     /// Markup a stored title may carry (`<i>E. coli</i>`): an element's tag,
     /// never a bare `<` or `>` (`IL-6 < 5 pg/mL`).
@@ -101,7 +109,7 @@ public enum PDFTitleChecker {
         "(" + wordCharacter + #")[-‐­][ \t]*\r?\n"# + whitespace + "*(" + wordCharacter + ")"
     )
     /// A word: a run of letters and numbers. Anything else separates words.
-    private static let word = regex(#"[\p{L}\p{N}]+"#)
+    private static let word = regex(#"[[\p{L}\p{N}]-"# + privateUse + "]+")
     /// A title PubMed translated into English, in square brackets: one
     /// bracketed whole, which may hold bracketed parts of its own
     /// (`[[18F]FDG PET in ...]`), with at most a full stop after.
@@ -165,7 +173,11 @@ public enum PDFTitleChecker {
     /// - Returns: Its words, in order.
     static func words(_ text: String) -> [String] {
         let folded = caseFolded(
-            text.precomposedStringWithCompatibilityMapping.replacingOccurrences(of: "\u{00AD}", with: "")
+            // Literal: compared by character, a soft hyphen before a
+            // combining mark is one character with it, and is kept
+            text.precomposedStringWithCompatibilityMapping.replacingOccurrences(
+                of: "\u{00AD}", with: "", options: .literal
+            )
         )
         let range = NSRange(folded.startIndex..., in: folded)
         return word.matches(in: folded, range: range).compactMap { match in

@@ -22,10 +22,13 @@ import androidx.lifecycle.SavedStateHandle
 import com.bmlibrarian.factchecker.data.local.dao.DocumentDao
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
+import com.bmlibrarian.factchecker.data.remote.fulltext.NotEstablishedSource
 import com.bmlibrarian.factchecker.data.remote.fulltext.PdfDownload
 import com.bmlibrarian.factchecker.data.remote.fulltext.writeTitledPdf
 import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
 import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
+import com.bmlibrarian.factchecker.domain.model.RequestFailure
+import com.bmlibrarian.factchecker.domain.model.RequestFailureKind
 import com.bmlibrarian.factchecker.data.repository.SettingsRepository
 import com.bmlibrarian.factchecker.domain.model.AppSettings
 import com.bmlibrarian.factchecker.util.Constants
@@ -45,6 +48,7 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -156,6 +160,35 @@ class FullTextViewModelElsevierTest {
         coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), "t") }
         val state = viewModel.state.value
         assertFalse("$state", state is FullTextViewModel.FullTextState.PdfContent)
+        // Forgotten at once, and the fetch that follows does not write it back
+        coVerify(atLeast = 1) { documentDao.update(match { it.id == "d" && it.pdfPath == null }) }
+        coVerify(exactly = 0) { documentDao.update(match { it.pdfPath != null }) }
+    }
+
+    /**
+     * A refused stored PDF takes its source and fetch date with it (#546): a fetch
+     * that then records nothing must not leave an Elsevier record without its PDF,
+     * whose cards would say a PDF of this article was found.
+     */
+    @Test
+    fun `a refused stored PDF leaves no link-only record when the fetch records nothing`() {
+        val pdf = pdfOnDisk()
+        coEvery { fullTextService.refusesAsAnotherArticle(pdf.absolutePath, "t") } returns true
+        val stored = mutableListOf<DocumentEntity>()
+        coEvery { documentDao.update(capture(stored)) } returns Unit
+
+        open(
+            elsevierRecord(pdf.absolutePath),
+            answer = FullTextService.FullTextResult.NotEstablished(
+                RequestFailure(RequestFailureKind.TIMEOUT), NotEstablishedSource.EUROPE_PMC
+            )
+        )
+
+        val last = stored.last()
+        assertNull(last.pdfPath)
+        assertNull(last.fullTextSource)
+        assertNull(last.fullTextFetchedAt)
+        assertFalse("never link-only", last.isLinkOnly)
     }
 
     /** The same for the PDF cached under the document's ID, checked with its title (#546). */
@@ -205,11 +238,12 @@ class FullTextViewModelElsevierTest {
     }
 
     /**
-     * A render of another article kept as a link, for a document with no DOI, is
-     * told as such beside the link (#546).
+     * A render of another article, for a document with no DOI, ends on no link: the
+     * render's names that other article (#546). The reader is told why, offered a
+     * retry, and nothing is recorded.
      */
     @Test
-    fun `a render of another article kept as a link is told`() = runBlocking {
+    fun `a render of another article with no DOI offers no link, told`() = runBlocking {
         val render = "https://europepmc.org/articles/PMC1/pdf"
         val saved = File(folder.root, "d.pdf")
         coEvery { fullTextService.downloadPdf(render, "d") } answers {
@@ -222,14 +256,19 @@ class FullTextViewModelElsevierTest {
         )
 
         val state = withTimeout(TIMEOUT_MS) {
-            viewModel.state.first { it is FullTextViewModel.FullTextState.WebUrl }
-        } as FullTextViewModel.FullTextState.WebUrl
+            viewModel.state.first { it is FullTextViewModel.FullTextState.Error || it is FullTextViewModel.FullTextState.WebUrl }
+        }
 
-        assertEquals(render, state.url)
         assertEquals(
-            OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, render).notice,
-            state.openAccessNotice
+            FullTextViewModel.FullTextState.Error(
+                message = FullTextService.FullTextResult.OpenAccessNotEstablished(
+                    OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, render)
+                ).reason,
+                canRetry = true
+            ),
+            state
         )
+        coVerify(exactly = 0) { documentDao.update(any()) }
     }
 
     /** A file that exists but is not a PDF (empty, or a page) is not opened as the article. */

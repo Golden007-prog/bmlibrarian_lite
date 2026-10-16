@@ -122,8 +122,9 @@ internal fun quarantineCachedFile(file: File, quarantine: File) {
  * versions), as Python's `pdf_library_check` keeps its set-aside PDFs. One copy per
  * name is kept, the latest, replacing an earlier one: the app has no keep to
  * restore one by. A rename that fails is logged and the file deleted instead, as
- * [quarantineCachedFile] does, so the next source's download never finds it in
- * its place.
+ * [quarantineCachedFile] does, so the next source's download does not find it in
+ * its place; a file that can be neither is still there, and the open-access walk
+ * stops on it rather than blame the next source for it.
  *
  * @param file The saved PDF
  * @return Where it was set aside, or null when it could not be moved

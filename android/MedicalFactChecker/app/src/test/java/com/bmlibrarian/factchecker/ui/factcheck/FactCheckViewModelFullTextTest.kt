@@ -138,7 +138,20 @@ class FactCheckViewModelFullTextTest {
         assertEquals(false, reported)
     }
 
-    /** The control: without it the test above passes against a view model that never records. */
+    /** The same when an open-access copy went unassessed with nothing to link to (#546). */
+    @Test
+    fun `a chain that left the open-access copy unassessed with no link records nothing`() {
+        val (stored, reported) = fetch(
+            FullTextService.FullTextResult.OpenAccessNotEstablished(
+                OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, "https://europepmc.org/a.pdf")
+            )
+        )
+
+        assertEquals(document, stored)
+        assertEquals(false, reported)
+    }
+
+    /** The control: without it the tests above pass against a view model that never records. */
     @Test
     fun `a chain that found nothing records the article as unavailable`() {
         val (stored, reported) = fetch(FullTextService.FullTextResult.Unavailable("No full text source available"))
@@ -152,6 +165,14 @@ class FactCheckViewModelFullTextTest {
         val (_, reported) = fetch(FullTextService.FullTextResult.DoiUrl("https://doi.org/10.1/x"))
 
         assertEquals(true, reported)
+    }
+
+    /** The chain is given the document's title, which Elsevier's PDF is checked against (#546). */
+    @Test
+    fun `the chain is asked with the document's title`() {
+        fetch(FullTextService.FullTextResult.DoiUrl("https://doi.org/10.1/x"))
+
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), "t") }
     }
 
     /** A link the chain settled on because Unpaywall could not answer keeps why (#466). */

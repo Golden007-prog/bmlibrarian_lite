@@ -1,6 +1,8 @@
 package com.bmlibrarian.factchecker.data.remote.fulltext
 
 import com.bmlibrarian.factchecker.util.Constants
+import com.itextpdf.kernel.pdf.PdfDocument
+import com.itextpdf.kernel.pdf.PdfWriter
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -12,11 +14,15 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+
+/** How deep a test page's arrays nest: far past what a test thread's stack can recurse. */
+private const val NESTING_PAST_THE_STACK = 500_000
 
 /**
  * Whether a PDF is the article it was fetched for, judged by its title (#546): the
@@ -135,6 +141,27 @@ class PdfTitleCheckContractTest {
         assertEquals(PdfTitleCheck.Unreadable, PdfTitleChecker.check(truncated, title))
         assertEquals(PdfTitleCheck.Unreadable, PdfTitleChecker.check(empty, title))
         assertEquals(PdfTitleCheck.Unreadable, PdfTitleChecker.check(File(folder.root, "gone.pdf"), title))
+    }
+
+    /**
+     * A page nested past the stack (a damaged or hostile file) is unreadable, not a
+     * crash: its content stream opens arrays far deeper than the parser can recurse.
+     */
+    @Test
+    fun `a page nested too deeply to read is unreadable`() {
+        val file = folder.newFile("deep.pdf")
+        val nested = "[".repeat(NESTING_PAST_THE_STACK) + "]".repeat(NESTING_PAST_THE_STACK) + " TJ"
+        PdfDocument(PdfWriter(file)).use { pdf -> pdf.addNewPage().newContentStreamAfter().setData(nested.toByteArray()) }
+        assertEquals(PdfTitleCheck.Unreadable, PdfTitleChecker.check(file, title))
+    }
+
+    /** A share outside 0 to 1 is no share: the compared outcomes refuse one, as Python's does. */
+    @Test
+    fun `a share outside 0 to 1 is refused`() {
+        for (share in listOf(-0.1, 1.1, Double.NaN)) {
+            assertThrows(IllegalArgumentException::class.java) { PdfTitleCheck.Matches(share) }
+            assertThrows(IllegalArgumentException::class.java) { PdfTitleCheck.Mismatch(share) }
+        }
     }
 
     @Test

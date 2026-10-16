@@ -88,8 +88,8 @@ class TitleCheck:
     Attributes:
         outcome: What it found.
         share: The share of the title's word pairs the pages carry, from 0
-            to 1, when text was compared (1 for a title carried whole, word
-            breaks ignored); ``None`` otherwise.
+            to 1, when text was compared (1 when only the whole title, word
+            breaks ignored, matched); ``None`` otherwise.
 
     Raises:
         ValueError: On construction, for a share missing from a comparison,

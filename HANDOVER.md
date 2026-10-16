@@ -30,9 +30,11 @@ have landed):
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
 **Wrong-article PDFs in the apps** (#546, Swift + Android; PR #559). The
-desktop's title check (#532/#541) ported, contract `pdf_title_check.json` (64
+desktop's title check (#532/#541) ported, contract `pdf_title_check.json` (66
 rows; each platform's case folding equals Python's `casefold` on all 137,936
-letters and numbers). **The shared rule gained a route** (maintainer's call):
+letters and numbers of Python's Unicode table; Swift drops a soft hyphen
+literally and takes the private-use areas out of its letters, which Apple's ICU
+reads differently). **The shared rule gained a route** (maintainer's call):
 the whole title, word breaks ignored (≥ 20 letters/numbers), also matches, as
 PDFKit and iText split and join title words; on 1,491 knowledgebase PDFs, right
 PDFs refused went 18/38/42 → 17/12/18 (MuPDF/PDFKit/iText), no other title more
@@ -41,8 +43,13 @@ the refusal is `wrong_article`, a skip **with its address**, never an absence;
 new source `europepmc_pdf`. Swift checks at `extractText(fromCachedPDF:title:)`
 (the app passes `document.title`); Android in the recording walk, in the chain
 for Elsevier's PDF and in the viewer (`refusesAsAnotherArticle`), via iText.
-**Android's render of another article ends the fetch** (#556). Lodged: #555
-(R8, unrelated), #556, #557 (stored documents), #558 (keep).
+**Android's render of another article ends the fetch** (#556): on the DOI
+link, or with no DOI on no link (`OpenAccessNotEstablished`, recording
+nothing); no platform keeps a link to a refused PDF. A refused stored PDF takes
+its source and fetch date with it. Lodged: #555 (R8, unrelated), #556, #557
+(stored documents), #558 (keep), #560 (Swift: a download checked after it
+reaches the cache path), #561 (Android: a cached PDF blamed on a source never
+asked).
 
 ## Recently landed (context)
 
@@ -95,7 +102,7 @@ Compressed once merged: the rules that still bind. Git history and the
   change a needle only against live pages and the survey.
 - **Settings dialog lifecycle** (PR #518): a released dialog's handlers do
   nothing (**a queued signal still arrives after a disconnect**); **the suite
-  collects garbage on the main thread only** (#517, #519). **PySide6 capped
+  collects garbage on the main thread only** (#517). Lodged: #519. **PySide6 capped
   `<6.12`** (#516): **check master's CI before a slice**.
 - **Machine channels, stage C2: Elsevier's article API** (all three; PR
   #507). Contract "Elsevier's Article API" + `elsevier_article.json`.
@@ -214,7 +221,8 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 - **#545** sweep the PDF library for other articles' PDFs (CLI only, the
   maintainer's call); **#547** keep a set-aside PDF from the GUI (both from
-  #541); **#555** Android release builds fail R8; **#556**–**#558** (#546's).
+  #541); **#555** Android release builds fail R8; **#556**–**#558**, **#560**,
+  **#561** (#546's).
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
   browser rescue's follow-ups**: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**, **#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.

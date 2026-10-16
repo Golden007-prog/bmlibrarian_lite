@@ -57,7 +57,9 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
         super.tearDown()
     }
 
-    private func makeService(elsevierAPIKey: String? = nil) -> FullTextService {
+    /// The service, its checker refusing a file that holds ``wrongMarker``, or
+    /// answering `outcome` for every file when one is given.
+    private func makeService(elsevierAPIKey: String? = nil, outcome: PDFTitleCheck? = nil) -> FullTextService {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubURLProtocol.self]
         let session = URLSession(configuration: config)
@@ -74,6 +76,7 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
             elsevierRetry: .noRetry,
             elsevierSession: ElsevierSession(),
             titleChecker: { url, _ in
+                if let outcome { return outcome }
                 let bytes = (try? Data(contentsOf: url)) ?? Data()
                 return bytes.range(of: FullTextServiceWrongArticleTests.wrongMarker) == nil
                     ? .matches(share: 1) : .mismatch(share: 0.1)
@@ -81,9 +84,24 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
         )
     }
 
-    private func fetch(title: String?, elsevierAPIKey: String? = nil) async throws -> FullTextResult {
-        try await makeService(elsevierAPIKey: elsevierAPIKey)
+    private func fetch(
+        title: String?, elsevierAPIKey: String? = nil, outcome: PDFTitleCheck? = nil
+    ) async throws -> FullTextResult {
+        try await makeService(elsevierAPIKey: elsevierAPIKey, outcome: outcome)
             .fetchFullText(pmcId: nil, doi: doi, pmid: "", title: title)
+    }
+
+    /// Europe PMC's record for the article, naming its render.
+    private var searchNamingTheRender: Data {
+        Data(#"""
+            {"resultList": {"result": [{
+              "id": "1", "pmcid": "PMC1", "inPMC": "Y", "doi": "\#(doi)",
+              "fullTextUrlList": {"fullTextUrl": [
+                {"documentStyle": "pdf", "site": "Europe_PMC", "url": "\#(render)",
+                 "availability": "Open access", "availabilityCode": "OA"}
+              ]}
+            }]}}
+            """#.utf8)
     }
 
     private func unpaywall(_ pdfs: [String]) -> Data {
@@ -118,6 +136,25 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
         XCTAssertEqual(result.content, .unpaywall(pdfURL: URL(string: wrong)!))
         XCTAssertEqual(result.localPDFPath, cachedPath(wrong))
         XCTAssertFalse(StubURLProtocol.requested("right.example.org"))
+    }
+
+    /// A check that judged nothing leaves the PDF in use: only a mismatch
+    /// refuses one, so a scan, a translated title, an unreadable file or a
+    /// title with no words is read as the article.
+    func testAPDFTheCheckCouldNotJudgeIsRead() async throws {
+        for outcome in [PDFTitleCheck.noTitle, .noText, .translatedTitle, .unreadable] {
+            FullTextService.deleteCachedPDF(for: cacheKey)
+            StubURLProtocol.routes["unpaywall"] = (200, unpaywall([wrong, right]))
+            StubURLProtocol.routes["wrong.example.org"] = (200, wrongBody)
+            let result = try await fetch(title: title, outcome: outcome)
+            XCTAssertEqual(result.content, .unpaywall(pdfURL: URL(string: wrong)!), "\(outcome)")
+            XCTAssertEqual(result.extractedText, "The article.", "\(outcome)")
+            XCTAssertNil(result.openAccessShortfall, "\(outcome)")
+            XCTAssertFalse(
+                FileManager.default.fileExists(atPath: cachedPath(wrong) + BioMedLitConstants.pdfMismatchSuffix),
+                "\(outcome): nothing set aside"
+            )
+        }
     }
 
     /// The only copy another article's: told as a source not asked, no link to
@@ -169,15 +206,7 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
     // MARK: - The render and Elsevier's API
 
     func testEuropePMCsRenderOfAnotherArticleIsToldAndUnpaywallTried() async throws {
-        StubURLProtocol.routes["search"] = (200, Data(#"""
-            {"resultList": {"result": [{
-              "id": "1", "pmcid": "PMC1", "inPMC": "Y", "doi": "\#(doi)",
-              "fullTextUrlList": {"fullTextUrl": [
-                {"documentStyle": "pdf", "site": "Europe_PMC", "url": "\#(render)",
-                 "availability": "Open access", "availabilityCode": "OA"}
-              ]}
-            }]}}
-            """#.utf8))
+        StubURLProtocol.routes["search"] = (200, searchNamingTheRender)
         StubURLProtocol.routes["fullTextXML"] = (404, Data())
         StubURLProtocol.routes["pmc-oa-opendata"] = (404, Data())
         StubURLProtocol.routes["articles/PMC1/pdf"] = (200, wrongBody)
@@ -193,6 +222,20 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
                 + "(another article's PDF). A freely available copy may exist. Whether this document is open "
                 + "access was not established."
         )
+    }
+
+    /// The control: a render that carries the title is the result, and no
+    /// later source is asked.
+    func testEuropePMCsRenderOfThisArticleIsServed() async throws {
+        StubURLProtocol.routes["search"] = (200, searchNamingTheRender)
+        StubURLProtocol.routes["fullTextXML"] = (404, Data())
+        StubURLProtocol.routes["pmc-oa-opendata"] = (404, Data())
+        StubURLProtocol.routes["articles/PMC1/pdf"] = (200, pdfBody)
+        let result = try await fetch(title: title)
+        XCTAssertEqual(result.content, .europePMCPDF(pdfURL: URL(string: render)!))
+        XCTAssertEqual(result.extractedText, "The article.")
+        XCTAssertNil(result.openAccessShortfall)
+        XCTAssertFalse(StubURLProtocol.requested("unpaywall"))
     }
 
     func testElseviersPDFOfAnotherArticleIsToldAndUnpaywallTried() async throws {
