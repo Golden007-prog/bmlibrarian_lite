@@ -140,6 +140,16 @@ final class PDFCacheKeyTests: XCTestCase {
 
         XCTAssertTrue(FullTextService.isClearableCacheEntry(cached))
         XCTAssertTrue(FullTextService.isClearableCacheEntry(quarantined))
+        // Another article's PDF, set aside (#546): cache too
+        XCTAssertTrue(FullTextService.isClearableCacheEntry(
+            URL(fileURLWithPath: cached.path + BioMedLitConstants.pdfMismatchSuffix)
+        ))
+        XCTAssertFalse(
+            FullTextService.isClearableCacheEntry(
+                FullTextService.pdfCacheDirectory.appendingPathComponent("notes.mismatch")
+            ),
+            "only a PDF's set-aside name"
+        )
         XCTAssertFalse(
             FullTextService.isClearableCacheEntry(
                 FullTextService.pdfCacheDirectory.appendingPathComponent("notes.txt")

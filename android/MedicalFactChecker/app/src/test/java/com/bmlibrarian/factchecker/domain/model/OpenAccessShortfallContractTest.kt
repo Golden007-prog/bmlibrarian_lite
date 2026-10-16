@@ -175,7 +175,9 @@ class OpenAccessShortfallContractTest {
             OpenAccessShortfall.CORE_KEY_REFUSED,
             OpenAccessShortfall.ELSEVIER_KEY_REFUSED,
             OpenAccessShortfall.ELSEVIER_NETWORK_REFUSED
-        )) {
+        ) + OpenAccessShortfall.WRONG_ARTICLE_SOURCES.map {
+            OpenAccessShortfall.wrongArticle(it, "https://example.org/a.pdf")
+        }) {
             assertEquals(skipped, OpenAccessShortfall.fromJson(skipped.toJson()))
         }
     }

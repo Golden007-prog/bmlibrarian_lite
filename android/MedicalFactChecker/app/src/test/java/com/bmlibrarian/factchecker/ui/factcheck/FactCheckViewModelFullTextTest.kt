@@ -114,7 +114,7 @@ class FactCheckViewModelFullTextTest {
         answer: FullTextService.FullTextResult,
         from: DocumentEntity = document
     ): Pair<DocumentEntity, Boolean?> {
-        coEvery { fullTextService.fetchFullText(any(), any(), any(), any()) } returns Result.success(answer)
+        coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } returns Result.success(answer)
         val stored = slot<DocumentEntity>()
         coEvery { documentRepository.updateDocument(capture(stored)) } returns Unit
         var reported: Boolean? = null
@@ -233,7 +233,7 @@ class FactCheckViewModelFullTextTest {
     /** A thrown fetch is not an article without full text either. */
     @Test
     fun `a failed fetch records nothing`() {
-        coEvery { fullTextService.fetchFullText(any(), any(), any(), any()) } throws IllegalStateException("boom")
+        coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } throws IllegalStateException("boom")
         var reported: Boolean? = null
 
         viewModel.fetchFullText(document) { reported = it }

@@ -93,6 +93,14 @@ public actor FullTextService {
     /// Defaults to ``writeAtomically(_:to:)``.
     private let writeCachedPDF: @Sendable (Data, URL) throws -> Void
 
+    /// Whether a cached PDF's first page with text carries the article's
+    /// title (#546).
+    ///
+    /// Injectable for the reason `extractor` is: the tier tests serve bytes
+    /// that only begin like a PDF, and a stub decides the check without a real
+    /// file. Defaults to ``PDFTitleChecker/check(fileURL:title:)``.
+    private let titleChecker: @Sendable (URL, String) -> PDFTitleCheck
+
     /// How the Europe PMC full-text XML fetch retries a transient failure.
     ///
     /// Injectable so a test can pin what a throttle that outlasts its retries
@@ -247,6 +255,9 @@ public actor FullTextService {
     ///   - writeCachedPDF: Writes a verified PDF to its cache file. Defaults
     ///     to ``writeAtomically(_:to:)``; injectable so a test can make the
     ///     write fail.
+    ///   - titleChecker: Whether a cached PDF carries the article's title
+    ///     (#546). Defaults to ``PDFTitleChecker/check(fileURL:title:)``;
+    ///     injectable so a test can decide it without a real PDF.
     public init(
         email: String,
         session: URLSession = FullTextService.makeSession(),
@@ -263,7 +274,10 @@ public actor FullTextService {
         elsevierInstToken: String? = nil,
         elsevierRetry: RetryConfiguration = .elsevier,
         elsevierSession: ElsevierSession = .shared,
-        writeCachedPDF: @escaping @Sendable (Data, URL) throws -> Void = FullTextService.writeAtomically
+        writeCachedPDF: @escaping @Sendable (Data, URL) throws -> Void = FullTextService.writeAtomically,
+        titleChecker: @escaping @Sendable (URL, String) -> PDFTitleCheck = { url, title in
+            PDFTitleChecker.check(fileURL: url, title: title)
+        }
     ) {
         self.email = email
         self.europePMCService = europePMCService
@@ -282,6 +296,7 @@ public actor FullTextService {
         self.elsevierRetry = elsevierRetry
         self.elsevierSession = elsevierSession
         self.writeCachedPDF = writeCachedPDF
+        self.titleChecker = titleChecker
     }
 
     /// A credential as the settings hold it, trimmed; blank is none.
@@ -306,7 +321,7 @@ public actor FullTextService {
 
     /// The transport production uses.
     ///
-    /// Separated from ``init(email:session:europePMCService:extractor:extractPDFText:europePMCRetry:pmcOpenDataRetry:openAlexRetry:coreAPIKey:coreRetry:coreThrottle:elsevierAPIKey:elsevierInstToken:elsevierRetry:elsevierSession:writeCachedPDF:)``
+    /// Separated from ``init(email:session:europePMCService:extractor:extractPDFText:europePMCRetry:pmcOpenDataRetry:openAlexRetry:coreAPIKey:coreRetry:coreThrottle:elsevierAPIKey:elsevierInstToken:elsevierRetry:elsevierSession:writeCachedPDF:titleChecker:)``
     /// so a test can
     /// substitute a stubbed `URLSession` without reproducing these timeouts.
     ///
@@ -342,6 +357,13 @@ public actor FullTextService {
     ///     `nil` — every document stored before the kind was recorded — reads
     ///     the kind from the identifier's shape instead, which is what this
     ///     chain did for every article before #209.
+    ///   - title: The article's title, as stored (#546). Every PDF a tier
+    ///     caches, or finds cached, is checked against it: one whose first
+    ///     page with text does not carry it is another article's, set aside
+    ///     beside its cached name with ``BioMedLitConstants/pdfMismatchSuffix``,
+    ///     recorded as a ``OpenAccessUnsettledReason/wrongArticle`` skip with
+    ///     its address (never an absence), and the next source is tried.
+    ///     `nil`, the default, checks nothing.
     /// - Returns: The content and its source, what the JATS parse of it lost
     ///   (#181), and — when Europe PMC served XML this parser could not read, or
     ///   could not be reached at all — why this is not the best source that
@@ -365,7 +387,8 @@ public actor FullTextService {
         pmcId: String?,
         doi: String?,
         pmid: String,
-        primaryKind: ArticleIdentifierKind? = nil
+        primaryKind: ArticleIdentifierKind? = nil,
+        title: String? = nil
     ) async throws -> FullTextResult {
         // Names the article for the PDF cache. Built once, from the identifiers
         // the *document* carries rather than from `resolvedPmcId` below: a key
@@ -635,14 +658,33 @@ public actor FullTextService {
         // neither settles the shortfall nor stops the Unpaywall walk: a copy
         // Unpaywall names may still be saved. Told only if none is.
         var renderNotSavedFrom: String?
+        // Why a copy the render, Elsevier's API, Unpaywall or OpenAlex may
+        // hold went unassessed, if it did: the render served another
+        // article's PDF (#546); Elsevier could not be asked, refused the
+        // credentials or served a PDF that could not be saved or was another
+        // article's (#480, stage C2); Unpaywall, the landing page it named or
+        // OpenAlex could not settle whether a free copy exists, a PDF either
+        // named could not be obtained (#478; every one is listed, #480) or
+        // was another article's (#546), or Unpaywall was not configured. In
+        // chain order, the render's first. Carried on whatever fallback is
+        // returned, so a caller holding a better link than that fallback
+        // knows not to trade it away (#464).
+        var openAccessShortfall: OpenAccessShortfall?
         if let cacheKey, let urlString = pdfRenderURL, let pdfURL = URL(string: urlString) {
             BioMedLitLib.logger?.info(
                 "Using Europe PMC PDF render: \(urlString)",
                 category: .fullText
             )
-            let outcome = try await downloadAndExtract(from: pdfURL, key: cacheKey)
+            let outcome = try await downloadAndExtract(from: pdfURL, key: cacheKey, title: title)
             if case .notCached = outcome {
                 renderNotSavedFrom = pdfURL.absoluteString
+            }
+            if case .wrongArticle = outcome {
+                // Another article's: no link to it is kept, and the question
+                // stays open, as Python's Europe PMC skip leaves it
+                openAccessShortfall = .adding(
+                    .wrongArticle(source: .europePMCPDF, address: pdfURL.absoluteString), to: openAccessShortfall
+                )
             }
             if let result = pdfTierResult(
                 outcome: outcome,
@@ -661,16 +703,6 @@ public actor FullTextService {
         // agree about the same input: a whitespace-only DOI keys nothing, and
         // it must not reach Elsevier or Unpaywall either.
         let unpaywallDOI = doi?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        // Why a copy Elsevier's API, Unpaywall or OpenAlex may hold went
-        // unassessed, if it did: Elsevier could not be asked, refused the
-        // credentials or served a PDF that could not be saved (#480, stage
-        // C2); Unpaywall, the landing page it named or OpenAlex could not
-        // settle whether a free copy exists, a PDF either named could not be
-        // obtained (#478; every one is listed, #480), or Unpaywall was not
-        // configured. In chain order, Elsevier's first. Carried on whatever
-        // fallback is returned, so a caller holding a better link than that
-        // fallback knows not to trade it away (#464).
-        var openAccessShortfall: OpenAccessShortfall?
         // Whether any copy was served: not cached, or cached without text
         // while an abstract is held. Either settles the question; only the
         // first ends the walk (a textless copy lets another, OpenAlex's
@@ -686,6 +718,7 @@ public actor FullTextService {
            let result = try await elsevierResult(
                doi: coreDOI,
                cacheKey: cacheKey,
+               title: title,
                degradation: degradation,
                holdingAbstract: abstractOnly != nil,
                articleName: articleName,
@@ -733,6 +766,7 @@ public actor FullTextService {
                 refusedAs: .pdf,
                 content: { .unpaywall(pdfURL: $0) },
                 cacheKey: cacheKey,
+                title: title,
                 degradation: degradation,
                 holdingAbstract: abstractOnly != nil,
                 articleName: articleName,
@@ -760,6 +794,7 @@ public actor FullTextService {
                         refusedAs: .openAlexPDF,
                         content: { .openAlex(pdfURL: $0) },
                         cacheKey: cacheKey,
+                        title: title,
                         degradation: degradation,
                         holdingAbstract: abstractOnly != nil,
                         articleName: articleName,
@@ -1686,6 +1721,7 @@ public actor FullTextService {
     private func elsevierResult(
         doi: String,
         cacheKey: ArticleCacheKey,
+        title: String?,
         degradation: FullTextDegradation?,
         holdingAbstract: Bool,
         articleName: String,
@@ -1714,7 +1750,15 @@ public actor FullTextService {
             BioMedLitLib.logger?.info(
                 "Retrieved the PDF from \(service) for DOI \(doi) at \(localPath)", category: .fullText
             )
-            let outcome = try extractText(fromCachedPDF: localPath)
+            let outcome = try extractText(fromCachedPDF: localPath, title: title)
+            if case .wrongArticle = outcome {
+                // Another article's, set aside: recorded under the article
+                // URL it was asked by (no key in it), as Python's is, and
+                // Unpaywall is tried
+                let address = Elsevier.articleURL(doi: doi)?.absoluteString ?? BioMedLitConstants.elsevierBaseURL
+                shortfall = .adding(.wrongArticle(source: .elsevier, address: address), to: shortfall)
+                return nil
+            }
             if case .noText = outcome { copyServed = true }
             // Never a download failure or a cache failure here, so no link
             var noLink: FullTextResult?
@@ -2129,7 +2173,7 @@ public actor FullTextService {
     /// Only a PubMed ID may be pasted after the PubMed base URL. The slot also
     /// holds `PPR…` and `PMC…` accessions and can hold nothing at all, and each
     /// of those builds a URL that names no article — see the final fallback in
-    /// ``fetchFullText(pmcId:doi:pmid:primaryKind:)`` for what that cost the reader.
+    /// ``fetchFullText(pmcId:doi:pmid:primaryKind:title:)`` for what that cost the reader.
     ///
     /// Delegated rather than decided here. Every link and citation surface in
     /// the apps asks the same question, and a rule this consequential answered
@@ -2752,6 +2796,12 @@ public actor FullTextService {
 
         /// Prose was recovered, and this much of the document yielded it.
         case extracted(localPath: String, text: String, coverage: PDFExtractionCoverage)
+
+        /// The file's first page with text does not carry the article's
+        /// title: another article's PDF, set aside unread (#546). Neither its
+        /// text nor its link is offered; the caller records it and tries the
+        /// next source.
+        case wrongArticle
     }
 
     /// Download a PDF tier's file, cache it, and recover its text.
@@ -2780,12 +2830,15 @@ public actor FullTextService {
     ///   - key: Names the article, and so the cached file. Non-optional: a
     ///     document carrying no identifier at all reaches no PDF tier in the
     ///     first place, so there is no refusal for this method to make. See
-    ///     ``fetchFullText(pmcId:doi:pmid:primaryKind:)``.
+    ///     ``fetchFullText(pmcId:doi:pmid:primaryKind:title:)``.
+    ///   - title: The article's title the PDF is checked against (#546), or
+    ///     `nil` to check nothing.
     /// - Returns: What the attempt produced. See ``PDFTierOutcome``.
     /// - Throws: `CancellationError` if the caller cancelled.
     private func downloadAndExtract(
         from url: URL,
-        key: ArticleCacheKey
+        key: ArticleCacheKey,
+        title: String?
     ) async throws -> PDFTierOutcome {
         guard extractPDFText else { return .notAttempted }
 
@@ -2809,17 +2862,39 @@ public actor FullTextService {
             return .notCached
         }
 
-        return try extractText(fromCachedPDF: path)
+        return try extractText(fromCachedPDF: path, title: title)
     }
 
-    /// Recover a cached PDF's text: the half of ``downloadAndExtract(from:key:)``
+    /// Recover a cached PDF's text: the half of ``downloadAndExtract(from:key:title:)``
     /// after the download, shared with Elsevier's PDF, which arrives by its own
     /// request (#480, stage C2).
     ///
-    /// - Parameter path: The cached file.
-    /// - Returns: `.noText` or `.extracted`, with the path.
+    /// The one place every PDF passes before its text is used, a copy cached
+    /// by an earlier run included, so it is where the title is checked
+    /// (#546): only a mismatch refuses the PDF, which is set aside
+    /// (``setAsideWrongArticle(at:)``) and never read; a check that judged
+    /// nothing (no title, no text, a translated title, a file PDFKit cannot
+    /// read) leaves it to the extraction.
+    ///
+    /// - Parameters:
+    ///   - path: The cached file.
+    ///   - title: The article's title, or `nil` to check nothing.
+    /// - Returns: `.noText` or `.extracted`, with the path, or `.wrongArticle`.
     /// - Throws: `CancellationError` if the caller cancelled.
-    private func extractText(fromCachedPDF path: String) throws -> PDFTierOutcome {
+    private func extractText(fromCachedPDF path: String, title: String?) throws -> PDFTierOutcome {
+        if let title {
+            let check = titleChecker(URL(fileURLWithPath: path), title)
+            try Task.checkCancellation()
+            if case .mismatch(let share) = check {
+                BioMedLitLib.logger?.warning(
+                    "PDF \(path) is another article's: its first page with text carries "
+                        + "\(Int((share * 100).rounded()))% of the title's word pairs; set aside unread",
+                    category: .fullText
+                )
+                Self.setAsideWrongArticle(at: path)
+                return .wrongArticle
+            }
+        }
         let extraction = extractor.extract(from: URL(fileURLWithPath: path))
         // Before anything is read off `extraction`: the extractor stops early
         // when cancelled, so a cancelled read looks exactly like a short
@@ -2909,6 +2984,11 @@ public actor FullTextService {
             }
             return nil
 
+        case .wrongArticle:
+            // Another article's (#546): its link would name that article, so
+            // none is kept; the caller records it and the chain goes on
+            return nil
+
         case .notAttempted:
             // Nothing was downloaded because nothing was meant to be. The URL
             // is still worth handing over, unless an abstract is in reserve —
@@ -2953,7 +3033,8 @@ public actor FullTextService {
     /// Try each PDF a source named, in order, until one is served (#480).
     ///
     /// An address already tried is skipped. An address the chain cannot
-    /// fetch, or a download the source refused, is added to the shortfall
+    /// fetch, a download the source refused, or a PDF of another article
+    /// (#546), is added to the shortfall
     /// under `source`, with its address: the reader is told every copy that
     /// went unassessed. **The first copy served ends the walk:** extracted, it
     /// is the result; served but not cached, its link becomes the link
@@ -2971,6 +3052,7 @@ public actor FullTextService {
     ///   - source: Whose PDF a failure is recorded against (`.pdf`, `.openAlexPDF`).
     ///   - content: The result content for an address.
     ///   - cacheKey: Names the article, and so the cached file.
+    ///   - title: The article's title each PDF is checked against (#546), or `nil`.
     ///   - degradation: As ``pdfTierResult(outcome:content:degradation:holdingAbstract:articleName:linkFallback:)``.
     ///   - holdingAbstract: As ``pdfTierResult(outcome:content:degradation:holdingAbstract:articleName:linkFallback:)``.
     ///   - articleName: How to name this article in the log.
@@ -2987,6 +3069,7 @@ public actor FullTextService {
         refusedAs source: OpenAccessSource,
         content: (URL) -> FullTextContent,
         cacheKey: ArticleCacheKey,
+        title: String?,
         degradation: FullTextDegradation?,
         holdingAbstract: Bool,
         articleName: String,
@@ -3012,8 +3095,13 @@ public actor FullTextService {
                 )
                 continue
             }
-            let outcome = try await downloadAndExtract(from: pdfURL, key: cacheKey)
+            let outcome = try await downloadAndExtract(from: pdfURL, key: cacheKey, title: title)
             switch outcome {
+            case .wrongArticle:
+                // Served, and another article's (#546): it settles nothing
+                // about this one, so the walk goes on, as for a copy refused
+                shortfall = .adding(.wrongArticle(source: source, address: address), to: shortfall)
+                continue
             case .downloadFailed(let failure):
                 // Refused, not offered (#478): not held as a link fallback,
                 // and the reader is told of it on whatever the chain returns
@@ -3294,6 +3382,43 @@ public actor FullTextService {
         return nil
     }
 
+    /// Set a cached PDF of another article aside, so the cache never serves
+    /// it again (#546).
+    ///
+    /// Renamed beside itself with ``BioMedLitConstants/pdfMismatchSuffix``,
+    /// which no lookup reads, rather than deleted: the check can be wrong (a
+    /// preprint retitled between versions), as Python's `pdf_library_check`
+    /// keeps its set-aside PDFs. One copy per cached name is kept, the latest:
+    /// a name is one article's copy from one address, so a later refusal of
+    /// it holds the same file or a newer one, and the apps have no keep to
+    /// restore one by.
+    ///
+    /// Best-effort, as ``cachedPDFPath(for:from:)``'s quarantine is: a rename
+    /// that fails is logged, and the PDF is still not read, since every read
+    /// passes the same check.
+    ///
+    /// - Parameter path: The cached PDF.
+    /// - Returns: Where it was set aside, or `nil` when it could not be moved.
+    @discardableResult
+    static func setAsideWrongArticle(at path: String) -> String? {
+        let source = URL(fileURLWithPath: path)
+        let aside = URL(fileURLWithPath: path + BioMedLitConstants.pdfMismatchSuffix)
+        do {
+            if FileManager.default.fileExists(atPath: aside.path) {
+                try FileManager.default.removeItem(at: aside)
+            }
+            try FileManager.default.moveItem(at: source, to: aside)
+            return aside.path
+        } catch {
+            BioMedLitLib.logger?.error(
+                "Could not set aside the PDF of another article at \(path): \(error.localizedDescription); "
+                    + "it is still not read",
+                category: .fullText
+            )
+            return nil
+        }
+    }
+
     /// The filename one article's copy of one PDF is cached under.
     ///
     /// Keyed on the source URL as well as the article, because an article can
@@ -3368,10 +3493,14 @@ public actor FullTextService {
     /// test that called it would delete the PDFs of whoever ran the suite.
     ///
     /// - Parameter fileURL: A file found in the cache directory.
-    /// - Returns: `true` for a cached PDF or a quarantined one.
+    /// - Returns: `true` for a cached PDF, a quarantined one, or one set aside
+    ///   as another article's (#546).
     static func isClearableCacheEntry(_ fileURL: URL) -> Bool {
         fileURL.pathExtension == BioMedLitConstants.pdfExtension
             || fileURL.pathExtension == BioMedLitConstants.quarantinedPDFExtension
+            || fileURL.lastPathComponent.hasSuffix(
+                "." + BioMedLitConstants.pdfExtension + BioMedLitConstants.pdfMismatchSuffix
+            )
     }
 
     /// Clear all cached PDFs.

@@ -428,8 +428,8 @@ class LookupSkipReason(Enum):
     #: The source served a PDF, and its first page with text does not carry
     #: this article's title: another article's, set aside unread (#541). The
     #: source's copy says nothing about this article, and the right PDF may
-    #: exist elsewhere, so it leaves the question open. Python's alone, as
-    #: the apps check no title yet.
+    #: exist elsewhere, so it leaves the question open. The apps record it
+    #: too since #546 (``open_access_statement.json``).
     WRONG_ARTICLE = "wrong_article"
 
 

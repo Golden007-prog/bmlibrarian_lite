@@ -58,6 +58,12 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  * one served and not saved also gets the caching note. Elsevier's PDF arrives
  * already saved, and is recorded as the local file it is (#480, stage C2).
  *
+ * Every PDF saved here is checked against the document's title (#546): one whose
+ * first page with text does not carry it is another article's, set aside unread
+ * ([refusedAsAnotherArticle]); an open-access candidate's is recorded as a
+ * wrong-article skip with its address and the walk goes on, a render's ends the
+ * fetch on a link ([renderOfAnotherArticle]).
+ *
  * @param result What the chain returned
  * @param downloadPdf Downloads a PDF URL
  * @param askOpenAlex Asks OpenAlex for its steps, given the DOI and the
@@ -82,11 +88,35 @@ suspend fun DocumentEntity.recordingFullTextFetch(
     is FullTextResult.EuropePmcPdf -> when (val download = downloadPdf(result.pdfUrl)) {
         PdfDownload.NotSaved ->
             RecordedFetch(recording(result, pdfPath = null).copy(fullTextPdfNotSavedFrom = result.pdfUrl), result)
-        else -> RecordedFetch(recording(result, download.savedPath), result)
+        is PdfDownload.Saved ->
+            if (refusedAsAnotherArticle(download.path, title)) renderOfAnotherArticle(result)
+            else RecordedFetch(recording(result, download.path), result)
+        is PdfDownload.Failed -> RecordedFetch(recording(result, pdfPath = null), result)
     }
     // Already saved by the chain: a local file, never a URL to download (#480, stage C2)
     is FullTextResult.ElsevierPdf -> RecordedFetch(recording(result, result.pdfPath), result)
     else -> RecordedFetch(recording(result, pdfPath = null), result)
+}
+
+/**
+ * A Europe PMC render that is another article's PDF, set aside (#546).
+ *
+ * The chain returned the render before the later tiers ran, so this fetch ends on
+ * it, as a render that could not be downloaded does (#471): on the DOI link when
+ * the document has a DOI, else on the render's link, never on the PDF. Either way
+ * the wrong-article shortfall is stored and told, and the absence stays open.
+ *
+ * @param result The render the chain returned
+ * @return The document to store, and the result to show
+ */
+private fun DocumentEntity.renderOfAnotherArticle(result: FullTextResult.EuropePmcPdf): RecordedFetch {
+    val shortfall = OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, result.pdfUrl)
+    val usableDoi = doi?.trim()?.ifEmpty { null }
+        ?: return RecordedFetch(
+            recording(result, pdfPath = null).copy(fullTextOpenAccessShortfallJson = shortfall.toJson()), result
+        )
+    val link = FullTextResult.DoiUrl(doiLink(usableDoi), shortfall)
+    return RecordedFetch(recording(link, pdfPath = null), link)
 }
 
 /**
@@ -135,7 +165,16 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
                     tried += step.addresses
                     val found = FullTextResult.OpenAccessPdf(step.pdfUrl, result.doi, step.namedBy)
                     when (val download = downloadPdf(step.pdfUrl)) {
-                        is PdfDownload.Saved -> return RecordedFetch(recording(found, download.path), found)
+                        is PdfDownload.Saved -> {
+                            if (!refusedAsAnotherArticle(download.path, title)) {
+                                return RecordedFetch(recording(found, download.path), found)
+                            }
+                            // Another article's, set aside (#546): it settles nothing
+                            // about this one, so the walk goes on, as for a copy refused
+                            shortfall = OpenAccessShortfall.adding(
+                                OpenAccessShortfall.wrongArticle(step.namedBy.refusedAs, step.pdfUrl), shortfall
+                            )
+                        }
                         PdfDownload.NotSaved -> {
                             val linked = found.copy(notSaved = true)
                             return RecordedFetch(recording(linked, pdfPath = null), linked)

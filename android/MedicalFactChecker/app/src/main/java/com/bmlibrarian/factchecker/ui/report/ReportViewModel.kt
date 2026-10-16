@@ -434,7 +434,9 @@ class ReportViewModel @Inject constructor(
                     pmcId = document.pmcId,
                     doi = document.doi,
                     pmid = document.pmid,
-                    email = email
+                    email = email,
+                    // Elsevier's PDF is checked against it (#546)
+                    title = document.title
                 )
 
                 result.fold(

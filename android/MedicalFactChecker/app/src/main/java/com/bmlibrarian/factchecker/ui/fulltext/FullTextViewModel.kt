@@ -237,8 +237,11 @@ class FullTextViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Check for cached PDF
+                // Check for cached PDF. One that is another article's is set
+                // aside, and the chain asked again (#546): a PDF cached before
+                // the title check was never checked
                 val cachedPdf = fullTextService.getCachedPdfPath(documentId)
+                    ?.takeUnless { fullTextService.refusesAsAnotherArticle(it, doc.title) }
                 if (cachedPdf != null) {
                     Log.d(TAG, "Using cached PDF for ${doc.id}")
                     _state.value = FullTextState.PdfContent(
@@ -257,7 +260,8 @@ class FullTextViewModel @Inject constructor(
                 // earlier pdfPath behind, and only a record whose answer was
                 // Elsevier's PDF owns the path it holds
                 val elsevierPdf = doc.pdfPath?.takeIf {
-                    doc.fullTextSource == Constants.FULLTEXT_SOURCE_ELSEVIER && isCachedPdf(File(it))
+                    doc.fullTextSource == Constants.FULLTEXT_SOURCE_ELSEVIER && isCachedPdf(File(it)) &&
+                        !fullTextService.refusesAsAnotherArticle(it, doc.title)
                 }
                 if (elsevierPdf != null) {
                     Log.d(TAG, "Using the stored Elsevier PDF for ${doc.id}")
@@ -305,7 +309,9 @@ class FullTextViewModel @Inject constructor(
                 pmcId = doc.pmcId,
                 doi = doc.doi,
                 pmid = doc.pmid,
-                email = UnpaywallContact.emailFor(settings)
+                email = UnpaywallContact.emailFor(settings),
+                // Elsevier's PDF is checked against it (#546)
+                title = doc.title
             )
 
             result.fold(

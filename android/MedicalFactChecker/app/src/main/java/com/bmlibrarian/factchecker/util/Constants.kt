@@ -263,6 +263,32 @@ object Constants {
     /** A refusal from this network as the reader is told it, Python's `LookupSkipReason.NETWORK_REFUSED` words. */
     const val ELSEVIER_NETWORK_REFUSED_REASON = "not available from this network"
 
+    /**
+     * What the reader is told of a PDF that is another article's (#541, #546),
+     * Python's `LookupSkipReason.WRONG_ARTICLE` words.
+     */
+    const val WRONG_ARTICLE_REASON = "another article's PDF"
+
+    /**
+     * A PDF is taken as the article's when its first page with text carries at
+     * least this share of the title's adjacent word pairs (#532, #546). Python's
+     * `PDF_TITLE_MIN_PAIR_SHARE`, measured on 1,500 desktop PDFs; contract:
+     * `doc/cross_platform/fulltext_parity/pdf_title_check.json`.
+     */
+    const val PDF_TITLE_MIN_PAIR_SHARE = 0.5
+
+    /**
+     * The pages with text read for the title; pages with none before them (an
+     * image-only cover) are passed over. Python's `PDF_TITLE_PAGES_READ`.
+     */
+    const val PDF_TITLE_PAGES_READ = 1
+
+    /**
+     * The extension a PDF of another article is set aside with, beside its cached
+     * name, which the cache never looks for. Python's `PDF_MISMATCH_SUFFIX`.
+     */
+    const val PDF_MISMATCH_SUFFIX = ".mismatch"
+
     /** The most of an error body read to look for the token: a provider's error, not research content. */
     const val ELSEVIER_ERROR_BODY_MAX_BYTES = 65536
 

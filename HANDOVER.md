@@ -17,9 +17,8 @@ have landed):
   `AUTHENTICATION_ERROR`, a 401 a refused key. Correct
   `fulltext_parity/elsevier_article.json` and all three platforms from the
   rows; the same rows settle **#508** (does a bad token answer 401; may the
-  key's explanation keep "open-access articles anywhere").
-- **Then on-network**: the same probe `--label on-network`, and a desktop
-  fetch of a subscribed `10.1016/` article.
+  key's explanation keep "open-access articles anywhere"). Then `--label
+  on-network`, and a desktop fetch of a subscribed `10.1016/` article.
 - **C1's CORE replay**: the CORE key in `config.json`
   (`discovery.core_api_key`), then `python scripts/core_acceptance_replay.py
   --out tmp/core_acceptance.jsonl`; the bar is ≥ 14 of the spike's 149
@@ -30,34 +29,36 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Wrong-article PDFs in discovery and the library** (#541, Python; branch
-`fix/wrong-article-pdfs-541`, PR #548 in review). A PDF whose first page with text is
-found not to carry the title is not read as the article's. Every entry point checks:
-each download (`PDFDiscoverer._try_download`, Elsevier's API, Europe PMC's
-render) and each cached PDF (`fulltext_discovery` step 3, the interrogation
-tab's `_cached_article_pdf`) through `pdf_library_check`. A mismatch is
-renamed to `<pdf>.mismatch` (`-2`… for other bytes, the same bytes kept once),
-not deleted; a refused download is a `WRONG_ARTICLE` skip with its address
-(never an absence) and the next source is tried. **A download is checked
-where it waits** (`.part`/`.unchecked`), so it never overwrites the library's
-PDF. Every PDF set aside is told (`FulltextResult.set_aside_pdf_note`: chat
-via the workers' `pdf_set_aside`, transparency warning, MCP), and a refused
-library PDF keeps `absence_established` false. Only a mismatch is refused. **A person's
-keep is `<pdf>.kept`, the PDF's SHA-256**: *Keep this PDF* writes it before
-the rename; `bmll keep-pdf <path>` renames a set-aside PDF back. A second
-review round found MCP checked nothing (it gives no title: Europe PMC's is now
-used), refusals kept on the discoverer MCP shares between concurrent calls
-(now per call), a deleted PDF's keep marker left behind (`forget_kept`), the
-note dropped on a cancel, and one file told twice; all fixed, with tests that
-fail on the earlier commit. Lodged:
-**#545** (the one-off library sweep, part 3), **#546** (Swift + Android
-parity), **#547** (keep from the GUI).
+**Wrong-article PDFs in the apps** (#546, Swift + Android; branch
+`fix/pdf-title-check-parity-546`, PR in review). The desktop's title check
+(#532/#541) ported with a shared contract,
+`fulltext_parity/pdf_title_check.json` (56 rows; every platform's case folding
+measured equal to Python's `casefold` on all 137,936 letters and numbers after
+NFKC: Swift maps Cherokee and nine Old Cyrillic forms, Kotlin the dotless ı, ẞ
+and Cherokee). A refused PDF is set aside as `<cached name>.mismatch` and never
+read; the refusal is `wrong_article`, a skip **with its address**, told as a
+source not asked, never an absence. New source `europepmc_pdf` ("Europe PMC",
+first in chain order). Swift checks at `extractText(fromCachedPDF:title:)`
+(every download and cached copy; `fetchFullText(…, title:)`, the app passes
+`document.title`; injectable `titleChecker`). Android checks in the recording
+walk, in the chain for Elsevier's PDF (`fetchFullText(…, title)`), and in the
+viewer before a cached PDF is shown (`FullTextService.refusesAsAnotherArticle`);
+text via iText. **Android's render of another article ends the fetch** (#556).
+Lodged: #555 (R8, unrelated), #556, #557 (stored documents), #558 (keep).
 
 ## Recently landed (context)
 
 Compressed once merged: the rules that still bind. Git history and the
 `doc/cross_platform/` READMEs carry the rest.
 
+- **Wrong-article PDFs on the desktop** (#532, #541; PRs #542, #548).
+  `pdf_title_check`: ≥ 0.5 of the title's adjacent word pairs on the first page
+  with text; no title, no text or a translated `[title]` is unchecked, never a
+  match (limits: #543). Every download and cached PDF is checked; a mismatch is renamed
+  `<pdf>.mismatch` (numbered for other bytes), **a download is checked where it
+  waits** (`.part`/`.unchecked`), a refusal is a `WRONG_ARTICLE` skip with its
+  address, every set-aside PDF is told, and a person's keep is `<pdf>.kept` (the
+  SHA-256; `bmll keep-pdf`). Open: #545, #547.
 - **Bot-walled PDFs: the desktop browser rescue** (#480, closed; stages 1–3,
   PRs #521, #529, #536). Spec
   `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, developer doc
@@ -69,10 +70,6 @@ Compressed once merged: the rules that still bind. Git history and the
   `needs_person`. The apps' embedded browsers need their own spec.
   Open follow-ups: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**,
   **#533**–**#535**, **#537**–**#540**, **#543**, **#544**.
-- **A rescued PDF must be the article's** (#532; PR #542). `pdf_title_check`:
-  ≥ `PDF_TITLE_MIN_PAIR_SHARE` (0.5) of the title's adjacent word pairs on the
-  first page with text; no title, no text or a translated `[title]` is
-  unchecked, never a match. Matcher limits: #543.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
@@ -96,12 +93,12 @@ Compressed once merged: the rules that still bind. Git history and the
   prepared before any `QApplication` (`gui/web_engine.py`) and is optional at
   start-up; pages go before the profile. Engine tests run only in
   `tests/browser_rescue_harness.py`'s subprocess and fail rather than skip.
-- **Detection rules** (`challenge_detection.json`): header names only, never
-  values; change a needle only against live pages and the survey.
+  Detection (`challenge_detection.json`): header names only, never values;
+  change a needle only against live pages and the survey.
 - **Settings dialog lifecycle** (PR #518): a released dialog's handlers do
   nothing (**a queued signal still arrives after a disconnect**); **the suite
-  collects garbage on the main thread only** (#517). Lodged: #519.
-- **PySide6 capped `<6.12`** (#516): **check master's CI before a slice**.
+  collects garbage on the main thread only** (#517, #519). **PySide6 capped
+  `<6.12`** (#516): **check master's CI before a slice**.
 - **Machine channels, stage C2: Elsevier's article API** (all three; PR
   #507). Contract "Elsevier's Article API" + `elsevier_article.json`.
   **A first-page PDF is never served** (`X-ELS-Status: WARNING` on a 200 is an
@@ -110,18 +107,15 @@ Compressed once merged: the rules that still bind. Git history and the
   redirect, never a link**; **credentials that cannot be sent are never
   sent**; the environment's token goes only with its key. Lodged: #506,
   #508–#513.
-- **Machine channels, stage C1: CORE's text** (all three; PR #501). **A hit
-  counts only if its own DOI is this article's**; **no key, nothing
-  recorded**; a configured channel not asked is unsettled.
-- **Machine channels, stage B: every Unpaywall PDF in the apps, then
-  OpenAlex's** (all three; PR #491). Contract "Tried sources (#480)" and
-  "OpenAlex's Locations". **The first copy served ends the walk; one not saved
-  is a caching note, never a shortfall.** Stored shortfall: v1 for one
-  address-less entry, else v2 `entries`.
-- **Machine channels, stage A: PMC's open-data bucket** (all three; PR #487).
-  81% of failed Unpaywall PDFs are bot walls (`doc/developer/unpaywall_pdf_survey/`;
-  **re-analyse, never re-fetch**); **no stealth clients** (maintainer). A
-  listing 404 is unreachable.
+- **Stage C1: CORE's text** (all three; PR #501). **A hit counts only if its
+  own DOI is this article's**; **no key, nothing recorded**; a configured
+  channel not asked is unsettled.
+- **Stage B: every Unpaywall PDF, then OpenAlex's** (all three; PR #491;
+  "Tried sources (#480)"). **The first copy served ends the walk; one not
+  saved is a caching note, never a shortfall.** Stored: v1 for one
+  address-less entry, else v2 `entries`. **Stage A: PMC's open-data bucket**
+  (PR #487): 81% of failed Unpaywall PDFs are bot walls (**re-analyse, never
+  re-fetch**); **no stealth clients**; a listing 404 is unreachable.
 - **Unpaywall** (PRs #465–#482; `fulltext_retrieval.md`): a PDF not obtained
   is refused, never a link; non-`%PDF` is `malformed_response`; **no absence
   while an `OpenAccessShortfall` is set**; Room migrations register from
@@ -220,8 +214,9 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
-- **#545** sweep the PDF library for other articles' PDFs; **#546** the apps'
-  title check; **#547** keep a set-aside PDF from the GUI (all from #541).
+- **#545** sweep the PDF library for other articles' PDFs (CLI only, the
+  maintainer's call); **#547** keep a set-aside PDF from the GUI (both from
+  #541); **#555** Android release builds fail R8; **#556**–**#558** (#546's).
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
   browser rescue's follow-ups**: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**, **#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
@@ -415,8 +410,8 @@ enables DEBUG; **#245** the transparency CLIs take the NCBI key only as
   (it is JVM-testable since PR #405 added kxml2 as a test dependency).
 - **PubMed parsers (Swift + Android)**: **#402** the year comes from
   `DateCompleted`, not `PubDate`; **#403** Swift appends a translated
-  `<OtherAbstract>`; **#404** Android's `ArticleId` has no `<Reference>` guard.
-- **#190** CI never builds the iOS app target (guard: a `.swift` file in no target).
+  `<OtherAbstract>`; **#404** Android's `ArticleId` has no `<Reference>`
+  guard; **#190** CI never builds the iOS app target.
 
 ### Transparency parity and pricing
 

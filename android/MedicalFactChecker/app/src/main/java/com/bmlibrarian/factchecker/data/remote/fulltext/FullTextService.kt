@@ -339,6 +339,19 @@ class FullTextService @Inject constructor(
     }
 
     /**
+     * Whether a PDF the app already holds is another article's, and so not shown
+     * (#546): its first page with text does not carry [title]. A refused PDF is set
+     * aside unread ([refusedAsAnotherArticle]); one whose title could not be judged
+     * is shown. For the viewer's cached PDFs, saved before any check ran.
+     *
+     * @param path The PDF on disk
+     * @param title The article's title; null checks nothing
+     * @return Whether it was refused
+     */
+    suspend fun refusesAsAnotherArticle(path: String, title: String?): Boolean =
+        refusedAsAnotherArticle(path, title)
+
+    /**
      * Fetch full text for a document using the fallback chain.
      *
      * @param pmcId PubMed Central ID (if available).
@@ -348,6 +361,11 @@ class FullTextService @Inject constructor(
      * @param pmid PubMed ID (if available, used for caching).
      * @param email Email to ask Unpaywall with ([UnpaywallContact.emailFor]); null,
      *   blank or the placeholder skips Unpaywall as not configured.
+     * @param title The article's title, as stored (#546): Elsevier's PDF is checked
+     *   against it, and one whose first page with text does not carry it is
+     *   another article's, set aside and recorded as a wrong-article skip with its
+     *   address before Unpaywall is asked (the PDFs the recording downloads are
+     *   checked there). Null checks nothing.
      * @return The full text or a link to it; [FullTextResult.Unavailable] when every
      *   source answered without it (callers record this); or
      *   [FullTextResult.NotEstablished] when Europe PMC, or failing that PMC's
@@ -358,7 +376,8 @@ class FullTextService @Inject constructor(
         pmcId: String?,
         doi: String?,
         pmid: String?,
-        email: String? = null
+        email: String? = null,
+        title: String? = null
     ): Result<FullTextResult> = withContext(Dispatchers.IO) {
         // The DOI trimmed, and a blank one is no DOI, as Swift trims it first.
         // Every DOI branch reads this: asking with a blank one would read
@@ -476,8 +495,20 @@ class FullTextService @Inject constructor(
         } else {
             // Asked by the DOI cleaned as Python's `_clean_doi` cleans it, so a DOI
             // stored as `https://www.doi.org/10.1016/...` is Elsevier's too
-            when (val fetched = elsevier.fetchPdf(Core.bareDoi(usableDoi))) {
-                is ElsevierFetch.Served -> return@withContext Result.success(FullTextResult.ElsevierPdf(fetched.localPath))
+            val elsevierDoi = Core.bareDoi(usableDoi)
+            when (val fetched = elsevier.fetchPdf(elsevierDoi)) {
+                is ElsevierFetch.Served -> {
+                    if (!refusedAsAnotherArticle(fetched.localPath, title)) {
+                        return@withContext Result.success(FullTextResult.ElsevierPdf(fetched.localPath))
+                    }
+                    // Another article's, set aside: recorded under the article URL it
+                    // was asked by (no key in it), as Python's is, and Unpaywall is asked
+                    listOf(
+                        OpenAccessStep.Unsettled(
+                            OpenAccessShortfall.wrongArticle(OpenAccessSource.ELSEVIER, Elsevier.articleUrl(elsevierDoi))
+                        )
+                    )
+                }
                 null -> emptyList()
                 else -> listOfNotNull(elsevierShortfall(fetched, usableDoi)?.let { OpenAccessStep.Unsettled(it) })
             }

@@ -50,6 +50,11 @@ public enum OpenAccessSource: String, Sendable, CaseIterable {
     /// user's own key, before any Unpaywall lookup (#480, stage C2).
     case elsevier = "elsevier"
 
+    /// The PDF Europe PMC renders for an open-access article, recorded only
+    /// when it is another article's (#546): Python names that skip under
+    /// `SERVICE_EUROPE_PMC`. Told first, as Python's Europe PMC is.
+    case europePMCPDF = "europepmc_pdf"
+
     /// The source as the reader is told of it, worded to sit mid-sentence.
     ///
     /// Python's `SERVICE_UNPAYWALL`, `SERVICE_UNPAYWALL_LANDING_PAGE` and
@@ -63,6 +68,7 @@ public enum OpenAccessSource: String, Sendable, CaseIterable {
         case .openAlexPDF: return "OpenAlex's copy"
         case .core: return BioMedLitConstants.coreServiceName
         case .elsevier: return BioMedLitConstants.elsevierServiceName
+        case .europePMCPDF: return BioMedLitConstants.europePMCServiceName
         }
     }
 }
@@ -70,8 +76,8 @@ public enum OpenAccessSource: String, Sendable, CaseIterable {
 /// Why a lookup of the open-access chain left the question of a free copy open.
 ///
 /// Python records these as a `SourceLookupFailure`, or a `SourceLookupSkipped`
-/// with `LookupSkipReason.NOT_CONFIGURED`, `LookupSkipReason.KEY_REFUSED` or
-/// `LookupSkipReason.NETWORK_REFUSED`.
+/// with `LookupSkipReason.NOT_CONFIGURED`, `LookupSkipReason.KEY_REFUSED`,
+/// `LookupSkipReason.NETWORK_REFUSED` or `LookupSkipReason.WRONG_ARTICLE`.
 public enum OpenAccessUnsettledReason: Sendable, Equatable, Hashable {
     /// The lookup was made and did not settle it; why, by kind and status only.
     case failed(RequestFailure)
@@ -96,6 +102,15 @@ public enum OpenAccessUnsettledReason: Sendable, Equatable, Hashable {
     /// no configuration nudge.
     case networkRefused
 
+    /// A source served a PDF whose first page with text does not carry this
+    /// article's title: another article's, set aside unread (#541, #546). Its
+    /// copy says nothing about this article and the right PDF may exist
+    /// elsewhere, so it leaves the question open, as a source not asked does.
+    /// Only a PDF's entry, with its address, is refused so: one of
+    /// ``OpenAccessSource/pdf``, ``OpenAccessSource/openAlexPDF``,
+    /// ``OpenAccessSource/elsevier`` or ``OpenAccessSource/europePMCPDF``.
+    case wrongArticle
+
     /// The reason as the reader is told it, in the sentence's parenthesis
     /// (Python's `RequestFailure.describe()` or `SourceLookupSkipped.describe()`).
     public var described: String {
@@ -104,6 +119,7 @@ public enum OpenAccessUnsettledReason: Sendable, Equatable, Hashable {
         case .notConfigured: return OpenAccessShortfall.notConfiguredDescription
         case .keyRefused: return BioMedLitConstants.coreKeyRefusedReason
         case .networkRefused: return BioMedLitConstants.elsevierNetworkRefusedReason
+        case .wrongArticle: return BioMedLitConstants.wrongArticleReason
         }
     }
 }
@@ -153,6 +169,12 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
 
     /// Python's `LookupSkipReason.NETWORK_REFUSED`, as stored (#480, stage C2).
     private static let skippedNetworkRefused = "network_refused"
+
+    /// Python's `LookupSkipReason.WRONG_ARTICLE`, as stored (#546).
+    private static let skippedWrongArticle = "wrong_article"
+
+    /// The sources whose PDF can be another article's: each names a PDF.
+    static let wrongArticleSources: Set<OpenAccessSource> = [.pdf, .openAlexPDF, .elsevier, .europePMCPDF]
 
     /// Python's `SourceLookupSkipped.describe()` for that reason.
     fileprivate static let notConfiguredDescription = "not configured"
@@ -208,6 +230,11 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
                 )
             case .networkRefused:
                 precondition(source == .elsevier && kept == nil, "an off-network skip is Elsevier's own lookup")
+            case .wrongArticle:
+                precondition(
+                    OpenAccessShortfall.wrongArticleSources.contains(source) && kept != nil,
+                    "another article's PDF is a PDF's entry, with its address"
+                )
             case .failed:
                 break
             }
@@ -284,6 +311,18 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
         entries: [Entry(source: .elsevier, reason: .networkRefused, address: nil)]
     )
 
+    /// A PDF a source served that is another article's, set aside unread
+    /// (#546): told as "{host}, named by {source} (another article's PDF)",
+    /// a source not asked, so absence stays unestablished.
+    ///
+    /// - Parameters:
+    ///   - source: Whose PDF: Unpaywall's, OpenAlex's, Elsevier's or Europe PMC's.
+    ///   - address: Where the PDF was fetched from; must not be blank.
+    /// - Returns: The shortfall of that one entry.
+    public static func wrongArticle(source: OpenAccessSource, address: String) -> OpenAccessShortfall {
+        OpenAccessShortfall(entries: [Entry(source: source, reason: .wrongArticle, address: address)])
+    }
+
     /// The first entry's source, for callers that log one; decide nothing from
     /// it alone.
     ///
@@ -329,9 +368,11 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
     // MARK: - Telling the reader
 
     /// The open-access chain's sources in the order they are tried (#480):
-    /// Elsevier's API first, as it is asked before any Unpaywall lookup.
+    /// Europe PMC's render first (#546; Python ranks its Europe PMC outside the
+    /// chain, which sorts first too), then Elsevier's API, as it is asked
+    /// before any Unpaywall lookup.
     static let chainOrder: [OpenAccessSource] = [
-        .elsevier, .unpaywall, .landingPage, .pdf, .openAlex, .openAlexPDF, .core,
+        .europePMCPDF, .elsevier, .unpaywall, .landingPage, .pdf, .openAlex, .openAlexPDF, .core,
     ]
 
     /// Who named a tried PDF.
@@ -560,6 +601,7 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
         case .notConfigured: object[keySkipped] = skippedNotConfigured
         case .keyRefused: object[keySkipped] = skippedKeyRefused
         case .networkRefused: object[keySkipped] = skippedNetworkRefused
+        case .wrongArticle: object[keySkipped] = skippedWrongArticle
         }
         return object
     }
@@ -576,8 +618,10 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
     /// stored `not_configured` skip is Unpaywall's and a stored
     /// `network_refused` skip Elsevier's, whatever source it names; a stored
     /// `key_refused` skip is Elsevier's when the source it names is `elsevier`,
-    /// and CORE's otherwise: only they are skipped so. Any other skip reads by
-    /// its failure.
+    /// and CORE's otherwise: only they are skipped so. A stored `wrong_article`
+    /// skip keeps its address and source (Unpaywall's PDF for a source that
+    /// names none); without an address it reads by its failure. Any other skip
+    /// reads by its failure.
     ///
     /// - Parameter stored: The stored value, untrusted.
     /// - Returns: The shortfall, as specific as the stored value allows.
@@ -612,6 +656,14 @@ public struct OpenAccessShortfall: Sendable, Equatable, Hashable {
             return Entry(source: elsevier ? .elsevier : .core, reason: .keyRefused, address: nil)
         case skippedNetworkRefused:
             return Entry(source: .elsevier, reason: .networkRefused, address: nil)
+        case skippedWrongArticle:
+            // A PDF's entry: without an address it is unattributable, and reads
+            // by its failure below; a source that names no PDF reads as Unpaywall's
+            guard let address = fields[keyAddress] as? String,
+                  !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { break }
+            let named = (fields[keySource] as? String).flatMap(OpenAccessSource.init(rawValue:))
+            let source = named.flatMap { wrongArticleSources.contains($0) ? $0 : nil } ?? .pdf
+            return Entry(source: source, reason: .wrongArticle, address: address)
         default:
             break
         }

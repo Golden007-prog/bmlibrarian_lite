@@ -906,6 +906,43 @@ function get_cached_pdf_path(article_id: string, url: string) -> string | null:
     return null
 ```
 
+### A PDF of another article (#541, #546)
+
+A source can serve another article's PDF: a publisher's script redirects, a
+DOI resolves to the wrong file, a supplement stands in for the article. Ten of
+25 PDFs in a real desktop library were other articles, and each was read as the
+article it was filed under. So every PDF is checked against the article's title
+before its text is used or it is shown, on all three platforms; the judgement is
+`doc/cross_platform/fulltext_parity/pdf_title_check.json` (Python's
+`pdf_title_check.py`, BioMedLit's `PDFTitleChecker`, Android's `PdfTitleChecker`).
+
+- **The check.** The first page with text (an image-only cover is passed over)
+  must carry at least half of the title's adjacent word pairs. A title with no
+  words, a page with no text, a title PubMed translated (in square brackets) or a
+  file that cannot be read is judged by nothing: never a match, never a mismatch.
+  **Only a mismatch refuses a PDF.** The text is NFKC-normalised and fully
+  case-folded as Python's `str.casefold` folds it; each platform's folding was
+  measured equal to it on every letter and number.
+- **Where.** Every download and every cached PDF a run reuses: Python at each
+  download and the cached-PDF tier (`pdf_library_check`); Swift at the one place
+  every cached PDF passes before its text is read (`extractText(fromCachedPDF:)`),
+  given the title by `fetchFullText(…, title:)`; Android in the recording walk
+  (each open-access candidate and the render), in the chain for Elsevier's PDF,
+  and in the viewer before a cached PDF is shown.
+- **What follows.** The PDF is set aside beside its name with `.mismatch`, never
+  deleted (the check can be wrong), and never read. The refusal is a skip with the
+  PDF's address, `wrong_article`, told "{host}, named by {source} (another
+  article's PDF)" as a source not asked: **it is never an absence**, and a copy
+  served later settles the question as any does. An open-access candidate's
+  refusal lets the walk go on; Elsevier's lets Unpaywall be asked. Europe PMC's
+  render is recorded under `europepmc_pdf`, told first: Swift goes on down the
+  chain, Android ends the fetch on the DOI link (or the render's link with no
+  DOI), as a render it could not download ends it (#471). No link to a refused
+  PDF is kept as a fallback.
+- **The desktop only** keeps a person's override (`<pdf>.kept`, `bmll keep-pdf`),
+  numbers distinct set-aside copies, and tells the reader where a PDF was set
+  aside; the apps keep the latest copy per cached name.
+
 ## OpenAlex's Locations (#480)
 
 OpenAlex lists the places a work is hosted, some with a PDF URL Unpaywall

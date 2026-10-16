@@ -57,6 +57,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import retrofit2.Response
+import java.io.File
 import java.net.InetAddress
 
 /**
@@ -163,6 +164,37 @@ class FullTextServiceElsevierTest {
         coVerify(exactly = 1) { elsevier.fetchPdf(doi) }
         coVerify(exactly = 0) { unpaywallApi.getWorkByDoi(any(), any()) }
         coVerify(exactly = 0) { core.fetchText(any()) }
+    }
+
+    /**
+     * Elsevier's PDF of another article is set aside, told under the article URL it
+     * was asked by, and Unpaywall is asked (#546).
+     */
+    @Test
+    fun `Elsevier's PDF of another article is set aside and Unpaywall is asked`() = runTest {
+        val served = writeTitledPdf(cache.root.resolve("elsevier-wrong.pdf"), "Using Effect Size\nGail M. Sullivan")
+        unpaywallKnowsNothing()
+        elsevier = elsevierAnswering(ElsevierFetch.Served(served.path))
+
+        val result = service().fetchFullText(null, doi, "1", email, title = "Caffeine and blood pressure").getOrThrow()
+
+        val expected = OpenAccessShortfall.wrongArticle(OpenAccessSource.ELSEVIER, Elsevier.articleUrl(doi))
+        assertEquals(FullTextResult.DoiUrl(doiLink(doi), expected), result)
+        coVerify(exactly = 1) { unpaywallApi.getWorkByDoi(any(), any()) }
+        assertFalse("never served again", served.exists())
+        assertTrue(File(served.path + Constants.PDF_MISMATCH_SUFFIX).isFile)
+    }
+
+    /** The control: Elsevier's PDF that carries the title is the result. */
+    @Test
+    fun `Elsevier's PDF of this article is the result`() = runTest {
+        val served = writeTitledPdf(cache.root.resolve("elsevier-right.pdf"), "Caffeine and blood pressure\nAbstract")
+        elsevier = elsevierAnswering(ElsevierFetch.Served(served.path))
+
+        val result = service().fetchFullText(null, doi, "1", email, title = "Caffeine and blood pressure").getOrThrow()
+
+        assertEquals(FullTextResult.ElsevierPdf(served.path), result)
+        coVerify(exactly = 0) { unpaywallApi.getWorkByDoi(any(), any()) }
     }
 
     /** A DOI stored in a resolver form is asked bare, as Python's `_clean_doi` cleans it. */

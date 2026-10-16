@@ -84,6 +84,12 @@ class OpenAccessStatementContractTest {
                 assertEquals("$entry", OpenAccessSource.ELSEVIER.persistedValue, str(entry, "source"))
                 return@map OpenAccessShortfall.ELSEVIER_NETWORK_REFUSED
             }
+            if (skipped == "wrong_article") {
+                // Another article's PDF, with its address (#546)
+                val source = OpenAccessSource.fromPersisted(str(entry, "source")) ?: error("unknown source in $entry")
+                return@map OpenAccessShortfall.wrongArticle(source, str(entry, "address"))
+            }
+            check(skipped == null) { "an unknown skip in $entry" }
             val source = OpenAccessSource.fromPersisted(str(entry, "source")) ?: error("unknown source in $entry")
             val kind = RequestFailureKind.fromPersisted(str(entry, "kind")) ?: error("unknown kind in $entry")
             val status = entry["status_code"]?.takeUnless { it is JsonNull }?.jsonPrimitive?.int
