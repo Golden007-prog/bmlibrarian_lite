@@ -38,6 +38,9 @@ Usage:
     # Validate configuration
     bmll validate
 
+    # Keep a PDF the title check set aside as its article's
+    bmll keep-pdf ~/knowledgebase/pdf/2016/10.3945_ajcn.115.120147.pdf.mismatch
+
     # Show version
     bmll --version
 
@@ -58,6 +61,7 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 
 # Suppress tokenizers parallelism warning when forking for Qt threads
 # This must be set before importing any HuggingFace/FastEmbed modules
@@ -192,6 +196,34 @@ def cmd_clear(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_keep_pdf(args: argparse.Namespace) -> int:
+    """Keep a PDF as its article's though its first page lacks the title (#541).
+
+    A PDF set aside (``<pdf>.mismatch``) is renamed back; either way a
+    marker beside it vouches for its bytes, so the cached-PDF tier reads it.
+
+    Args:
+        args: Parsed command line arguments (``path``)
+
+    Returns:
+        Exit code (0 for success, 1 when it could not be kept)
+    """
+    from .pdf_library_check import keep_pdf
+
+    path = Path(args.path).expanduser()
+    if not path.is_file():
+        print(f"No such file: {path}", file=sys.stderr)
+        return 1
+    try:
+        kept = keep_pdf(path)
+    except (ValueError, OSError) as e:
+        # FileExistsError is an OSError: another PDF has the name to go back to
+        print(f"Could not keep {path.name}: {e}", file=sys.stderr)
+        return 1
+    print(f"Kept {kept} as its article's PDF.")
+    return 0
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     """
     Show or export configuration.
@@ -321,6 +353,17 @@ Examples:
         help="Skip confirmation prompt",
     )
     clear_parser.set_defaults(func=cmd_clear)
+
+    # Keep-PDF command
+    keep_parser = subparsers.add_parser(
+        "keep-pdf",
+        help="Keep a PDF the title check set aside as its article's",
+    )
+    keep_parser.add_argument(
+        "path",
+        help="The set-aside PDF (<name>.pdf.mismatch) or a PDF in the library",
+    )
+    keep_parser.set_defaults(func=cmd_keep_pdf)
 
     # Config command
     config_parser = subparsers.add_parser(

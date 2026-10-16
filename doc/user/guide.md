@@ -132,6 +132,24 @@ no text, an article with no title, or one whose title PubMed gives as an
 English translation in square brackets) is saved, and the review queue says
 its title could not be checked.
 
+**Every PDF is checked against its article's title** before its text is read,
+whether it was just downloaded or was already in your PDF library: its first
+page with text must carry the title. In a real library, 10 of 25 PDFs turned
+out to be other articles, filed under the wrong one. A PDF that does not carry
+the title is never read as the article and never deleted: it is renamed
+beside itself with `.mismatch` added (`article.pdf.mismatch`), the app looks
+for the article's own PDF elsewhere, and you are told (in the chat, in the
+article's transparency warnings, or by the MCP tool). If such a PDF *is* the
+article (a preprint whose title changed, a scan with garbled text), keep it:
+
+```bash
+bmll keep-pdf ~/knowledgebase/pdf/2016/10.3945_ajcn.115.120147.pdf.mismatch
+```
+
+This renames it back and marks it as kept (a `.kept` file beside it), so it
+is read from then on. A different PDF downloaded later in its place is checked
+again. **Keep this PDF** in the review queue (below) marks a PDF the same way.
+
 Rescued PDFs are saved in your PDF library, and a rescued article's
 transparency badge is re-checked, so it may change once the full text has been
 read. The browser keeps the sites' cookies and a cache of what the pages loaded

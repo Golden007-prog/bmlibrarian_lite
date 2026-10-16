@@ -30,22 +30,14 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**A rescued PDF must be the article's** (#532, Python; PR #542, in review). `pdf_title_check.py`: the first
-page with text must carry ≥ `PDF_TITLE_MIN_PAIR_SHARE` (0.5) of the title's
-adjacent word pairs; survey numbers are in the constant's comment (single
-words passed 62 of 500 same-subject titles). A hidden visit's mismatch is
-`wrong_pdf` → `needs_person`; a person's is held with *Keep this PDF*
-(`HeldPdfKeep`; a failed save stays held). An unopenable or pageless `%PDF`
-is `unreadable_pdf` → `needs_person`, and a person's visit stays open past
-it. No title words, no text on any page, or a PubMed-translated `[title]`
-the page lacks keeps the PDF with `RescueVerdict.title_unchecked`, never as
-a checked one. `PDFDiscoverer._verify_pdf_content` shares the check
-(`verification_status`/`verification_warning`). Matcher limits are #543
-(errata, generic and stopword-heavy titles, stamped scans); housekeeping
-#544. **Found on the way
-(#541): 10 of 25 PDFs in a real desktop library are other articles**, and
-discovery and the cached-PDF tier never refuse one. That is the next slice
-with the most reader-facing harm.
+**Wrong-article PDFs in discovery and the library** (#541, Python; branch
+`fix/wrong-article-pdfs-541`, in progress). 10 of 25 PDFs in a real desktop
+library are other articles. The maintainer's scope: (1) discovery refuses a
+download whose first page lacks the title and tries the next source, never
+as an absence; (2) the cached-PDF tier checks before reading, and renames a
+mismatch aside to `<name>.pdf.mismatch` (never deleted), telling the reader;
+a PDF a person kept carries a `<name>.pdf.kept` marker and is trusted. The
+one-off library sweep and the apps' check are lodged as their own issues.
 
 ## Recently landed (context)
 
@@ -62,8 +54,15 @@ Compressed once merged: the rules that still bind. Git history and the
   (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect 10/10
   `needs_person`. The apps' embedded browsers need their own spec.
   Open follow-ups: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**,
-  **#533**–**#535**, **#537**–**#540**, **#543**, **#544** (#532 is in
-  review, above).
+  **#533**–**#535**, **#537**–**#540**, **#543**, **#544**.
+- **A rescued PDF must be the article's** (#532, closed; PR #542).
+  `pdf_title_check.py`: the first page with text must carry ≥
+  `PDF_TITLE_MIN_PAIR_SHARE` (0.5) of the title's adjacent word pairs (survey
+  numbers in the constant's comment). A hidden visit's mismatch is
+  `wrong_pdf` → `needs_person`; a person's is held at `<pdf>.held` with
+  *Keep this PDF*. An unreadable `%PDF` is `unreadable_pdf`. No title words,
+  no text, or a PubMed-translated `[title]` is `title_unchecked`, never a
+  checked match. Matcher limits: #543.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its

@@ -1303,6 +1303,17 @@ PDF_PARTIAL_SUFFIX = ".part"
 # the partial file's way: discovery writes ``<pdf>.part`` too, from another
 # thread. The person's next download in the visit does discard it.
 PDF_HELD_SUFFIX = ".held"
+# Appended to a PDF found not to carry its article's title, in the library or
+# fresh from a download, when it is set aside rather than read (#541). The
+# cache looks only for ``.pdf``, so a set-aside PDF is never read as the
+# article's again; it is kept, never deleted, for the reader to judge.
+PDF_MISMATCH_SUFFIX = ".mismatch"
+# Appended to a PDF a person kept as the article's though the title check
+# doubted it (#532, #541): a marker file holding the PDF's SHA-256, so it
+# vouches for those bytes alone and a later download in its place is checked.
+PDF_KEPT_SUFFIX = ".kept"
+# How much of a PDF is read at a time to hash it for its kept marker (#541).
+PDF_DIGEST_CHUNK_BYTES = 1024 * 1024
 # A PDF is taken as an article's when its first page with text carries at
 # least this share of the title's adjacent word pairs (each pair in the
 # title's word order, found anywhere on the page) (#532). Measured on 500

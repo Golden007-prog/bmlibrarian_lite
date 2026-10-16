@@ -48,6 +48,7 @@ from ..constants import (
     RESCUE_PAGE_READ_GRACE_MS,
 )
 from ..pdf_download import discard_partial_download, held_download_path, partial_download_path
+from ..pdf_library_check import mark_kept
 from ..pdf_title_check import check_pdf_title
 
 if TYPE_CHECKING:
@@ -344,6 +345,11 @@ class RescueAttempt(QObject):
             # the visit is over (it drops one)
             return HeldPdfKeep.NOTHING_HELD
         try:
+            # Marked first: kept without its marker, the cached-PDF tier
+            # would set it aside as another article's (#541). A marker left
+            # by a failed rename names these bytes alone, so it vouches for
+            # no other PDF.
+            mark_kept(self._pdf_path, contents=held)
             held.replace(self._pdf_path)
         except OSError as e:
             logger.error("The PDF kept for %s could not be saved: %s", self._pdf_path.name, e)

@@ -91,6 +91,8 @@ from .pdf_utils import (
 )
 from .pmc_open_data import PmcOpenDataClient
 from .pdf_discovery import PDFDiscoverer, DiscoveryResult as PDFDiscoveryResult
+from .pdf_library_check import CachedPdfCheck, check_cached_pdf, set_aside, set_aside_note
+from .pdf_title_check import TitleCheckOutcome, check_pdf_title
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +142,11 @@ class FulltextResult:
             classify rather than parse ``error``: the transparency analyser
             reads it to decide whether a missing statement is the article's
             answer or our own silence.
+        refused_library_pdf: A PDF filed for this article in the library
+            that does not carry its title, and so was not read (#541):
+            renamed aside, or left in place when it could not be. Carried on
+            success too, so a caller can tell the reader; on failure its
+            sentence (:attr:`library_pdf_note`) ends ``error``.
     """
 
     success: bool
@@ -151,6 +158,26 @@ class FulltextResult:
     is_paywall: bool = False
     paywall_url: Optional[str] = None
     lookups: LookupRecord = field(default_factory=LookupRecord)
+    refused_library_pdf: CachedPdfCheck | None = None
+
+    @property
+    def set_aside_pdf(self) -> Path | None:
+        """Where a PDF in the library that is another article's was renamed (#541).
+
+        Returns:
+            Its new path; ``None`` when none was refused, or one could not be
+            moved.
+        """
+        return self.refused_library_pdf.set_aside_to if self.refused_library_pdf else None
+
+    @property
+    def library_pdf_note(self) -> str | None:
+        """What the reader is told about a PDF in the library not read (#541).
+
+        Returns:
+            The sentence, or ``None`` when no PDF in the library was refused.
+        """
+        return set_aside_note(self.refused_library_pdf) if self.refused_library_pdf else None
 
     @property
     def absence_established(self) -> bool:
@@ -401,9 +428,16 @@ class FulltextDiscoverer:
         if self._cancelled:
             return self._cancelled_result(lookups)
 
-        # 3. Check for cached PDF
+        # 3. Check for cached PDF. One that does not carry the title is
+        # another article's: set aside and not read, and the download below
+        # looks for this article's own (#541).
         self._emit_progress("discovery", "checking_pdf_cache")
         cached_pdf = find_existing_pdf(doc_dict)
+        refused: CachedPdfCheck | None = None
+        if cached_pdf:
+            found = check_cached_pdf(cached_pdf, title)
+            if not found.usable:
+                refused, cached_pdf = found, None
         if cached_pdf:
             logger.info(f"Found cached PDF: {cached_pdf}")
             try:
@@ -429,7 +463,7 @@ class FulltextDiscoverer:
             lookups = lookups.merged(_unreadable_pdf_record())
 
         if self._cancelled:
-            return self._cancelled_result(lookups)
+            return _told_library_pdf(self._cancelled_result(lookups), refused)
 
         if skip_pdf:
             # A lookup the caller chose not to make. It leaves exactly the
@@ -437,7 +471,7 @@ class FulltextDiscoverer:
             # read as one (#355). The sentence says so too: "No full-text
             # available" is a claim about the article, and the GUI shows
             # this string to the user verbatim.
-            return FulltextResult(
+            return _told_library_pdf(FulltextResult(
                 success=False,
                 source_type=FulltextSourceType.NOT_ASSESSED,
                 error=(
@@ -454,15 +488,18 @@ class FulltextDiscoverer:
                         )
                     )
                 ),
-            )
+            ), refused)
 
         # 4. Try the PDF download, then CORE's text. The record is passed in
         # so the sentence the reader is shown names what went unasked above
         # too, and merged here, the one place, so no path below can drop it.
         self._emit_progress("discovery", "downloading_pdf")
-        return self._try_pdf_download(
-            doc_dict, pmid, pmcid, doi, title, earlier_lookups=lookups
-        ).with_lookups(lookups)
+        return _told_library_pdf(
+            self._try_pdf_download(
+                doc_dict, pmid, pmcid, doi, title, earlier_lookups=lookups
+            ).with_lookups(lookups),
+            refused,
+        )
 
     @staticmethod
     def _cancelled_result(lookups: LookupRecord | None = None) -> "FulltextResult":
@@ -832,6 +869,14 @@ class FulltextDiscoverer:
             # Save the PDF
             with open(pdf_path, "wb") as f:
                 f.write(content)
+
+            # Another article's PDF is no answer about this one: set aside,
+            # unread, and the chain goes on (#541)
+            title = doc_dict.get("title")
+            if title:
+                check = check_pdf_title(pdf_path, title)
+                if check.outcome is TitleCheckOutcome.MISMATCH:
+                    return _europepmc_wrong_article(article_info, pdf_path, pdf_url or "")
 
             # Extract text from PDF
             text = extract_pdf_text(pdf_path)
@@ -1214,6 +1259,56 @@ def _europepmc_pdf_unassessed(
         A result establishing nothing, naming Europe PMC as unread.
     """
     return _europepmc_unassessed(article_info, error, RequestFailure(kind))
+
+
+def _europepmc_wrong_article(
+    article_info: ArticleInfo, pdf_path: Path, pdf_url: str
+) -> FulltextResult:
+    """Set aside Europe PMC's PDF of another article, and record it (#541).
+
+    Args:
+        article_info: What Europe PMC said about the article.
+        pdf_path: Where the PDF was saved; renamed aside here, or left there
+            (logged) for the cached-PDF tier to refuse.
+        pdf_url: The render URL it came from, which the record names.
+
+    Returns:
+        A result establishing nothing, with a ``WRONG_ARTICLE`` skip of
+        Europe PMC.
+    """
+    try:
+        moved = set_aside(pdf_path)
+        logger.warning("Europe PMC's PDF is another article's; set aside as %s", moved.name)
+    except OSError:
+        logger.error("Europe PMC's PDF is another article's and could not be set aside", exc_info=True)
+    return FulltextResult(
+        success=False,
+        source_type=FulltextSourceType.NOT_ASSESSED,
+        article_info=article_info,
+        error="Europe PMC's PDF for this article is another article's.",
+        lookups=LookupRecord(skipped=(
+            SourceLookupSkipped(SERVICE_EUROPE_PMC, LookupSkipReason.WRONG_ARTICLE, pdf_url),
+        )),
+    )
+
+
+def _told_library_pdf(result: FulltextResult, refused: CachedPdfCheck | None) -> FulltextResult:
+    """Carry a PDF in the library that was not read, and tell it on failure (#541).
+
+    Args:
+        result: What the rest of the chain came to.
+        refused: The PDF in the library refused, if any.
+
+    Returns:
+        ``result`` carrying it; on failure, its sentence ends ``error``.
+    """
+    if refused is None:
+        return result
+    told = replace(result, refused_library_pdf=refused)
+    if result.success:
+        return told
+    note = told.library_pdf_note or ""
+    return replace(told, error=f"{result.error} {note}" if result.error else note)
 
 
 def _europepmc_unassessed(
