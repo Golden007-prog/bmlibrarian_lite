@@ -677,8 +677,6 @@ class PDFDiscoverer:
         self.progress_callback = progress_callback
         self._session = self._create_session()
         self._cancelled = False
-        #: Where this discovery set aside downloads of another article (#541)
-        self._set_aside_paths: list[Path] = []
 
     def _create_session(self) -> requests.Session:
         """Create HTTP session with retry logic."""
@@ -734,11 +732,14 @@ class PDFDiscoverer:
             as another article's on the way (``set_aside``), whatever the
             outcome (#541).
         """
-        self._set_aside_paths = []
+        # Held by this call, never on the discoverer, so a discoverer used
+        # for two discoveries at once never mixes their PDFs
+        set_aside_paths: list[Path] = []
         result = self._discover_and_download(
-            output_path, doi, pmid, pmcid, title, expected_title, earlier_lookups, core_text
+            output_path, doi, pmid, pmcid, title, expected_title, earlier_lookups,
+            core_text, set_aside_paths=set_aside_paths,
         )
-        return replace(result, set_aside=tuple(self._set_aside_paths))
+        return replace(result, set_aside=tuple(dict.fromkeys(set_aside_paths)))
 
     def _discover_and_download(
         self,
@@ -750,6 +751,8 @@ class PDFDiscoverer:
         expected_title: Optional[str] = None,
         earlier_lookups: LookupRecord | None = None,
         core_text: Callable[[str], CoreFetch] | None = None,
+        *,
+        set_aside_paths: list[Path],
     ) -> DiscoveryResult:
         """
         Discover and download PDF for a document.
@@ -783,6 +786,8 @@ class PDFDiscoverer:
                 copy (#480, stage C). Its text is a success without a file
                 (``text``); a CORE that could not be asked is recorded under
                 ``SERVICE_CORE``; ``None`` asks nothing and records nothing.
+            set_aside_paths: This call's list, given where each download of
+                another article was set aside (#541).
 
         Returns:
             DiscoveryResult with success status and details
@@ -801,15 +806,16 @@ class PDFDiscoverer:
         # stage C2). A PDF it served, a cancel, or a PDF it served that could
         # not be saved ends the discovery; anything it left unsettled is
         # recorded, and the walk goes on. A PDF it offered over the size
-        # limit is a copy not obtained, held with the refused copies, ranked
-        # first (-1), and dropped with them when a later copy is obtained.
+        # limit, or one of another article (set aside, #541), is a copy not
+        # obtained, held with the refused copies, ranked first (-1), and
+        # dropped with them when a later copy is obtained.
         if self._cancelled:
             return DiscoveryResult(success=False, error="Cancelled")
         elsevier_lookups = LookupRecord()
         elsevier_copy = LookupRecord()
         if doi and self._elsevier is not None and elsevier_eligible(doi):
             ended, elsevier_lookups, elsevier_copy = self._ask_elsevier(
-                self._elsevier, doi, output_path, expected_title or title
+                self._elsevier, doi, output_path, expected_title or title, set_aside_paths
             )
             if ended is not None:
                 return ended
@@ -907,6 +913,7 @@ class PDFDiscoverer:
             source = pending.popleft()
             self._emit_progress("discovery", "found_oa" if source.is_open_access else "found")
             result = self._try_download(source, output_path, expected_title or title)
+            set_aside_paths.extend(result.set_aside)
 
             if result.success:
                 return result.with_lookups(lookups)
@@ -1022,6 +1029,7 @@ class PDFDiscoverer:
         doi: str,
         output_path: Path,
         expected_title: str | None,
+        set_aside_paths: list[Path],
     ) -> tuple[DiscoveryResult | None, LookupRecord, LookupRecord]:
         """Ask Elsevier's Article API for this DOI's PDF, once (#480, stage C2).
 
@@ -1031,6 +1039,8 @@ class PDFDiscoverer:
             output_path: Where a served PDF is saved: the discovery's own
                 path, so the PDF cache and text extraction apply unchanged.
             expected_title: The title a served PDF is checked against.
+            set_aside_paths: The discovery's list, given where a served PDF
+                of another article was set aside (#541).
 
         Returns:
             The result that ends the discovery -- a served PDF, a cancel, or
@@ -1038,7 +1048,8 @@ class PDFDiscoverer:
             go on. Then, when the discovery goes on, what Elsevier left
             unasked (a failure when it could not be asked, a skip when it
             refused the key or the network) and the copy it offered that was
-            not obtained (an ``OVER_SIZE_LIMIT`` skip with the article URL).
+            not obtained (an ``OVER_SIZE_LIMIT`` skip with the article URL,
+            or a ``WRONG_ARTICLE`` skip for a PDF of another article).
             Both are empty for an absence (a 404, the first page only).
         """
         url = elsevier.article_url(doi)
@@ -1056,7 +1067,9 @@ class PDFDiscoverer:
                     # Another article's: set aside, recorded as a copy
                     # offered and not obtained, and the walk goes on
                     assert check is not None
-                    self._set_aside_download(output_path, fetch.path, url, check)
+                    set_aside_paths.extend(
+                        self._set_aside_download(output_path, fetch.path, url, check)
+                    )
                     return None, LookupRecord(), LookupRecord(skipped=(SourceLookupSkipped(
                         SERVICE_ELSEVIER, LookupSkipReason.WRONG_ARTICLE, url
                     ),))
@@ -1152,12 +1165,13 @@ class PDFDiscoverer:
             and not is_kept(output_path, contents=staged)
         )
 
+    @staticmethod
     def _set_aside_download(
-        self, output_path: Path, staged: Path, url: str, check: TitleCheck
-    ) -> None:
+        output_path: Path, staged: Path, url: str, check: TitleCheck
+    ) -> tuple[Path, ...]:
         """Set aside a downloaded PDF that is another article's (#541).
 
-        Kept beside the cache path, never deleted, and told to the reader
+        Kept beside the cache path and told to the reader
         (``DiscoveryResult.set_aside``): the check can be wrong, and the
         reader can keep it (``bmll keep-pdf``). The same wrong PDF
         downloaded again is kept once.
@@ -1168,6 +1182,9 @@ class PDFDiscoverer:
                 could not be set aside.
             url: Where it was downloaded from, for the log.
             check: Its mismatching title check.
+
+        Returns:
+            Where it was set aside; empty when it could not be (logged).
         """
         try:
             moved = set_aside(output_path, contents=staged)
@@ -1177,14 +1194,13 @@ class PDFDiscoverer:
                 "The PDF from %s is another article's and could not be set aside",
                 address_host(url), exc_info=True,
             )
-            return
-        if moved not in self._set_aside_paths:
-            self._set_aside_paths.append(moved)
+            return ()
         logger.warning(
             "The PDF from %s does not carry the article's title (%.0f%% of its "
             "word pairs); set aside as %s",
             address_host(url), (check.share or 0.0) * 100, moved.name,
         )
+        return (moved,)
 
     def _ask_core(self, core: _CoreFallback) -> tuple[str | None, LookupRecord]:
         """Ask CORE at a no-PDF exit, unless the discovery was cancelled.
@@ -2177,7 +2193,7 @@ class PDFDiscoverer:
                     # No answer about this article: set aside, and the next
                     # source is tried
                     assert check is not None
-                    self._set_aside_download(output_path, partial, source.url, check)
+                    moved = self._set_aside_download(output_path, partial, source.url, check)
                     return DiscoveryResult(
                         success=False,
                         error=(
@@ -2185,6 +2201,7 @@ class PDFDiscoverer:
                             f"article's ({check.share or 0.0:.0%} of the title's word pairs)."
                         ),
                         wrong_article=True,
+                        set_aside=moved,
                     )
                 partial.replace(output_path)
             finally:

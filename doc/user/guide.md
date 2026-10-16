@@ -149,6 +149,11 @@ bmll keep-pdf ~/knowledgebase/pdf/2016/10.3945_ajcn.115.120147.pdf.mismatch
 This renames it back and marks it as kept (a `.kept` file beside it), so it
 is read from then on. A different PDF downloaded later in its place is checked
 again. **Keep this PDF** in the review queue (below) marks a PDF the same way.
+If another PDF is already in the library under the article's name (say a scan
+whose title could not be checked), the command changes nothing and says so:
+move that PDF out of the folder, or delete it, and run the command again.
+Deleting a PDF from the Document Interrogation tab also removes its `.kept`
+file, so the same PDF downloaded again is checked like any other.
 
 Rescued PDFs are saved in your PDF library, and a rescued article's
 transparency badge is re-checked, so it may change once the full text has been

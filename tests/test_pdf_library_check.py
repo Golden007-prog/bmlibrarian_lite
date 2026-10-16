@@ -380,3 +380,51 @@ def test_downloads_set_aside_are_told_with_the_keep_command(tmp_path: Path) -> N
     assert single is not None and one.name in single and f'bmll keep-pdf "{one}"' in single
     both = set_aside_download_note((one, two))
     assert both is not None and one.name in both and two.name in both
+
+
+# -- the second review's findings ------------------------------------------------
+
+
+def test_forget_kept_removes_the_marker(tmp_path: Path) -> None:
+    """The keep is withdrawn: the PDF is no longer kept."""
+    from bmlibrarian_lite.pdf_library_check import forget_kept
+
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.7\nkept")
+    mark_kept(pdf)
+
+    forget_kept(pdf)
+
+    assert not is_kept(pdf)
+    assert not kept_marker_path(pdf).exists()
+
+
+def test_forget_kept_of_a_pdf_never_kept_is_nothing(tmp_path: Path) -> None:
+    """The control: no marker, no error."""
+    from bmlibrarian_lite.pdf_library_check import forget_kept
+
+    forget_kept(tmp_path / "a.pdf")
+
+
+def test_keep_refused_for_a_pdf_in_the_way_says_what_to_do(tmp_path: Path) -> None:
+    """The reader is told to move the PDF in the way, not only that it is there."""
+    moved = tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}"
+    moved.write_bytes(b"%PDF-1.7\nset aside")
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.7\nscan")
+
+    with pytest.raises(FileExistsError, match="move it out of") as raised:
+        keep_pdf(moved)
+
+    assert str(tmp_path) in str(raised.value)
+
+
+def test_several_set_aside_downloads_each_have_their_keep_command(tmp_path: Path) -> None:
+    """Every file is named with the command that keeps it, not the first alone."""
+    from bmlibrarian_lite.pdf_library_check import set_aside_download_note
+
+    paths = (tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}", tmp_path / f"a.pdf{PDF_MISMATCH_SUFFIX}-2")
+
+    note = set_aside_download_note(paths) or ""
+
+    for path in paths:
+        assert f'bmll keep-pdf "{path}"' in note

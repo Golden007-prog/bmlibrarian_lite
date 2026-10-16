@@ -31,20 +31,25 @@ have landed):
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
 **Wrong-article PDFs in discovery and the library** (#541, Python; branch
-`fix/wrong-article-pdfs-541`, PR #548 in review). A PDF is read as the article's
-only if its first page with text carries the title. Every entry point checks:
+`fix/wrong-article-pdfs-541`, PR #548 in review). A PDF whose first page with text is
+found not to carry the title is not read as the article's. Every entry point checks:
 each download (`PDFDiscoverer._try_download`, Elsevier's API, Europe PMC's
 render) and each cached PDF (`fulltext_discovery` step 3, the interrogation
 tab's `_cached_article_pdf`) through `pdf_library_check`. A mismatch is
 renamed to `<pdf>.mismatch` (`-2`… for other bytes, the same bytes kept once),
-never deleted; a refused download is a `WRONG_ARTICLE` skip with its address
+not deleted; a refused download is a `WRONG_ARTICLE` skip with its address
 (never an absence) and the next source is tried. **A download is checked
 where it waits** (`.part`/`.unchecked`), so it never overwrites the library's
 PDF. Every PDF set aside is told (`FulltextResult.set_aside_pdf_note`: chat
 via the workers' `pdf_set_aside`, transparency warning, MCP), and a refused
 library PDF keeps `absence_established` false. Only a mismatch is refused. **A person's
 keep is `<pdf>.kept`, the PDF's SHA-256**: *Keep this PDF* writes it before
-the rename; `bmll keep-pdf <path>` renames a set-aside PDF back. Lodged:
+the rename; `bmll keep-pdf <path>` renames a set-aside PDF back. A second
+review round found MCP checked nothing (it gives no title: Europe PMC's is now
+used), refusals kept on the discoverer MCP shares between concurrent calls
+(now per call), a deleted PDF's keep marker left behind (`forget_kept`), the
+note dropped on a cancel, and one file told twice; all fixed, with tests that
+fail on the earlier commit. Lodged:
 **#545** (the one-off library sweep, part 3), **#546** (Swift + Android
 parity), **#547** (keep from the GUI).
 

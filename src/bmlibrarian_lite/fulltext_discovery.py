@@ -241,6 +241,37 @@ class FulltextResult:
         return replace(self, lookups=self.lookups.merged(record))
 
 
+@dataclass
+class _Refusals:
+    """The PDFs one discovery did not read as the article's (#541).
+
+    Created by each :meth:`FulltextDiscoverer.discover_fulltext` call and
+    filled from its steps' results, so concurrent calls on one discoverer
+    never see each other's.
+
+    Attributes:
+        library: The PDF filed in the library, when it was refused.
+        downloads: Where each refused download was set aside, in chain
+            order, as each step reported it.
+    """
+
+    library: CachedPdfCheck | None = None
+    downloads: list[Path] = field(default_factory=list)
+
+    def downloads_apart_from_library(self) -> tuple[Path, ...]:
+        """The set-aside downloads, each once, apart from the library's PDF.
+
+        The same wrong PDF downloaded again from the source that supplied
+        the library's copy is set aside onto that copy's file (its bytes are
+        kept once); told twice, the reader would hear of one file as two.
+
+        Returns:
+            The distinct paths, in the order they were set aside.
+        """
+        library_copy = self.library.set_aside_to if self.library else None
+        return tuple(path for path in dict.fromkeys(self.downloads) if path != library_copy)
+
+
 class FulltextDiscoverer:
     """
     Discovers and retrieves full-text content from multiple sources.
@@ -301,9 +332,6 @@ class FulltextDiscoverer:
             else elsevier_api.elsevier_client_for(elsevier_credentials)
         )
         self._cancelled = False
-        #: This discovery's PDFs not read as the article's (#541)
-        self._refused_library_pdf: CachedPdfCheck | None = None
-        self._set_aside_downloads: list[Path] = []
 
     def _emit_progress(self, stage: str, status: str) -> None:
         """Emit progress update."""
@@ -340,12 +368,16 @@ class FulltextDiscoverer:
             way, whatever the outcome; on failure, their sentence ends
             ``error`` (#541).
         """
-        self._refused_library_pdf = None
-        self._set_aside_downloads = []
+        # Held by this call, never on the discoverer: MCP shares one between
+        # concurrent tool calls, and one call's refusal must not reach
+        # another's result or be wiped by its start
+        refusals = _Refusals()
         result = replace(
-            self._discover_fulltext(doc_dict, pmid, pmcid, doi, title, year, skip_pdf),
-            refused_library_pdf=self._refused_library_pdf,
-            set_aside_downloads=tuple(dict.fromkeys(self._set_aside_downloads)),
+            self._discover_fulltext(
+                doc_dict, pmid, pmcid, doi, title, year, skip_pdf, refusals=refusals
+            ),
+            refused_library_pdf=refusals.library,
+            set_aside_downloads=refusals.downloads_apart_from_library(),
         )
         note = result.set_aside_pdf_note
         if result.success or note is None:
@@ -361,6 +393,8 @@ class FulltextDiscoverer:
         title: Optional[str] = None,
         year: Optional[int] = None,
         skip_pdf: bool = False,
+        *,
+        refusals: _Refusals,
     ) -> FulltextResult:
         """
         Discover and retrieve full-text content for a document.
@@ -385,6 +419,8 @@ class FulltextDiscoverer:
             year: Publication year
             skip_pdf: If True, don't attempt PDF download, and so do not
                 ask CORE either, nor read its cached text
+            refusals: This call's collector, given every PDF not read as
+                the article's on the way (#541)
 
         Returns:
             FulltextResult with content and source information
@@ -456,6 +492,12 @@ class FulltextDiscoverer:
         if self._cancelled:
             return self._cancelled_result(lookups)
 
+        # Europe PMC's title, when the caller gave none (an MCP call by
+        # identifier alone): without one, no PDF below could be checked,
+        # and the library's PDF of another article was read as this one
+        # (#541)
+        title = doc_dict.get('title')
+
         # 2a. PMC's open-data bucket, by PMC ID (#480). After Europe PMC,
         # whose own text wins; before its PDF render, which answers 403 to
         # every client (#453). ``_try_europepmc_xml`` writes a PMC ID it
@@ -486,6 +528,7 @@ class FulltextDiscoverer:
             self._emit_progress("discovery", "checking_europepmc_pdf")
             pdf_result = self._try_europepmc_pdf(doc_dict, result.article_info)
             lookups = lookups.merged(pdf_result.lookups)
+            refusals.downloads.extend(pdf_result.set_aside_downloads)
             if pdf_result.success:
                 return pdf_result.with_lookups(lookups)
 
@@ -500,7 +543,7 @@ class FulltextDiscoverer:
         if cached_pdf:
             found = check_cached_pdf(cached_pdf, title)
             if not found.usable:
-                self._refused_library_pdf, cached_pdf = found, None
+                refusals.library, cached_pdf = found, None
         if cached_pdf:
             logger.info(f"Found cached PDF: {cached_pdf}")
             try:
@@ -557,9 +600,11 @@ class FulltextDiscoverer:
         # so the sentence the reader is shown names what went unasked above
         # too, and merged here, the one place, so no path below can drop it.
         self._emit_progress("discovery", "downloading_pdf")
-        return self._try_pdf_download(
+        downloaded = self._try_pdf_download(
             doc_dict, pmid, pmcid, doi, title, earlier_lookups=lookups
-        ).with_lookups(lookups)
+        )
+        refusals.downloads.extend(downloaded.set_aside_downloads)
+        return downloaded.with_lookups(lookups)
 
     @staticmethod
     def _cancelled_result(lookups: LookupRecord | None = None) -> "FulltextResult":
@@ -642,6 +687,9 @@ class FulltextDiscoverer:
                 pmcid = info.pmcid
             if info.year and not doc_dict.get('year'):
                 doc_dict['year'] = info.year
+            # The PDFs below are checked against it (#541)
+            if info.title and not doc_dict.get('title'):
+                doc_dict['title'] = info.title
 
             if not info.has_fulltext_xml:
                 # One source's answer about itself, not the chain's answer
@@ -994,12 +1042,12 @@ class FulltextDiscoverer:
 
         Returns:
             A result establishing nothing, with a ``WRONG_ARTICLE`` skip of
-            Europe PMC.
+            Europe PMC, carrying where the PDF was set aside, if it could be.
         """
+        moved: tuple[Path, ...] = ()
         try:
-            moved = set_aside(pdf_path, contents=staged)
-            self._set_aside_downloads.append(moved)
-            logger.warning("Europe PMC's PDF is another article's; set aside as %s", moved.name)
+            moved = (set_aside(pdf_path, contents=staged),)
+            logger.warning("Europe PMC's PDF is another article's; set aside as %s", moved[0].name)
         except OSError:
             logger.error("Europe PMC's PDF is another article's and could not be set aside", exc_info=True)
         return FulltextResult(
@@ -1010,6 +1058,7 @@ class FulltextDiscoverer:
             lookups=LookupRecord(skipped=(
                 SourceLookupSkipped(SERVICE_EUROPE_PMC, LookupSkipReason.WRONG_ARTICLE, pdf_url),
             )),
+            set_aside_downloads=moved,
         )
 
     def _core_text(self, doc_dict: dict[str, Any], doi: str) -> CoreFetch:
@@ -1110,7 +1159,8 @@ class FulltextDiscoverer:
                 merges that.
 
         Returns:
-            The result, with this step's own lookup record.
+            The result, with this step's own lookup record and the PDFs it
+            set aside as another article's (#541).
         """
         try:
             pdf_path = generate_pdf_path(doc_dict)
@@ -1138,70 +1188,10 @@ class FulltextDiscoverer:
                 ),
             )
 
-            self._set_aside_downloads.extend(pdf_result.set_aside)
-
-            if pdf_result.success and pdf_result.text is not None:
-                return FulltextResult(
-                    success=True,
-                    source_type=FulltextSourceType.CORE_TEXT,
-                    markdown_content=pdf_result.text,
-                    lookups=pdf_result.lookups,
-                )
-
-            if pdf_result.success and pdf_result.file_path:
-                # Extract text from downloaded PDF
-                try:
-                    text = extract_pdf_text(pdf_result.file_path)
-                    if text.strip():
-                        return FulltextResult(
-                            success=True,
-                            source_type=FulltextSourceType.DOWNLOADED_PDF,
-                            markdown_content=text,
-                            file_path=pdf_result.file_path,
-                            lookups=pdf_result.lookups,
-                        )
-                    logger.warning(
-                        "No text could be extracted from the PDF downloaded "
-                        "for this article, so whether it holds a full text "
-                        "is not assessed."
-                    )
-                except Exception as e:
-                    logger.warning(f"Failed to extract text from downloaded PDF: {e}")
-                # The sources answered and one of them served the document.
-                # Our own extractor is what came up empty, so this is not
-                # the article's answer: returning NOT_FOUND here made
-                # ``absence_established`` true and MCP told a calling agent
-                # no full text exists, with the PDF sitting in the cache
-                # (#354, the rule of #359 one layer down).
-                # A scan is no full text obtained, so CORE is asked here:
-                # discovery succeeded, so its own fallback never was (#499).
-                return self._after_unreadable_pdf(
-                    doc_dict, pdf_discoverer._clean_doi(doi) if doi else "", pdf_result
-                )
-
-            # A source that demanded payment answered about itself, not
-            # about the article: a free copy may exist elsewhere, and
-            # pdf_result.error already withholds the claim where a lookup
-            # went unasked (#347).
-            if pdf_result.is_paywall:
-                return FulltextResult(
-                    success=False,
-                    source_type=FulltextSourceType.NOT_ASSESSED,
-                    error=pdf_result.error,
-                    is_paywall=True,
-                    paywall_url=pdf_result.paywall_url,
-                    lookups=pdf_result.lookups,
-                )
-
-            # Every source we could ask was asked. Whether that establishes
-            # an absence is decided by the record, not here: a caller reads
-            # ``absence_established``, which is false while anything went
-            # unasked (#354).
-            return FulltextResult(
-                success=False,
-                source_type=FulltextSourceType.NOT_FOUND,
-                error=pdf_result.error or "PDF download failed",
-                lookups=pdf_result.lookups,
+            # Whatever the outcome: a PDF set aside may be the article
+            return replace(
+                self._read_discovered(doc_dict, doi, pdf_discoverer, pdf_result),
+                set_aside_downloads=pdf_result.set_aside,
             )
 
         except Exception as e:
@@ -1227,6 +1217,92 @@ class FulltextDiscoverer:
                     )
                 ),
             )
+
+    def _read_discovered(
+        self,
+        doc_dict: dict[str, Any],
+        doi: str | None,
+        pdf_discoverer: PDFDiscoverer,
+        pdf_result: PDFDiscoveryResult,
+    ) -> FulltextResult:
+        """What PDF discovery's result comes to: its text, or why there is none.
+
+        Args:
+            doc_dict: Document dictionary, for CORE's text cache.
+            doi: Digital Object Identifier, as given.
+            pdf_discoverer: The discoverer that produced ``pdf_result``.
+            pdf_result: What it found.
+
+        Returns:
+            The result, with the discovery's lookup record.
+
+        Raises:
+            Exception: Whatever reading the PDF or asking CORE raises; the
+                caller classifies it.
+        """
+        if pdf_result.success and pdf_result.text is not None:
+            return FulltextResult(
+                success=True,
+                source_type=FulltextSourceType.CORE_TEXT,
+                markdown_content=pdf_result.text,
+                lookups=pdf_result.lookups,
+            )
+
+        if pdf_result.success and pdf_result.file_path:
+            # Extract text from downloaded PDF
+            try:
+                text = extract_pdf_text(pdf_result.file_path)
+                if text.strip():
+                    return FulltextResult(
+                        success=True,
+                        source_type=FulltextSourceType.DOWNLOADED_PDF,
+                        markdown_content=text,
+                        file_path=pdf_result.file_path,
+                        lookups=pdf_result.lookups,
+                    )
+                logger.warning(
+                    "No text could be extracted from the PDF downloaded "
+                    "for this article, so whether it holds a full text "
+                    "is not assessed."
+                )
+            except Exception as e:
+                logger.warning(f"Failed to extract text from downloaded PDF: {e}")
+            # The sources answered and one of them served the document.
+            # Our own extractor is what came up empty, so this is not
+            # the article's answer: returning NOT_FOUND here made
+            # ``absence_established`` true and MCP told a calling agent
+            # no full text exists, with the PDF sitting in the cache
+            # (#354, the rule of #359 one layer down).
+            # A scan is no full text obtained, so CORE is asked here:
+            # discovery succeeded, so its own fallback never was (#499).
+            return self._after_unreadable_pdf(
+                doc_dict, pdf_discoverer._clean_doi(doi) if doi else "", pdf_result
+            )
+
+        # A source that demanded payment answered about itself, not
+        # about the article: a free copy may exist elsewhere, and
+        # pdf_result.error already withholds the claim where a lookup
+        # went unasked (#347).
+        if pdf_result.is_paywall:
+            return FulltextResult(
+                success=False,
+                source_type=FulltextSourceType.NOT_ASSESSED,
+                error=pdf_result.error,
+                is_paywall=True,
+                paywall_url=pdf_result.paywall_url,
+                lookups=pdf_result.lookups,
+            )
+
+        # Every source we could ask was asked. Whether that establishes
+        # an absence is decided by the record, not here: a caller reads
+        # ``absence_established``, which is false while anything went
+        # unasked (#354).
+        return FulltextResult(
+            success=False,
+            source_type=FulltextSourceType.NOT_FOUND,
+            error=pdf_result.error or "PDF download failed",
+            lookups=pdf_result.lookups,
+        )
 
 
 def discover_fulltext(

@@ -568,8 +568,8 @@ Automatic full-text retrieval with fallback chain:
 3. Unpaywall PDF (open access)
 4. DOI resolution (publisher website)
 
-**A PDF is read as the article's only if its first page with text carries the
-title** (#541; `pdf_title_check.check_pdf_title`, the share of the title's
+**A PDF whose first page with text is found not to carry the title is not read
+as the article's** (#541; `pdf_title_check.check_pdf_title`, the share of the title's
 adjacent word pairs). Every PDF is checked where it enters: each download
 (`PDFDiscoverer._try_download`, Elsevier's API, Europe PMC's render) and each
 PDF the cache finds (`fulltext_discovery` step 3, and the interrogation tab's
@@ -577,7 +577,7 @@ two cached loads, through `pdf_library_check.check_cached_pdf`). **A download
 is checked where it waits** (`<pdf>.part`, or `<pdf>.unchecked` for
 Elsevier's and Europe PMC's) and replaces the cached PDF only once it passes,
 so another article's PDF never overwrites the library's. A PDF that does not
-carry the title is **set aside**, never deleted: renamed to `<pdf>.mismatch`
+carry the title is **set aside**, not deleted: renamed to `<pdf>.mismatch`
 (`-2`, `-3` … for different bytes; the same bytes are kept once, so a wrong
 download repeated each run does not accumulate). A refused download is
 recorded as a `WRONG_ARTICLE` skip with its address (never an absence: the
@@ -597,7 +597,21 @@ PDF be.
 `<pdf>.kept` holding its SHA-256 (`mark_kept`), so it vouches for those bytes
 alone, wherever they come from (a download of the bytes kept is kept too);
 the review queue's *Keep this PDF* and `bmll keep-pdf <path>` (which renames
-a set-aside PDF back) both write it before the rename.
+a set-aside PDF back) both write it before the rename. Deleting a PDF from the
+interrogation tab removes its marker first (`forget_kept`), or the same bytes
+downloaded again would be read unchecked.
+
+**The check needs a title.** A caller that gives none (MCP's
+`get_document_fulltext`, by identifier alone) gets Europe PMC's: step 2 writes
+`ArticleInfo.title` into `doc_dict`, and steps 2b–4 check against it. With no
+title from either, nothing is checked, as before. **Refusals are per call**:
+each step returns what it set aside (`FulltextResult.set_aside_downloads`,
+`DiscoveryResult.set_aside`) and `discover_fulltext` / `discover_and_download`
+gather them in a collector of their own, never on the discoverer, since MCP
+shares one `FulltextDiscoverer` between concurrent tool calls. A download set
+aside onto the library PDF's own `.mismatch` (the same bytes, served again) is
+told once, as the library's. Both workers emit `pdf_set_aside` before a cancel
+too, and the tab shows a superseded run's note, naming its article.
 
 **A degraded source is named where the source is named** (#304). The
 interrogation tab's fall back from full text to the abstract states its cause

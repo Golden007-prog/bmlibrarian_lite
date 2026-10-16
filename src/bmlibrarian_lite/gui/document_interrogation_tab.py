@@ -80,7 +80,7 @@ from ..data_models import LookupRecord
 from ..exceptions import SQLiteError
 from ..elsevier_api import ElsevierCredentials
 from ..storage import LiteStorage
-from ..pdf_library_check import check_cached_pdf, set_aside_note
+from ..pdf_library_check import check_cached_pdf, forget_kept, set_aside_note
 from ..agents import LiteInterrogationAgent
 from ..pdf_utils import (
     get_pdf_base_dir,
@@ -1042,9 +1042,9 @@ class DocumentInterrogationTab(QWidget):
         # the reader replaced by opening another citation must not load its
         # article, or start a wait for it, over the one now open
         worker.progress.connect(self._for_current_fulltext(worker, self._update_progress_dialog))
-        worker.pdf_set_aside.connect(self._for_current_fulltext(
-            worker, lambda note: self._add_chat_bubble(note, is_user=False)
-        ))
+        worker.pdf_set_aside.connect(
+            lambda note: self._on_fulltext_set_aside(worker, note, display_title)
+        )
         worker.finished.connect(self._for_current_fulltext(
             worker, lambda content, path, source: self._on_fulltext_ready(content, path, source, citation)
         ))
@@ -1140,6 +1140,23 @@ class DocumentInterrogationTab(QWidget):
             return True
         logger.debug("A superseded full-text discovery reported; its outcome is not loaded")
         return False
+
+    def _on_fulltext_set_aside(self, worker: object, note: str, display_title: str) -> None:
+        """Tell the reader of PDFs a full-text discovery did not read (#541).
+
+        Told for a superseded run too, unlike its outcome: the note is about
+        files on disk, which nothing looks for again. It then names the
+        article it is about, since "this article" would read as the one now
+        open.
+
+        Args:
+            worker: The run that is reporting.
+            note: What to tell the reader.
+            display_title: The title of the article the run was for.
+        """
+        if not self._is_current_fulltext(worker):
+            note = f"For the article opened before, \u201c{display_title}\u201d: {note}"
+        self._add_chat_bubble(note, is_user=False)
 
     def _for_current_fulltext(
         self, worker: object, handler: Callable[..., None]
@@ -1492,9 +1509,19 @@ class DocumentInterrogationTab(QWidget):
             self._add_chat_bubble(f"View cleared. PDF file kept at:\n`{pdf_path}`", is_user=False)
 
     def _delete_pdf(self, pdf_path: Path) -> bool:
-        """Delete a PDF file and clean up."""
+        """Delete a PDF file, its keep marker, and its chunks.
+
+        Args:
+            pdf_path: The PDF to delete.
+
+        Returns:
+            Whether it was deleted; a failure is shown to the reader.
+        """
         try:
             if pdf_path.exists():
+                # First: a marker left behind would let the same PDF,
+                # downloaded again, be read unchecked (#541)
+                forget_kept(pdf_path)
                 pdf_path.unlink()
                 logger.info(f"Deleted PDF: {pdf_path}")
                 if self.storage and self._current_doc_metadata:

@@ -6,17 +6,19 @@
 
 Ten of 25 PDFs in a real desktop library were other articles, and the
 cached-PDF tier read each as the article it was filed under, so its text fed
-that article's transparency rating. A PDF is now read only if its first page
-with text carries the title (:func:`pdf_title_check.check_pdf_title`) or a
-person kept it.
+that article's transparency rating. A PDF whose first page with text is found
+not to carry the title (:func:`pdf_title_check.check_pdf_title`) is now not
+read, unless a person kept it.
 
 A PDF that lacks the title is set aside: renamed beside itself with
-:data:`PDF_MISMATCH_SUFFIX`, which the cache never looks for, and never
-deleted, since the check can be wrong (a preprint retitled between versions).
-A person who says it is the article keeps it (``bmll keep-pdf``, or the
-review queue's *Keep this PDF*): a marker beside it, with
-:data:`PDF_KEPT_SUFFIX`, holds the PDF's SHA-256, so it vouches for those
-bytes alone and a later download in its place is checked again.
+:data:`PDF_MISMATCH_SUFFIX`, which the cache never looks for, and not
+deleted, since the check can be wrong (a preprint retitled between versions);
+a copy identical to one already set aside is kept once. A person who says it
+is the article keeps it (``bmll keep-pdf``; the review queue's *Keep this
+PDF* marks a PDF held during a shown browser visit the same way): a marker
+beside it, with :data:`PDF_KEPT_SUFFIX`, holds the PDF's SHA-256, so it
+vouches for those bytes alone and a later download in its place is checked
+again. Deleting the PDF from the reader's tab removes its marker.
 
 A check that judged nothing (no title, no text, a translated title, a file
 that cannot be read) leaves the PDF where it is: only a mismatch is refused.
@@ -148,6 +150,21 @@ def mark_kept(pdf_path: Path, contents: Path | None = None) -> None:
     kept_marker_path(pdf_path).write_text(digest, encoding="ascii")
 
 
+def forget_kept(pdf_path: Path) -> None:
+    """Withdraw a person's keep of this PDF, as when they delete it.
+
+    Left behind, the marker would vouch for the same bytes downloaded again,
+    and the PDF the person rejected would be read unchecked.
+
+    Args:
+        pdf_path: The PDF, at the name the cache finds it by.
+
+    Raises:
+        OSError: When a marker is there and cannot be removed.
+    """
+    kept_marker_path(pdf_path).unlink(missing_ok=True)
+
+
 def is_kept(pdf_path: Path, contents: Path | None = None) -> bool:
     """Whether a person kept this PDF, as it is now.
 
@@ -241,14 +258,19 @@ def keep_pdf(path: Path) -> Path:
     Raises:
         ValueError: For a file that is neither.
         FileExistsError: When another PDF already has the name to go back
-            to; nothing is changed.
+            to; nothing is changed, and the message says what to do.
         OSError: When it cannot be renamed or marked.
     """
     named = _SET_ASIDE_NAME.match(path.name)
     if named is not None:
         pdf_path = path.with_name(named.group("pdf"))
         if pdf_path.exists():
-            raise FileExistsError(f"{pdf_path.name} is already in the library")
+            # Often a PDF the check could not judge (a scan) that took the
+            # name later: the reader is told what to do, not only what is wrong
+            raise FileExistsError(
+                f"{pdf_path.name} is already in the library; move it out of "
+                f"{pdf_path.parent} (or delete it) and run the command again"
+            )
         # Marked first: renamed back without its marker, it would be set
         # aside again. A marker left by a failed rename names these bytes
         # alone, so it vouches for no other PDF.
@@ -305,14 +327,14 @@ def set_aside_note(found: CachedPdfCheck) -> str | None:
         found: The check of a PDF the cache found.
 
     Returns:
-        A sentence or two naming the file, the share of the title it carries
-        and, for one set aside, where it went and how to keep it; ``None``
-        for a PDF that is read.
+        A sentence or two naming the file, the share of the title it carries,
+        where it went (or that it could not be moved) and how to keep it;
+        ``None`` for a PDF that is read.
     """
     if found.usable:
         return None
     share = found.check.share if found.check is not None else None
-    carried = f" ({share:.0%} of the title's word pairs on its first page)" if share is not None else ""
+    carried = f" ({share:.0%} of the title's word pairs on its first page with text)" if share is not None else ""
     lead = (
         f"The PDF filed for this article in the library, {found.path.name}, does not "
         f"carry this article's title{carried}, so it was not read as this article."
@@ -335,13 +357,21 @@ def set_aside_download_note(paths: tuple[Path, ...]) -> str | None:
         paths: Where each PDF that does not carry the title was set aside.
 
     Returns:
-        A sentence naming each, with how to keep one; ``None`` for none.
+        A sentence naming each, with the command that keeps each; ``None``
+        for none.
     """
     if not paths:
         return None
     if len(paths) == 1:
-        lead = f"A PDF downloaded for this article does not carry its title, so it was not read; it was saved as {paths[0].name}."
-    else:
-        names = ", ".join(path.name for path in paths)
-        lead = f"{len(paths)} PDFs downloaded for this article do not carry its title, so they were not read; they were saved as {names}."
-    return f"{lead} If one is the article, keep it with: {KEEP_PDF_COMMAND} \"{paths[0]}\""
+        return (
+            f"A PDF downloaded for this article does not carry its title, so it was not "
+            f"read; it was saved as {paths[0].name}. If it is the article, keep it with: "
+            f"{KEEP_PDF_COMMAND} \"{paths[0]}\""
+        )
+    commands = "; ".join(f"{KEEP_PDF_COMMAND} \"{path}\"" for path in paths)
+    names = ", ".join(path.name for path in paths)
+    return (
+        f"{len(paths)} PDFs downloaded for this article do not carry its title, so they "
+        f"were not read; they were saved as {names}. If one is the article, keep it "
+        f"with the command for it: {commands}"
+    )

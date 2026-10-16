@@ -121,3 +121,76 @@ def test_a_download_set_aside_during_a_citation_load_is_told(
     widget._fulltext_worker.pdf_set_aside.emit("A PDF downloaded for this article was set aside.")
 
     assert widget._bubbles.last == "A PDF downloaded for this article was set aside."
+
+
+def test_fetch_pdf_s_download_set_aside_is_told(
+    qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    """*Fetch PDF*'s worker notice reaches the chat: its error names no set-aside file."""
+    from tests.test_interrogation_degradation import StubPdfWorker
+
+    monkeypatch.setattr(tab_module, "PDFDiscoveryWorker", StubPdfWorker)
+    widget = make_tab(tmp_path, monkeypatch)
+    monkeypatch.setattr(widget, "_create_progress_dialog", lambda _title: _NoWorker())
+    widget._start_pdf_discovery({"doi": "10.1/x", "title": TITLE}, TITLE)
+
+    widget._pdf_worker.pdf_set_aside.emit("A PDF downloaded for this article was set aside.")
+
+    assert widget._bubbles.last == "A PDF downloaded for this article was set aside."
+
+
+def test_a_superseded_citation_load_s_set_aside_pdf_is_told_with_its_article(
+    qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    """The reader opened another citation: the note still comes, naming the article it is about."""
+    from tests.test_interrogation_degradation import StubFulltextWorker, StubPdfWorker
+
+    monkeypatch.setattr(tab_module, "FulltextDiscoveryWorker", StubFulltextWorker)
+    monkeypatch.setattr(tab_module, "PDFDiscoveryWorker", StubPdfWorker)
+    widget = make_tab(tmp_path, monkeypatch)
+    widget.load_from_citation(make_citation())
+    earlier = widget._fulltext_worker
+    widget._supersede_fulltext_discovery()
+
+    earlier.pdf_set_aside.emit("A PDF downloaded for this article was set aside.")
+
+    assert widget._bubbles.last.startswith("For the article opened before")
+    assert TITLE in widget._bubbles.last
+    assert widget._bubbles.last.endswith("A PDF downloaded for this article was set aside.")
+
+
+def test_deleting_a_kept_pdf_withdraws_its_keep(
+    qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    """*Wrong PDF → Delete*: the marker goes too, so the same bytes downloaded again are checked."""
+    from bmlibrarian_lite.pdf_library_check import kept_marker_path, mark_kept
+
+    widget = make_tab(tmp_path, monkeypatch)
+    pdf = _pdf(tmp_path / "a.pdf", "Renal physiology in the aged rat")
+    mark_kept(pdf)
+
+    assert widget._delete_pdf(pdf)
+
+    assert not pdf.exists()
+    assert not kept_marker_path(pdf).exists()
+
+
+def test_a_keep_that_cannot_be_withdrawn_leaves_the_pdf_and_says_so(
+    qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch  # noqa: F811
+) -> None:
+    """A marker that cannot be removed: nothing is deleted, and the reader is shown why."""
+    from bmlibrarian_lite.pdf_library_check import mark_kept
+
+    widget = make_tab(tmp_path, monkeypatch)
+    pdf = _pdf(tmp_path / "a.pdf", "Renal physiology in the aged rat")
+    mark_kept(pdf)
+
+    def refuse(_path: Path) -> None:
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(tab_module, "forget_kept", refuse)
+
+    assert not widget._delete_pdf(pdf)
+
+    assert pdf.exists()
+    assert tab_module.QMessageBox.warning.called

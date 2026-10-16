@@ -209,7 +209,7 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
             title could not be judged (a scan, an unreadable file)
         pdf_set_aside: Emitted with what to tell the reader when downloads
             that are another article's PDF were set aside (#541), before
-            the outcome
+            the outcome, whatever it is (a cancel too)
         paywall_detected: Emitted with (article_url, error_message) when paywall blocks access
         error: Emitted with error message on failure
         cancelled: Emitted with the error that also ended the run, or an empty
@@ -331,16 +331,17 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
                 expected_title=title,
             )
 
+            # Whatever the outcome, a cancel too: a PDF set aside may be the
+            # article, and nothing looks for it again (#541)
+            set_aside = set_aside_download_note(result.set_aside)
+            if set_aside:
+                self.pdf_set_aside.emit(set_aside)
+
             # A cancel the discoverer honoured stopped the download, so
             # whatever it came back with describes the stop, not the article
             if self._cancelled:
                 self._end(self.cancelled, "")
                 return
-
-            # Whatever the outcome: a PDF set aside may be the article (#541)
-            set_aside = set_aside_download_note(result.set_aside)
-            if set_aside:
-                self.pdf_set_aside.emit(set_aside)
 
             if result.success:
                 if result.verification_warning:
@@ -389,6 +390,10 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
     Signals:
         progress: Emitted with (stage, status) during discovery
         finished: Emitted with (markdown_content, file_path, source_type) on success
+        pdf_set_aside: Emitted with what to tell the reader when PDFs that
+            are another article's were not read (#541): the library's, or
+            downloads set aside. Not terminal: emitted before the outcome,
+            whatever it is (a cancel too)
         paywall_detected: Emitted with (article_url, error_message) when paywall blocks access
         error: Emitted with error message on failure
         cancelled: Emitted with the error that also ended the run, or an empty
@@ -507,16 +512,17 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
             )
             self.lookups = result.lookups
 
+            # Whatever the outcome, a cancel too, and before it: a PDF set
+            # aside may be the article, nothing looks for it again, and the
+            # tab shows the reader no failure's error (#541)
+            if result.set_aside_pdf_note:
+                self.pdf_set_aside.emit(result.set_aside_pdf_note)
+
             # A cancel the discoverer honoured stopped the retrieval, so
             # whatever it came back with describes the stop, not the article
             if self._cancelled:
                 self._end(self.cancelled, "")
                 return
-
-            # Whatever the outcome, and before it: a PDF set aside may be
-            # the article, and a failure's error reaches only the log (#541)
-            if result.set_aside_pdf_note:
-                self.pdf_set_aside.emit(result.set_aside_pdf_note)
 
             if result.success:
                 file_path = str(result.file_path) if result.file_path else ""
