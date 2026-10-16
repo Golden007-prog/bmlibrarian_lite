@@ -30,7 +30,7 @@ have landed):
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
 **A refused PDF and the cache, in the apps** (#560 Swift, #561 Android;
-branch `fix/refused-pdf-cache-560-561`, PR pending merge). **Every download is
+branch `fix/refused-pdf-cache-560-561`, PR #562). **Every download is
 now checked where it waits, beside its cache name, on all three platforms**
 (Python's `unchecked_download_path`): Swift stages each download as
 `<cache name>.<UUID>.unchecked` (open-access copies, the render and Elsevier's
