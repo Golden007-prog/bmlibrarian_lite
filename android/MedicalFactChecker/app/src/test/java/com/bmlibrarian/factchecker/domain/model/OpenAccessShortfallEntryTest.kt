@@ -102,6 +102,28 @@ class OpenAccessShortfallEntryTest {
         )
     }
 
+    /** Another article's PDF is a PDF's entry, with its address, and nothing else (#546). */
+    @Test
+    fun `another article's PDF on a source that names none, or with no address, cannot be built`() {
+        for (source in OpenAccessSource.entries - OpenAccessShortfall.WRONG_ARTICLE_SOURCES) {
+            assertThrows("$source", IllegalArgumentException::class.java) {
+                OpenAccessShortfall.Entry(source, OpenAccessUnsettledReason.WrongArticle, "https://repo.example.org/a.pdf")
+            }
+        }
+        for (address in listOf(null, "  ")) {
+            assertThrows("$address", IllegalArgumentException::class.java) {
+                OpenAccessShortfall.Entry(OpenAccessSource.PDF, OpenAccessUnsettledReason.WrongArticle, address)
+            }
+        }
+        // The control
+        assertEquals(
+            OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, "https://europepmc.org/a"),
+            OpenAccessShortfall(listOf(OpenAccessShortfall.Entry(
+                OpenAccessSource.EUROPE_PMC_PDF, OpenAccessUnsettledReason.WrongArticle, " https://europepmc.org/a "
+            )))
+        )
+    }
+
     /** The controls: Unpaywall's skip, a blank address (no address), and failures on every source. */
     @Test
     fun `Unpaywall's skip and every failure can be built, and round-trip`() {

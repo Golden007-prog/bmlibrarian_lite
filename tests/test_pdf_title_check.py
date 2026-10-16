@@ -1,13 +1,19 @@
 """Whether a PDF is the article it was fetched for, judged by its title (#532)."""
 
+import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import fitz
 import pytest
 
 from bmlibrarian_lite import pdf_title_check
-from bmlibrarian_lite.constants import PDF_TITLE_MIN_PAIR_SHARE
+from bmlibrarian_lite.constants import (
+    PDF_TITLE_MIN_JOINED_CHARACTERS,
+    PDF_TITLE_MIN_PAIR_SHARE,
+    PDF_TITLE_PAGES_READ,
+)
 from bmlibrarian_lite.pdf_title_check import (
     TitleCheck,
     TitleCheckOutcome,
@@ -17,6 +23,18 @@ from bmlibrarian_lite.pdf_title_check import (
 )
 
 TITLE = "Caffeine and blood pressure: a critical review perspective."
+
+#: The judgement every platform shares (#546): the Swift and Android ports
+#: assert the same rows.
+CONTRACT: dict[str, Any] = json.loads(
+    (
+        Path(__file__).resolve().parents[1]
+        / "doc"
+        / "cross_platform"
+        / "fulltext_parity"
+        / "pdf_title_check.json"
+    ).read_text(encoding="utf-8")
+)
 
 
 def write_pdf(path: Path, *pages: str) -> Path:
@@ -29,6 +47,33 @@ def write_pdf(path: Path, *pages: str) -> Path:
     document.save(str(path))
     document.close()
     return path
+
+
+# -- the shared contract --------------------------------------------------------
+
+
+def test_the_contract_has_cases() -> None:
+    """An empty case list would let every parametrized test pass unseen."""
+    assert len(CONTRACT["cases"]) > 0
+
+
+def test_the_bounds_are_the_contracts() -> None:
+    """One bar, one page read, one set of outcomes on every platform."""
+    assert CONTRACT["min_pair_share"] == PDF_TITLE_MIN_PAIR_SHARE
+    assert CONTRACT["pages_read"] == PDF_TITLE_PAGES_READ
+    assert CONTRACT["min_joined_characters"] == PDF_TITLE_MIN_JOINED_CHARACTERS
+    assert CONTRACT["outcomes"] == [outcome.value for outcome in TitleCheckOutcome]
+
+
+@pytest.mark.parametrize("case", CONTRACT["cases"], ids=lambda case: case["name"])
+def test_each_contract_case(case: dict[str, Any]) -> None:
+    """The page and title give the row's outcome and share."""
+    check = judge_title(case["page"], case["title"])
+    assert check.outcome.value == case["outcome"]
+    if case["share"] is None:
+        assert check.share is None
+    else:
+        assert check.share == pytest.approx(case["share"], abs=1e-6)
 
 
 # -- the judgement ----------------------------------------------------------------

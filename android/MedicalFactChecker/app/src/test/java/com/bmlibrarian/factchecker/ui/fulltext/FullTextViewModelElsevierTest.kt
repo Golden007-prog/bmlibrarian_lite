@@ -22,6 +22,13 @@ import androidx.lifecycle.SavedStateHandle
 import com.bmlibrarian.factchecker.data.local.dao.DocumentDao
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
+import com.bmlibrarian.factchecker.data.remote.fulltext.NotEstablishedSource
+import com.bmlibrarian.factchecker.data.remote.fulltext.PdfDownload
+import com.bmlibrarian.factchecker.data.remote.fulltext.writeTitledPdf
+import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
+import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
+import com.bmlibrarian.factchecker.domain.model.RequestFailure
+import com.bmlibrarian.factchecker.domain.model.RequestFailureKind
 import com.bmlibrarian.factchecker.data.repository.SettingsRepository
 import com.bmlibrarian.factchecker.domain.model.AppSettings
 import com.bmlibrarian.factchecker.util.Constants
@@ -32,12 +39,16 @@ import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -50,6 +61,9 @@ import java.io.File
  * record; a PDF the chain returns is shown as the local file it is, never as a
  * link, since Elsevier's URL needs the key.
  */
+/** How long a test waits for a state reached through a real PDF read off the main thread. */
+private const val TIMEOUT_MS = 10_000L
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class FullTextViewModelElsevierTest {
 
@@ -94,7 +108,7 @@ class FullTextViewModelElsevierTest {
         answer: FullTextService.FullTextResult = FullTextService.FullTextResult.DoiUrl("https://doi.org/10.1016/j.x.1")
     ): FullTextViewModel {
         coEvery { documentDao.getById("d") } returns stored
-        coEvery { fullTextService.fetchFullText(any(), any(), any(), any()) } returns Result.success(answer)
+        coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } returns Result.success(answer)
         return FullTextViewModel(
             savedStateHandle = SavedStateHandle(mapOf(FullTextViewModel.DOCUMENT_ID_KEY to "d")),
             fullTextService = fullTextService,
@@ -120,7 +134,7 @@ class FullTextViewModelElsevierTest {
             FullTextViewModel.FullTextState.PdfContent(pdf.absolutePath, "t", Constants.FULLTEXT_SOURCE_ELSEVIER_LABEL),
             viewModel.state.value
         )
-        coVerify(exactly = 0) { fullTextService.fetchFullText(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { documentDao.update(any()) }
     }
 
@@ -129,10 +143,132 @@ class FullTextViewModelElsevierTest {
     fun `a stored Elsevier PDF that is gone runs the chain`() {
         val viewModel = open(elsevierRecord(File(folder.root, "gone.pdf").absolutePath))
 
-        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
         val state = viewModel.state.value
         assertFalse("$state", state is FullTextViewModel.FullTextState.PdfContent)
         assertFalse("$state", state is FullTextViewModel.FullTextState.Error)
+    }
+
+    /** A stored PDF found to be another article's is not shown, and the chain runs (#546). */
+    @Test
+    fun `a stored Elsevier PDF of another article runs the chain`() {
+        val pdf = pdfOnDisk()
+        coEvery { fullTextService.refusesAsAnotherArticle(pdf.absolutePath, "t") } returns true
+
+        val viewModel = open(elsevierRecord(pdf.absolutePath))
+
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), "t") }
+        val state = viewModel.state.value
+        assertFalse("$state", state is FullTextViewModel.FullTextState.PdfContent)
+        // Forgotten at once, and the fetch that follows does not write it back
+        coVerify(atLeast = 1) { documentDao.update(match { it.id == "d" && it.pdfPath == null }) }
+        coVerify(exactly = 0) { documentDao.update(match { it.pdfPath != null }) }
+    }
+
+    /**
+     * A refused stored PDF takes its source and fetch date with it (#546): a fetch
+     * that then records nothing must not leave an Elsevier record without its PDF,
+     * whose cards would say a PDF of this article was found.
+     */
+    @Test
+    fun `a refused stored PDF leaves no link-only record when the fetch records nothing`() {
+        val pdf = pdfOnDisk()
+        coEvery { fullTextService.refusesAsAnotherArticle(pdf.absolutePath, "t") } returns true
+        val stored = mutableListOf<DocumentEntity>()
+        coEvery { documentDao.update(capture(stored)) } returns Unit
+
+        open(
+            elsevierRecord(pdf.absolutePath),
+            answer = FullTextService.FullTextResult.NotEstablished(
+                RequestFailure(RequestFailureKind.TIMEOUT), NotEstablishedSource.EUROPE_PMC
+            )
+        )
+
+        val last = stored.last()
+        assertNull(last.pdfPath)
+        assertNull(last.fullTextSource)
+        assertNull(last.fullTextFetchedAt)
+        assertFalse("never link-only", last.isLinkOnly)
+    }
+
+    /** The same for the PDF cached under the document's ID, checked with its title (#546). */
+    @Test
+    fun `a cached PDF of another article runs the chain`() {
+        val pdf = pdfOnDisk()
+        every { fullTextService.getCachedPdfPath("d") } returns pdf.absolutePath
+        coEvery { fullTextService.refusesAsAnotherArticle(pdf.absolutePath, "t") } returns true
+
+        val viewModel = open(document)
+
+        coVerify(exactly = 1) { fullTextService.refusesAsAnotherArticle(pdf.absolutePath, "t") }
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), "t") }
+        assertFalse("${viewModel.state.value}", viewModel.state.value is FullTextViewModel.FullTextState.PdfContent)
+    }
+
+    /**
+     * A refused PDF that was the stored one is forgotten (#546): left behind, it
+     * would read as full text in hand, and a fetch that brings no PDF would keep it.
+     */
+    @Test
+    fun `a refused stored PDF's path is forgotten`() {
+        val pdf = pdfOnDisk()
+        every { fullTextService.getCachedPdfPath("d") } returns pdf.absolutePath
+        coEvery { fullTextService.refusesAsAnotherArticle(pdf.absolutePath, "t") } returns true
+
+        open(document.copy(pdfPath = pdf.absolutePath))
+
+        // Forgotten at once, and the fetch that follows does not write it back
+        coVerify(atLeast = 1) { documentDao.update(match { it.id == "d" && it.pdfPath == null }) }
+        coVerify(exactly = 0) { documentDao.update(match { it.pdfPath != null }) }
+    }
+
+    /** The control: a cached PDF that is not refused opens from disk. */
+    @Test
+    fun `a cached PDF of this article opens from disk`() {
+        val pdf = pdfOnDisk()
+        every { fullTextService.getCachedPdfPath("d") } returns pdf.absolutePath
+
+        val viewModel = open(document)
+
+        assertEquals(
+            FullTextViewModel.FullTextState.PdfContent(pdf.absolutePath, "t", Constants.FULLTEXT_SOURCE_CACHED),
+            viewModel.state.value
+        )
+        coVerify(exactly = 0) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * A render of another article, for a document with no DOI, ends on no link: the
+     * render's names that other article (#546). The reader is told why, offered a
+     * retry, and nothing is recorded.
+     */
+    @Test
+    fun `a render of another article with no DOI offers no link, told`() = runBlocking {
+        val render = "https://europepmc.org/articles/PMC1/pdf"
+        val saved = File(folder.root, "d.pdf")
+        coEvery { fullTextService.downloadPdf(render, "d") } answers {
+            writeTitledPdf(saved, "Using Effect Size - or Why the P Value Is Not Enough\nGail M. Sullivan")
+            PdfDownload.Saved(saved.path)
+        }
+        val viewModel = open(
+            document.copy(doi = null, title = "Caffeine and blood pressure: a critical review"),
+            answer = FullTextService.FullTextResult.EuropePmcPdf(render)
+        )
+
+        val state = withTimeout(TIMEOUT_MS) {
+            viewModel.state.first { it is FullTextViewModel.FullTextState.Error || it is FullTextViewModel.FullTextState.WebUrl }
+        }
+
+        assertEquals(
+            FullTextViewModel.FullTextState.Error(
+                message = FullTextService.FullTextResult.OpenAccessNotEstablished(
+                    OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, render)
+                ).reason,
+                canRetry = true
+            ),
+            state
+        )
+        coVerify(exactly = 0) { documentDao.update(any()) }
     }
 
     /** A file that exists but is not a PDF (empty, or a page) is not opened as the article. */
@@ -146,7 +282,7 @@ class FullTextViewModelElsevierTest {
             val state = viewModel.state.value
             assertFalse("$state", state is FullTextViewModel.FullTextState.PdfContent)
         }
-        coVerify(exactly = 2) { fullTextService.fetchFullText(any(), any(), any(), any()) }
+        coVerify(exactly = 2) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
     }
 
     /** The control: only a record whose source is Elsevier's owns the path it holds. */
@@ -156,7 +292,7 @@ class FullTextViewModelElsevierTest {
 
         open(elsevierRecord(pdf.absolutePath).copy(fullTextSource = Constants.FULLTEXT_SOURCE_DOI))
 
-        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any()) }
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
     }
 
     /** handleFullTextResult's ElsevierPdf branch: the local file, never a link. */

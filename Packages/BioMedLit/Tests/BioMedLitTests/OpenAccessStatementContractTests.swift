@@ -92,6 +92,11 @@ final class OpenAccessStatementContractTests: XCTestCase {
                 XCTAssertEqual(source, .elsevier, "\(entry)")
                 return .elsevierNetworkRefused
             }
+            if entry["skipped"] as? String == "wrong_article" {
+                // Another article's PDF, with its address (#546)
+                let address = try XCTUnwrap(entry["address"] as? String, "\(entry)")
+                return .wrongArticle(source: source, address: address)
+            }
             if let skipped = entry["skipped"] as? String {
                 throw ContractError.malformed("an unknown skip \(skipped) in \(entry)")
             }

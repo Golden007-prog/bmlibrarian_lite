@@ -75,7 +75,7 @@ class FullTextViewModelNotEstablishedTest {
 
     /** Opens the viewer on [document] with the chain answering [answer]. */
     private fun open(answer: FullTextService.FullTextResult): FullTextViewModel {
-        coEvery { fullTextService.fetchFullText(any(), any(), any(), any()) } returns Result.success(answer)
+        coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } returns Result.success(answer)
         return FullTextViewModel(
             savedStateHandle = SavedStateHandle(mapOf(FullTextViewModel.DOCUMENT_ID_KEY to "d")),
             fullTextService = fullTextService,

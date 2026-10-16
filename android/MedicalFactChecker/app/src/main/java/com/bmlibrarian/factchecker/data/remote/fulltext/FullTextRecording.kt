@@ -24,6 +24,7 @@ import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
 import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
 import com.bmlibrarian.factchecker.domain.model.OpenAccessUnsettledReason
 import com.bmlibrarian.factchecker.util.Constants
+import java.io.File
 import java.util.Date
 
 /**
@@ -58,6 +59,12 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  * one served and not saved also gets the caching note. Elsevier's PDF arrives
  * already saved, and is recorded as the local file it is (#480, stage C2).
  *
+ * Every PDF saved here is checked against the document's title (#546): one whose
+ * first page with text does not carry it is another article's, set aside unread
+ * ([refusedAsAnotherArticle]); an open-access candidate's is recorded as a
+ * wrong-article skip with its address and the walk goes on, a render's ends the
+ * fetch on the DOI link, or with none on no link ([renderOfAnotherArticle]).
+ *
  * @param result What the chain returned
  * @param downloadPdf Downloads a PDF URL
  * @param askOpenAlex Asks OpenAlex for its steps, given the DOI and the
@@ -69,8 +76,9 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  *   (#480, stage C). Null is no key: nothing asked, nothing recorded. Required,
  *   with no default, for the same reason as [askOpenAlex]
  * @return The document to store, and the result to show; the document is
- *   unchanged for [FullTextResult.NotEstablished], which is not a fact about
- *   the article and leaves the fetch on offer (#434)
+ *   unchanged for [FullTextResult.NotEstablished] and
+ *   [FullTextResult.OpenAccessNotEstablished], which are not facts about the
+ *   article and leave the fetch on offer (#434, #546)
  */
 suspend fun DocumentEntity.recordingFullTextFetch(
     result: FullTextResult,
@@ -82,11 +90,35 @@ suspend fun DocumentEntity.recordingFullTextFetch(
     is FullTextResult.EuropePmcPdf -> when (val download = downloadPdf(result.pdfUrl)) {
         PdfDownload.NotSaved ->
             RecordedFetch(recording(result, pdfPath = null).copy(fullTextPdfNotSavedFrom = result.pdfUrl), result)
-        else -> RecordedFetch(recording(result, download.savedPath), result)
+        is PdfDownload.Saved ->
+            if (refusedAsAnotherArticle(download.path, title)) renderOfAnotherArticle(result)
+            else RecordedFetch(recording(result, download.path), result)
+        is PdfDownload.Failed -> RecordedFetch(recording(result, pdfPath = null), result)
     }
     // Already saved by the chain: a local file, never a URL to download (#480, stage C2)
     is FullTextResult.ElsevierPdf -> RecordedFetch(recording(result, result.pdfPath), result)
     else -> RecordedFetch(recording(result, pdfPath = null), result)
+}
+
+/**
+ * A Europe PMC render that is another article's PDF, set aside (#546).
+ *
+ * The chain returned the render before the later tiers ran, so this fetch ends on
+ * it, as a render that could not be downloaded does (#471), but never on the
+ * render's link, which names that other article: on the DOI link with the
+ * wrong-article shortfall stored and told, or, with no DOI, on
+ * [FullTextResult.OpenAccessNotEstablished], which records nothing and tells the
+ * shortfall, as BioMedLit's chain ends. Either way the absence stays open.
+ *
+ * @param result The render the chain returned
+ * @return The document to store, and the result to show
+ */
+private fun DocumentEntity.renderOfAnotherArticle(result: FullTextResult.EuropePmcPdf): RecordedFetch {
+    val shortfall = OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, result.pdfUrl)
+    val usableDoi = doi?.trim()?.ifEmpty { null }
+        ?: return RecordedFetch(this, FullTextResult.OpenAccessNotEstablished(shortfall))
+    val link = FullTextResult.DoiUrl(doiLink(usableDoi), shortfall)
+    return RecordedFetch(recording(link, pdfPath = null), link)
 }
 
 /**
@@ -122,6 +154,10 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
 ): RecordedFetch {
     var shortfall: OpenAccessShortfall? = null
     val tried = mutableListOf<String>()
+    // Set when another article's PDF could be neither renamed nor deleted: every
+    // PDF of a document is saved under one name, so the next candidate's download
+    // would be handed that file from the cache and refused under its own address
+    var cacheBlocked = false
 
     /** Walk [steps]; the recorded fetch when a copy was served, else null. */
     suspend fun walk(steps: List<OpenAccessStep>): RecordedFetch? {
@@ -135,7 +171,21 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
                     tried += step.addresses
                     val found = FullTextResult.OpenAccessPdf(step.pdfUrl, result.doi, step.namedBy)
                     when (val download = downloadPdf(step.pdfUrl)) {
-                        is PdfDownload.Saved -> return RecordedFetch(recording(found, download.path), found)
+                        is PdfDownload.Saved -> {
+                            if (!refusedAsAnotherArticle(download.path, title)) {
+                                return RecordedFetch(recording(found, download.path), found)
+                            }
+                            // Another article's, set aside (#546): it settles nothing
+                            // about this one, so the walk goes on, as for a copy refused
+                            shortfall = OpenAccessShortfall.adding(
+                                OpenAccessShortfall.wrongArticle(step.namedBy.refusedAs, step.pdfUrl), shortfall
+                            )
+                            if (File(download.path).exists()) {
+                                // Logged by the set-aside; the question stays open
+                                cacheBlocked = true
+                                return null
+                            }
+                        }
                         PdfDownload.NotSaved -> {
                             val linked = found.copy(notSaved = true)
                             return RecordedFetch(recording(linked, pdfPath = null), linked)
@@ -151,7 +201,7 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
     }
 
     walk(result.steps)?.let { return it }
-    if (!result.openAlexAsked) {
+    if (!result.openAlexAsked && !cacheBlocked) {
         walk(askOpenAlex(result.doi, tried.toList()))?.let { return it }
     }
     // CORE's extracted text (#480, stage C): every candidate failed, so it can
@@ -261,5 +311,5 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
         fullTextOpenAccessShortfallJson = null,
         fullTextPdfNotSavedFrom = null
     )
-    is FullTextResult.NotEstablished -> this
+    is FullTextResult.NotEstablished, is FullTextResult.OpenAccessNotEstablished -> this
 }

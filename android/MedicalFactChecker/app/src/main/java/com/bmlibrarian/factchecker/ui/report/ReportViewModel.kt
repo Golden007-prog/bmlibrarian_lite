@@ -434,7 +434,9 @@ class ReportViewModel @Inject constructor(
                     pmcId = document.pmcId,
                     doi = document.doi,
                     pmid = document.pmid,
-                    email = email
+                    email = email,
+                    // Elsevier's PDF is checked against it (#546)
+                    title = document.title
                 )
 
                 result.fold(
@@ -462,6 +464,8 @@ class ReportViewModel @Inject constructor(
                         }
 
                         if (fullTextResult is FullTextService.FullTextResult.NotEstablished) {
+                            _events.send(ReportUiEvent.ShowSnackbar(fullTextResult.reason))
+                        } else if (fullTextResult is FullTextService.FullTextResult.OpenAccessNotEstablished) {
                             _events.send(ReportUiEvent.ShowSnackbar(fullTextResult.reason))
                         } else if (!fullTextResult.hasContent) {
                             _events.send(ReportUiEvent.ShowSnackbar("Full text not available"))

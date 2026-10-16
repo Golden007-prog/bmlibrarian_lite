@@ -175,7 +175,9 @@ final class OpenAccessShortfallContractTests: XCTestCase {
         }
         for skipped in [
             OpenAccessShortfall.unpaywallNotConfigured, .coreKeyRefused, .elsevierKeyRefused, .elsevierNetworkRefused,
-        ] {
+        ] + OpenAccessShortfall.wrongArticleSources.map({
+            OpenAccessShortfall.wrongArticle(source: $0, address: "https://example.org/a.pdf")
+        }) {
             XCTAssertEqual(OpenAccessShortfall.restored(fromPersisted: skipped.persisted()), skipped)
         }
     }

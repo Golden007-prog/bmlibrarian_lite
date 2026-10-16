@@ -194,11 +194,12 @@ class FullTextViewModel @Inject constructor(
 
             try {
                 // Fetch document from database
-                val doc = documentDao.getById(documentId)
-                if (doc == null) {
+                val found = documentDao.getById(documentId)
+                if (found == null) {
                     _state.value = FullTextState.Error("Document not found")
                     return@launch
                 }
+                var doc: DocumentEntity = found
 
                 _document.value = doc
 
@@ -237,8 +238,12 @@ class FullTextViewModel @Inject constructor(
                     return@launch
                 }
 
-                // Check for cached PDF
-                val cachedPdf = fullTextService.getCachedPdfPath(documentId)
+                // Check for cached PDF. One that is another article's is set
+                // aside, and the chain asked again (#546): a PDF cached before
+                // the title check was never checked
+                val cachedPath = fullTextService.getCachedPdfPath(documentId)
+                val cachedPdf = cachedPath?.takeUnless { fullTextService.refusesAsAnotherArticle(it, doc.title) }
+                if (cachedPath != null && cachedPdf == null) doc = forgettingPdf(doc, cachedPath)
                 if (cachedPdf != null) {
                     Log.d(TAG, "Using cached PDF for ${doc.id}")
                     _state.value = FullTextState.PdfContent(
@@ -256,9 +261,11 @@ class FullTextViewModel @Inject constructor(
                 // Keyed on the source: a later answer that brings no PDF leaves an
                 // earlier pdfPath behind, and only a record whose answer was
                 // Elsevier's PDF owns the path it holds
-                val elsevierPdf = doc.pdfPath?.takeIf {
+                val storedElsevierPdf = doc.pdfPath?.takeIf {
                     doc.fullTextSource == Constants.FULLTEXT_SOURCE_ELSEVIER && isCachedPdf(File(it))
                 }
+                val elsevierPdf = storedElsevierPdf?.takeUnless { fullTextService.refusesAsAnotherArticle(it, doc.title) }
+                if (storedElsevierPdf != null && elsevierPdf == null) doc = forgettingPdf(doc, storedElsevierPdf)
                 if (elsevierPdf != null) {
                     Log.d(TAG, "Using the stored Elsevier PDF for ${doc.id}")
                     _state.value = FullTextState.PdfContent(
@@ -305,7 +312,9 @@ class FullTextViewModel @Inject constructor(
                 pmcId = doc.pmcId,
                 doi = doc.doi,
                 pmid = doc.pmid,
-                email = UnpaywallContact.emailFor(settings)
+                email = UnpaywallContact.emailFor(settings),
+                // Elsevier's PDF is checked against it (#546)
+                title = doc.title
             )
 
             result.fold(
@@ -353,7 +362,7 @@ class FullTextViewModel @Inject constructor(
             askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
             askCore = { doi -> fullTextService.askCore(doi) }
         )
-        if (result !is FullTextResult.NotEstablished) {
+        if (result !is FullTextResult.NotEstablished && result !is FullTextResult.OpenAccessNotEstablished) {
             documentDao.update(recorded)
             _document.value = recorded
         }
@@ -423,7 +432,36 @@ class FullTextViewModel @Inject constructor(
                 Log.d(TAG, "Full text not established for ${doc.id}: ${result.failure.describe()}")
                 FullTextState.Error(message = result.reason, canRetry = true)
             }
+            is FullTextResult.OpenAccessNotEstablished -> {
+                // Nothing to link to, and not a fact about the article (#546)
+                Log.d(TAG, "Full text not established for ${doc.id}: ${result.shortfall.notice}")
+                FullTextState.Error(message = result.reason, canRetry = true)
+            }
         }
+    }
+
+    /**
+     * The document without its stored PDF, when [path] was it and was just set
+     * aside as another article's (#546), saved so: a stored path to a file set
+     * aside would still read as full text in hand, and a fetch that brings no PDF
+     * would write it back.
+     *
+     * Its source and fetch date go with it, as the refresh clears them: a record
+     * keeping its PDF source without the PDF reads as link-only, whose cards say
+     * a PDF of this article was found ([FullTextLinkKind.UNDOWNLOADED_PDF]), and
+     * stays so when the fetch that follows records nothing ([FullTextResult.NotEstablished]).
+     * Reached only for a record with no text, which the viewer would have shown.
+     *
+     * @param doc The document
+     * @param path The PDF set aside
+     * @return The document as saved, unchanged when its PDF was another file
+     */
+    private suspend fun forgettingPdf(doc: DocumentEntity, path: String): DocumentEntity {
+        if (doc.pdfPath != path) return doc
+        val forgotten = doc.copy(pdfPath = null, fullTextSource = null, fullTextFetchedAt = null)
+        documentDao.update(forgotten)
+        _document.value = forgotten
+        return forgotten
     }
 
     /**

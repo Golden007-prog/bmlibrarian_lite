@@ -86,7 +86,7 @@ class ReportViewModelFullTextTest {
     /** Opens the report on [stored], selects it, and fetches with the chain answering [answer]. */
     private fun fetch(stored: DocumentEntity, answer: FullTextService.FullTextResult): DocumentEntity {
         every { documentRepository.getScoredDocumentsBySession("s") } returns flowOf(listOf(stored))
-        coEvery { fullTextService.fetchFullText(any(), any(), any(), any()) } returns Result.success(answer)
+        coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } returns Result.success(answer)
         val written = slot<DocumentEntity>()
         coEvery { documentRepository.updateDocument(capture(written)) } returns Unit
         val settingsRepository = mockk<SettingsRepository>(relaxed = true) {
@@ -115,6 +115,14 @@ class ReportViewModelFullTextTest {
         val written = fetch(document, FullTextService.FullTextResult.DoiUrl("https://doi.org/10.1/x", throttled))
 
         assertEquals(throttled, written.openAccessShortfall)
+    }
+
+    /** The chain is given the document's title, which Elsevier's PDF is checked against (#546). */
+    @Test
+    fun `the chain is asked with the document's title`() {
+        fetch(document, FullTextService.FullTextResult.DoiUrl("https://doi.org/10.1/x"))
+
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), "t") }
     }
 
     @Test

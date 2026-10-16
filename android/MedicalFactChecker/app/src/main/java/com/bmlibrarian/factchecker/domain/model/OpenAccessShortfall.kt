@@ -69,7 +69,14 @@ enum class OpenAccessSource(val persistedValue: String, val serviceName: String)
      * Elsevier's Article API, asked for an Elsevier article's PDF by DOI with the
      * user's key, before any Unpaywall lookup (#480, stage C2).
      */
-    ELSEVIER("elsevier", Constants.ELSEVIER_SERVICE_NAME);
+    ELSEVIER("elsevier", Constants.ELSEVIER_SERVICE_NAME),
+
+    /**
+     * The PDF Europe PMC renders for an open-access article, recorded only when it
+     * is another article's (#546): Python names that skip under
+     * `SERVICE_EUROPE_PMC`. Told first, as Python's Europe PMC is.
+     */
+    EUROPE_PMC_PDF("europepmc_pdf", Constants.EUROPE_PMC_SERVICE_NAME);
 
     companion object {
         /**
@@ -87,8 +94,8 @@ enum class OpenAccessSource(val persistedValue: String, val serviceName: String)
  * Why a lookup of the open-access chain left the question of a free copy open.
  *
  * Python records these as a `SourceLookupFailure`, or a `SourceLookupSkipped`
- * with `LookupSkipReason.NOT_CONFIGURED`, `LookupSkipReason.KEY_REFUSED` or
- * `LookupSkipReason.NETWORK_REFUSED`.
+ * with `LookupSkipReason.NOT_CONFIGURED`, `LookupSkipReason.KEY_REFUSED`,
+ * `LookupSkipReason.NETWORK_REFUSED` or `LookupSkipReason.WRONG_ARTICLE`.
  */
 sealed interface OpenAccessUnsettledReason {
     /**
@@ -123,6 +130,15 @@ sealed interface OpenAccessUnsettledReason {
      * configuration nudge.
      */
     data object NetworkRefused : OpenAccessUnsettledReason
+
+    /**
+     * A source served a PDF whose first page with text does not carry this
+     * article's title: another article's, set aside unread (#541, #546). Its copy
+     * says nothing about this article and the right PDF may exist elsewhere, so it
+     * leaves the question open, as a source not asked does. Only a PDF's entry,
+     * with its address, is refused so: one of [OpenAccessShortfall.WRONG_ARTICLE_SOURCES].
+     */
+    data object WrongArticle : OpenAccessUnsettledReason
 }
 
 /**
@@ -176,6 +192,11 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
                 reason !is OpenAccessUnsettledReason.NetworkRefused ||
                     (source == OpenAccessSource.ELSEVIER && this.address == null)
             ) { "an off-network skip is Elsevier's own lookup, not $source with address ${this.address}" }
+            // And another article's PDF is a PDF's entry, with its address (#546)
+            require(
+                reason !is OpenAccessUnsettledReason.WrongArticle ||
+                    (source in WRONG_ARTICLE_SOURCES && this.address != null)
+            ) { "another article's PDF is a PDF's entry, not $source with address ${this.address}" }
         }
 
         /** The failure, or null for a lookup that was never made. */
@@ -193,6 +214,7 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
                 OpenAccessUnsettledReason.NotConfigured -> NOT_CONFIGURED_DESCRIPTION
                 OpenAccessUnsettledReason.KeyRefused -> Constants.CORE_KEY_REFUSED_REASON
                 OpenAccessUnsettledReason.NetworkRefused -> Constants.ELSEVIER_NETWORK_REFUSED_REASON
+                OpenAccessUnsettledReason.WrongArticle -> Constants.WRONG_ARTICLE_REASON
             }
 
         override fun equals(other: Any?): Boolean =
@@ -357,11 +379,27 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
         /** Python's `LookupSkipReason.NETWORK_REFUSED`, as stored (#480, stage C2). */
         private const val SKIPPED_NETWORK_REFUSED = "network_refused"
 
+        /** Python's `LookupSkipReason.WRONG_ARTICLE`, as stored (#546). */
+        private const val SKIPPED_WRONG_ARTICLE = "wrong_article"
+
+        /** The sources whose PDF can be another article's: each names a PDF. */
+        val WRONG_ARTICLE_SOURCES = setOf(
+            OpenAccessSource.PDF,
+            OpenAccessSource.OPENALEX_PDF,
+            OpenAccessSource.ELSEVIER,
+            OpenAccessSource.EUROPE_PMC_PDF
+        )
+
         /** Python's `SourceLookupSkipped.describe()` for that reason. */
         private const val NOT_CONFIGURED_DESCRIPTION = "not configured"
 
-        /** The open-access chain's sources in the order they are tried (#480). */
+        /**
+         * The open-access chain's sources in the order they are tried (#480): Europe
+         * PMC's render first (#546; Python ranks its Europe PMC outside the chain,
+         * which sorts first too), then Elsevier's API.
+         */
         internal val CHAIN_ORDER = listOf(
+            OpenAccessSource.EUROPE_PMC_PDF,
             OpenAccessSource.ELSEVIER,
             OpenAccessSource.UNPAYWALL,
             OpenAccessSource.LANDING_PAGE,
@@ -419,6 +457,18 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
          */
         val ELSEVIER_NETWORK_REFUSED =
             OpenAccessShortfall(OpenAccessSource.ELSEVIER, OpenAccessUnsettledReason.NetworkRefused)
+
+        /**
+         * A PDF a source served that is another article's, set aside unread (#546):
+         * told as "{host}, named by {source} (another article's PDF)", a source not
+         * asked, so absence stays unestablished.
+         *
+         * @param source Whose PDF: Unpaywall's, OpenAlex's, Elsevier's or Europe PMC's
+         * @param address Where the PDF was fetched from; must not be blank
+         * @return The shortfall of that one entry
+         */
+        fun wrongArticle(source: OpenAccessSource, address: String): OpenAccessShortfall =
+            OpenAccessShortfall(listOf(Entry(source, OpenAccessUnsettledReason.WrongArticle, address)))
 
         /** The article a mid-sentence service name may begin with. */
         private const val LOWER_CASE_ARTICLE = "the "
@@ -527,6 +577,7 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
                 OpenAccessUnsettledReason.NotConfigured -> put(KEY_SKIPPED, SKIPPED_NOT_CONFIGURED)
                 OpenAccessUnsettledReason.KeyRefused -> put(KEY_SKIPPED, SKIPPED_KEY_REFUSED)
                 OpenAccessUnsettledReason.NetworkRefused -> put(KEY_SKIPPED, SKIPPED_NETWORK_REFUSED)
+                OpenAccessUnsettledReason.WrongArticle -> put(KEY_SKIPPED, SKIPPED_WRONG_ARTICLE)
             }
         }
 
@@ -543,7 +594,9 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
          * stored `network_refused` skip Elsevier's, whatever source it names; a
          * stored `key_refused` skip is Elsevier's when the source it names is
          * `elsevier`, and CORE's otherwise (core, another source, or none): only
-         * they are skipped so. Any other skip reads by its failure.
+         * they are skipped so. A stored `wrong_article` skip keeps its address and
+         * source (Unpaywall's PDF for a source that names no PDF); without an address
+         * it reads by its failure. Any other skip reads by its failure.
          *
          * @param stored The stored value, untrusted
          * @return The shortfall, as specific as the stored value allows
@@ -584,6 +637,13 @@ data class OpenAccessShortfall(val entries: List<Entry>) {
                 else -> Unit
             }
             val address = (fields[KEY_ADDRESS] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            if (fields[KEY_SKIPPED] == JsonPrimitive(SKIPPED_WRONG_ARTICLE) && !address.isNullOrBlank()) {
+                // A PDF's entry; one with no address is unattributable and reads by
+                // its failure below; a source that names no PDF reads as Unpaywall's
+                val source = OpenAccessSource.fromPersisted(sourceValue)?.takeIf { it in WRONG_ARTICLE_SOURCES }
+                    ?: OpenAccessSource.PDF
+                return Entry(source, OpenAccessUnsettledReason.WrongArticle, address)
+            }
             return Entry(
                 OpenAccessSource.fromPersisted(sourceValue) ?: OpenAccessSource.UNPAYWALL,
                 OpenAccessUnsettledReason.Failed(SearchFailureReporting.failureFrom(fields[KEY_FAILURE])),

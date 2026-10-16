@@ -637,14 +637,18 @@ extension BMLFullTextService {
     /// - Parameter document: The document to fetch for.
     /// - Returns: The retrieved content and everything the chain learned on the
     ///   way.
-    /// - Throws: Whatever ``FullTextService/fetchFullText(pmcId:doi:pmid:primaryKind:)``
+    /// - Throws: Whatever ``FullTextService/fetchFullText(pmcId:doi:pmid:primaryKind:title:)``
     ///   throws, cancellation included.
     func fetchFullText(for document: Document) async throws -> BMLFullTextResult {
         try await fetchFullText(
             pmcId: document.pmcId,
             doi: document.doi,
             pmid: document.pmid,
-            primaryKind: document.resolvedIdentifierKind
+            primaryKind: document.resolvedIdentifierKind,
+            // Every PDF the chain reads is checked against it: another
+            // article's is set aside and the next source tried (#546). A
+            // document stored without one checks nothing.
+            title: document.title
         )
     }
 }

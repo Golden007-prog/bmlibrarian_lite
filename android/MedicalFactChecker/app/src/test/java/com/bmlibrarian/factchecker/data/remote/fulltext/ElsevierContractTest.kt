@@ -194,8 +194,13 @@ class ElsevierContractTest {
     }
 
     @Test
-    fun `Elsevier is first in chain order`() {
-        assertEquals(OpenAccessSource.ELSEVIER, OpenAccessShortfall.CHAIN_ORDER.first())
+    fun `Elsevier is first in chain order but for Europe PMC's render`() {
+        // The render is asked first; its PDF is recorded only as another article's (#546)
+        assertEquals(
+            listOf(OpenAccessSource.EUROPE_PMC_PDF, OpenAccessSource.ELSEVIER),
+            OpenAccessShortfall.CHAIN_ORDER.take(2)
+        )
+        assertEquals(OpenAccessSource.entries.toSet(), OpenAccessShortfall.CHAIN_ORDER.toSet())
     }
 
     @Test

@@ -77,7 +77,7 @@ class FullTextViewModelUnsafeUrlTest {
     private fun open(stored: DocumentEntity, answer: FullTextService.FullTextResult? = null): FullTextViewModel {
         coEvery { documentDao.getById("d") } returns stored
         if (answer != null) {
-            coEvery { fullTextService.fetchFullText(any(), any(), any(), any()) } returns Result.success(answer)
+            coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } returns Result.success(answer)
         }
         return FullTextViewModel(
             savedStateHandle = SavedStateHandle(mapOf(FullTextViewModel.DOCUMENT_ID_KEY to "d")),

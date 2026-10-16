@@ -110,9 +110,9 @@ final class ElsevierContractTests: XCTestCase {
     }
 
     /// Elsevier is asked after Europe PMC's render and before any Unpaywall
-    /// lookup, so it is told first among the tried sources.
+    /// lookup, so it is told first among the tried sources but the render's (#546).
     func testElsevierIsFirstInChainOrder() {
-        XCTAssertEqual(OpenAccessShortfall.chainOrder.first, .elsevier)
+        XCTAssertEqual(Array(OpenAccessShortfall.chainOrder.prefix(2)), [.europePMCPDF, .elsevier])
         XCTAssertEqual(OpenAccessShortfall.chainOrder.last, .core)
         XCTAssertEqual(Set(OpenAccessShortfall.chainOrder), Set(OpenAccessSource.allCases))
     }

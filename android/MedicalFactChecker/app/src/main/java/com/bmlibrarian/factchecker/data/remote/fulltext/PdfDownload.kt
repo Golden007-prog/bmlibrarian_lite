@@ -115,6 +115,30 @@ internal fun quarantineCachedFile(file: File, quarantine: File) {
 }
 
 /**
+ * Set a saved PDF of another article aside, so the cache never serves it again (#546).
+ *
+ * Renamed beside itself with [Constants.PDF_MISMATCH_SUFFIX], which no lookup
+ * reads, rather than deleted: the check can be wrong (a preprint retitled between
+ * versions), as Python's `pdf_library_check` keeps its set-aside PDFs. One copy per
+ * name is kept, the latest, replacing an earlier one: the app has no keep to
+ * restore one by. A rename that fails is logged and the file deleted instead, as
+ * [quarantineCachedFile] does, so the next source's download does not find it in
+ * its place; a file that can be neither is still there, and the open-access walk
+ * stops on it rather than blame the next source for it.
+ *
+ * @param file The saved PDF
+ * @return Where it was set aside, or null when it could not be moved
+ */
+internal fun setAsideWrongArticle(file: File): File? {
+    val aside = File(file.parentFile, file.name + Constants.PDF_MISMATCH_SUFFIX)
+    if (aside.exists()) aside.delete()
+    if (file.renameTo(aside)) return aside
+    Log.e(TAG, "Could not set aside the PDF of another article at ${file.absolutePath}; deleting it")
+    if (!file.delete()) Log.e(TAG, "Could not delete ${file.absolutePath} either")
+    return null
+}
+
+/**
  * A fault of ours while saving a PDF: the cache could not be written.
  *
  * Not an [IOException], so that `RequestFailure.fromException` can never read

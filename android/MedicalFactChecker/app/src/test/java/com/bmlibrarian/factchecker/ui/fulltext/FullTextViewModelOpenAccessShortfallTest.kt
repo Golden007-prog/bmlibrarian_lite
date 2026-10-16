@@ -99,7 +99,7 @@ class FullTextViewModelOpenAccessShortfallTest {
     /** Opens the viewer on [stored] with the chain answering [answer]. */
     private fun open(stored: DocumentEntity, answer: FullTextService.FullTextResult): FullTextViewModel {
         coEvery { documentDao.getById("d") } returns stored
-        coEvery { fullTextService.fetchFullText(any(), any(), any(), any()) } returns Result.success(answer)
+        coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } returns Result.success(answer)
         return FullTextViewModel(
             savedStateHandle = SavedStateHandle(mapOf(FullTextViewModel.DOCUMENT_ID_KEY to "d")),
             fullTextService = fullTextService,
@@ -373,7 +373,7 @@ class FullTextViewModelOpenAccessShortfallTest {
             FullTextViewModel.FullTextState.PlainTextContent(hostile, "t", Constants.FULLTEXT_SOURCE_CORE_LABEL),
             viewModel.state.value
         )
-        coVerify(exactly = 0) { fullTextService.fetchFullText(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
 
         val withStaleHtml = stored.copy(fullTextHTML = "<p>stale</p>")
         assertEquals(

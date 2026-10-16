@@ -486,6 +486,28 @@ public enum BioMedLitConstants {
     public static let challengeGoneStatuses: Set<Int> = [404, 410]
     public static let cloudflareRefusalStatuses: Set<Int> = [403, 503]
     public static let cloudflareServer = "cloudflare"
+
+    /// A PDF is taken as the article's when its first page with text carries
+    /// at least this share of the title's adjacent word pairs (#532, #546).
+    /// Python's `PDF_TITLE_MIN_PAIR_SHARE`, measured on 1,500 knowledgebase
+    /// PDFs (500, then two held-out 500s); contract:
+    /// `doc/cross_platform/fulltext_parity/pdf_title_check.json`.
+    public static let pdfTitleMinPairShare = 0.5
+    /// The pages with text read for the title; pages with none before them
+    /// (an image-only cover) are passed over. Python's `PDF_TITLE_PAGES_READ`.
+    public static let pdfTitlePagesRead = 1
+    /// A title whose words, joined with nothing between, run to at least this
+    /// many letters and numbers is also carried when it appears whole in the
+    /// page's words joined the same way: PDFKit can space a word apart on a
+    /// title line ("cur r ent"). Python's `PDF_TITLE_MIN_JOINED_CHARACTERS`
+    /// (#546), whose comment holds the survey.
+    public static let pdfTitleMinJoinedCharacters = 20
+    /// What the reader is told of a PDF that is another article's (#541,
+    /// #546), Python's `LookupSkipReason.WRONG_ARTICLE` words.
+    public static let wrongArticleReason = "another article's PDF"
+    /// The extension a PDF of another article is set aside with, beside its
+    /// cached name, which the cache never looks for. Python's `PDF_MISMATCH_SUFFIX`.
+    public static let pdfMismatchSuffix = ".mismatch"
     /// The whitespace HTTP allows around a header's value (RFC 9110's OWS): a
     /// space or a tab, and nothing else, so every platform trims a value alike.
     public static let httpHeaderWhitespace = CharacterSet(charactersIn: " \t")
