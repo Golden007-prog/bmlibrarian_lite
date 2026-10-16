@@ -942,16 +942,27 @@ against the article's title, on all three platforms; the judgement is
   cached PDF where every one passes before its text is read
   (`extractText(fromCachedPDF:)`), given the title by `fetchFullText(…, title:)`;
   Elsevier's PDF is staged the same way. Android checks each download's partial
-  file (`<id>.pdf.<n>.part`) in `downloadPdf` and in Elsevier's fetch, Elsevier's
-  cached PDF in that fetch, and a cached PDF in the viewer before it is shown (a
-  refused one that was the stored PDF is forgotten). **Android's `downloadPdf`
+  file (`<cache name>.<n>.part`: `<id>.pdf.<n>.part` in `downloadPdf`'s
+  `admitDownload`, `elsevier-<digest>.pdf.<n>.part` in Elsevier's fetch),
+  Elsevier's cached PDF in that fetch, and a cached PDF in the viewer before it
+  is shown (a refused one that was the stored PDF is forgotten). A cached file
+  is set aside only if it is still the file checked (Android compares its file
+  key, size and modification time before and after the check): since every PDF
+  of a document shares one name there, a download a concurrent fetch checked and
+  moved in meanwhile would otherwise be set aside in its place. **Android's `downloadPdf`
   never answers from the cache** (#561): it caches every PDF of a document under
   one name, so a cached file says nothing about the address asked, and the walk
   would have told it, or its refusal, as that address's. **A cached PDF gone by
   the time it is read** (another fetch's check set it aside meanwhile) is no copy
   served: Swift asks that source again, once, and the download is judged on its
   own (gone again, that PDF is recorded unsettled, `request_failed` with its
-  address, with no link kept); Android's Elsevier fetch asks as on a miss. Swift checks at fetch time
+  address, with no link kept; Elsevier's with no address, as its PDF served and
+  not saved is); Android's Elsevier fetch asks as on a miss. **A download gone
+  before its check** (a clearing of the cache, or on Android the system's under
+  storage pressure) was never judged, so it is never let in or linked: Swift's
+  `admit` answers it as gone, and the source is asked again as above;
+  Android's `admitDownload` answers `REQUEST_FAILED` with its address, also when
+  its rename fails because it is gone. Swift checks at fetch time
   only: a document stored before the check keeps its text and PDF until fetched
   again (#557). On Swift, with PDF extraction off nothing is downloaded, so a
   tier's link is handed over unchecked; on both apps a PDF served that could not
@@ -962,7 +973,9 @@ against the article's title, on all three platforms; the judgement is
   read again only through the check. Android caches every PDF of a document under
   one name, so it keeps one set-aside per document and deletes a file it could
   not rename; a refused download never took the cache name, so the walk goes on
-  past it. The refusal is a skip with the
+  past it. A cached file that can be neither moved nor deleted is refused again
+  each time it is read; for Elsevier's, every later fetch of that DOI answers
+  another article's PDF without asking Elsevier. The refusal is a skip with the
   PDF's address, `wrong_article`, told "{host}, named by {source} (another
   article's PDF)" as a source not asked: **it is never an absence**, and a copy
   served later settles the question as any does. An open-access candidate's

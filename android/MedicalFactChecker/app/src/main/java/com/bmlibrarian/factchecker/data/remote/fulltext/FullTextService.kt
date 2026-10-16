@@ -370,7 +370,7 @@ class FullTextService @Inject constructor(
      * @return Whether it was refused
      */
     suspend fun refusesAsAnotherArticle(path: String, title: String?): Boolean =
-        refusedAsAnotherArticle(path, title)
+        refusedAsAnotherArticle(path, title, cacheName = File(path))
 
     /**
      * Fetch full text for a document using the fallback chain.
@@ -386,7 +386,7 @@ class FullTextService @Inject constructor(
      *   against it, and one whose first page with text does not carry it is
      *   another article's, set aside and recorded as a wrong-article skip with its
      *   address before Unpaywall is asked (the PDFs the recording downloads are
-     *   checked there). Null checks nothing.
+     *   checked by [downloadPdf], #561). Null checks nothing.
      * @return The full text or a link to it; [FullTextResult.Unavailable] when every
      *   source answered without it (callers record this); or
      *   [FullTextResult.NotEstablished] when Europe PMC, or failing that PMC's
@@ -528,7 +528,10 @@ class FullTextService @Inject constructor(
                     )
                 )
                 null -> emptyList()
-                else -> listOfNotNull(elsevierShortfall(fetched, usableDoi)?.let { OpenAccessStep.Unsettled(it) })
+                // Every other case named, so a new one is decided here, not lost
+                ElsevierFetch.Absent, is ElsevierFetch.Unreachable, ElsevierFetch.KeyRefused,
+                ElsevierFetch.NetworkRefused, ElsevierFetch.NotSaved ->
+                    listOfNotNull(elsevierShortfall(fetched, usableDoi)?.let { OpenAccessStep.Unsettled(it) })
             }
         }
 
@@ -1066,7 +1069,9 @@ class FullTextService @Inject constructor(
      * neither replaces this article's cached PDF nor is served by another fetch.
      * Only then is it renamed into place, so a page served in the PDF's place, or
      * a download that broke off, is never returned as cached (#478). The partial
-     * file is removed on every other outcome. A cached file that is not a PDF,
+     * file is removed on every other outcome; one removed before its check is
+     * `REQUEST_FAILED`, never a PDF not saved, whose link would offer a PDF never
+     * judged. A cached file that is not a PDF,
      * written by an earlier build, is quarantined (fulltext_retrieval.md, "Cache
      * Read Validation").
      *
@@ -1142,26 +1147,11 @@ class FullTextService @Inject constructor(
                 }
                 try {
                     body.byteStream().use { input -> input.copyToCache(partial) }
-                    if (!isCachedPdf(partial)) {
-                        // The body began as a PDF, so a file that does not is the cache's fault
-                        Log.e(TAG, "Could not cache the PDF at ${localFile.absolutePath}")
-                        return@withContext PdfDownload.NotSaved
-                    }
-                    // Judged where it waits (#561), set aside under the cache name's
-                    // set-aside name when refused (logged by the check)
-                    if (refusedAsAnotherArticle(partial.path, title, cacheName = localFile)) {
-                        return@withContext PdfDownload.WrongArticle
-                    }
-                    if (!partial.renameTo(localFile)) {
-                        Log.e(TAG, "Could not cache the PDF at ${localFile.absolutePath}")
-                        return@withContext PdfDownload.NotSaved
-                    }
+                    admitDownload(partial, localFile, title, pdfUrl)
                 } finally {
                     // Gone once renamed; otherwise never to be read as the PDF
                     partial.delete()
                 }
-                Log.d(TAG, "PDF downloaded to: ${localFile.absolutePath}")
-                PdfDownload.Saved(localFile.absolutePath)
             }
         } catch (e: CancellationException) {
             throw e

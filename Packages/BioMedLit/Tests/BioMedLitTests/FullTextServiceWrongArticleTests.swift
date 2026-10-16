@@ -96,11 +96,13 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
     }
 
     /// The service, its checker refusing a file that holds ``wrongMarker``, or
-    /// answering `outcome` for every file when one is given.
+    /// answering `outcome` for every file when one is given; `writer` stands
+    /// in for the write of a download beside its cache name.
     private func makeService(
         elsevierAPIKey: String? = nil,
         outcome: PDFTitleCheck? = nil,
         extractor: PDFTextExtracting = ExtractingStub(),
+        writer: @escaping @Sendable (Data, URL) throws -> Void = FullTextService.writeAtomically,
         before: (@Sendable (URL) -> Void)? = nil
     ) -> FullTextService {
         let config = URLSessionConfiguration.ephemeral
@@ -118,6 +120,7 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
             elsevierAPIKey: elsevierAPIKey,
             elsevierRetry: .noRetry,
             elsevierSession: ElsevierSession(),
+            writeCachedPDF: writer,
             titleChecker: { url, _ in
                 before?(url)
                 if let outcome { return outcome }
@@ -381,6 +384,7 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
         XCTAssertEqual(result.localPDFPath, cached)
         XCTAssertEqual(result.extractedText, "The article.")
         XCTAssertNil(result.openAccessShortfall)
+        try assertNoDownloadLeftWaiting()
     }
 
     /// A copy gone again after it was asked for again is no copy served (#560,
@@ -401,6 +405,7 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
         XCTAssertEqual(
             StubURLProtocol.requestedURLs.filter { $0.contains("wrong.example.org") }.count, 2, "asked again once, no more"
         )
+        try assertNoDownloadLeftWaiting()
     }
 
     /// The render gone twice keeps no link and is told.
@@ -418,6 +423,10 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
             result.openAccessShortfall?.entries.first,
             OpenAccessShortfall.Entry(source: .europePMCPDF, failure: .requestFailed, address: render)
         )
+        XCTAssertEqual(
+            StubURLProtocol.requestedURLs.filter { $0.contains("articles/PMC1/pdf") }.count, 2, "asked again once, no more"
+        )
+        try assertNoDownloadLeftWaiting()
     }
 
     /// Elsevier's cached PDF set aside by another fetch: Elsevier is asked
@@ -463,10 +472,165 @@ final class FullTextServiceWrongArticleTests: XCTestCase {
         try assertNoDownloadLeftWaiting()
     }
 
-    /// A move that fails is reported, never a success.
-    func testAPromotionThatFailsIsReported() {
+    /// A move of a file that is not there answers false, never a success.
+    func testAPromotionOfAMissingFileFails() {
         let missing = FullTextService.pdfCacheDirectory.appendingPathComponent("absent-\(UUID().uuidString)").path
         XCTAssertFalse(FullTextService.promote(staged: missing, to: missing + ".pdf"))
+    }
+
+    /// A writer that writes the download, then puts a directory at `cacheName`,
+    /// so the move into it fails (`rename(2)` of a file onto a directory) after
+    /// the cache was consulted.
+    private func writerBlocking(_ cacheName: String) -> @Sendable (Data, URL) throws -> Void {
+        { data, url in
+            try FullTextService.writeAtomically(data, to: url)
+            try FileManager.default.createDirectory(atPath: cacheName, withIntermediateDirectories: true)
+        }
+    }
+
+    /// A download its check let in and that could not take its cache name is
+    /// a copy served and not saved: linked with the caching note, asked once,
+    /// never told as refused or gone, and its waiting file removed.
+    func testADownloadThatCannotTakeItsCacheNameIsLinkedNotServed() async throws {
+        StubURLProtocol.routes["unpaywall"] = (200, unpaywall([right]))
+        StubURLProtocol.routes["right.example.org"] = (200, pdfBody)
+        let blocker = cachedPath(right)
+        defer { try? FileManager.default.removeItem(atPath: blocker) }
+        let result = try await makeService(writer: writerBlocking(blocker))
+            .fetchFullText(pmcId: nil, doi: doi, pmid: "", title: title)
+        XCTAssertNil(result.localPDFPath)
+        XCTAssertNil(result.extractedText)
+        XCTAssertEqual(result.pdfNotSavedFrom, right, "linked with the caching note")
+        XCTAssertNil(result.openAccessShortfall, "a copy served settles the question")
+        XCTAssertEqual(
+            StubURLProtocol.requestedURLs.filter { $0.contains("right.example.org") }.count, 1, "not asked again"
+        )
+        try assertNoDownloadLeftWaiting()
+    }
+
+    /// Elsevier's download that could not take its cache name is as its PDF
+    /// not saved: unsettled, no address, Unpaywall tried, nothing left waiting.
+    func testElseviersDownloadThatCannotTakeItsCacheNameIsUnsettled() async throws {
+        let articleURL = try XCTUnwrap(Elsevier.articleURL(doi: doi)).absoluteString
+        let blocker = cachedPath(articleURL)
+        defer { try? FileManager.default.removeItem(atPath: blocker) }
+        StubURLProtocol.routes["api.elsevier.com"] = (200, pdfBody)
+        StubURLProtocol.routes["unpaywall"] = (404, Data())
+        let result = try await makeService(elsevierAPIKey: "test-elsevier-key", writer: writerBlocking(blocker))
+            .fetchFullText(pmcId: nil, doi: doi, pmid: "", title: title)
+        XCTAssertNotEqual(result.source, .elsevier)
+        XCTAssertNil(result.localPDFPath)
+        XCTAssertTrue(StubURLProtocol.requested("unpaywall"))
+        XCTAssertEqual(
+            result.openAccessShortfall?.entries.first,
+            OpenAccessShortfall.Entry(source: .elsevier, failure: .requestFailed, address: nil)
+        )
+        try assertNoDownloadLeftWaiting()
+    }
+
+    /// A download gone before its check (a clearing of the cache removed it)
+    /// was never judged: no link, no copy served, asked again once, then told
+    /// as unsettled with its address. A check of no file judges nothing, so
+    /// without the guard it was linked as a copy served and not saved.
+    func testADownloadGoneBeforeItsCheckIsNeverLinked() async throws {
+        StubURLProtocol.routes["unpaywall"] = (200, unpaywall([right]))
+        StubURLProtocol.routes["right.example.org"] = (200, pdfBody)
+        // Written, then removed before its check
+        let result = try await makeService(writer: { _, _ in })
+            .fetchFullText(pmcId: nil, doi: doi, pmid: "", title: title)
+        XCTAssertNil(result.localPDFPath)
+        XCTAssertNil(result.pdfNotSavedFrom, "never judged, so never linked")
+        XCTAssertEqual(
+            result.openAccessShortfall,
+            OpenAccessShortfall(source: .pdf, failure: .requestFailed, address: right)
+        )
+        XCTAssertEqual(
+            StubURLProtocol.requestedURLs.filter { $0.contains("right.example.org") }.count, 2, "asked again once, no more"
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cachedPath(right)))
+    }
+
+    /// Elsevier's PDF gone twice before it was read: unsettled with no address,
+    /// Elsevier asked twice and no more, Unpaywall tried, nothing left waiting.
+    func testElseviersPDFGoneTwiceIsUnsettledAndUnpaywallTried() async throws {
+        StubURLProtocol.routes["api.elsevier.com"] = (200, pdfBody)
+        StubURLProtocol.routes["unpaywall"] = (404, Data())
+        let result = try await makeService(elsevierAPIKey: "test-elsevier-key", extractor: VanishingReader())
+            .fetchFullText(pmcId: nil, doi: doi, pmid: "", title: title)
+        XCTAssertNotEqual(result.source, .elsevier)
+        XCTAssertNil(result.localPDFPath)
+        XCTAssertTrue(StubURLProtocol.requested("unpaywall"))
+        XCTAssertEqual(
+            StubURLProtocol.requestedURLs.filter { $0.contains("api.elsevier.com") }.count, 2, "asked again once, no more"
+        )
+        XCTAssertEqual(
+            result.openAccessShortfall?.entries.first,
+            OpenAccessShortfall.Entry(source: .elsevier, failure: .requestFailed, address: nil)
+        )
+        try assertNoDownloadLeftWaiting()
+    }
+
+    /// Elsevier's PDF cached by an earlier run is checked: another article's is
+    /// set aside without asking Elsevier, and told under its article URL.
+    func testElseviersCachedPDFOfAnotherArticleIsSetAsideWithoutAsking() async throws {
+        try FileManager.default.createDirectory(
+            at: FullTextService.pdfCacheDirectory, withIntermediateDirectories: true
+        )
+        let articleURL = try XCTUnwrap(Elsevier.articleURL(doi: doi)).absoluteString
+        let cached = cachedPath(articleURL)
+        try wrongBody.write(to: URL(fileURLWithPath: cached))
+        StubURLProtocol.routes["unpaywall"] = (404, Data())
+        let result = try await fetch(title: title, elsevierAPIKey: "test-elsevier-key")
+        XCTAssertFalse(StubURLProtocol.requested("api.elsevier.com"), "the cached copy was the one checked")
+        XCTAssertNil(result.localPDFPath)
+        XCTAssertEqual(
+            result.openAccessShortfall?.entries.first,
+            OpenAccessShortfall.wrongArticle(source: .elsevier, address: articleURL).entries.first
+        )
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cached))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cached + BioMedLitConstants.pdfMismatchSuffix))
+    }
+
+    /// A write that fails partway leaves no waiting file, for an open-access
+    /// copy (linked with the caching note) and for Elsevier's (unsettled).
+    func testAWriteThatFailsPartwayLeavesNothingWaiting() async throws {
+        let failing: @Sendable (Data, URL) throws -> Void = { data, url in
+            try data.prefix(8).write(to: url)
+            throw CocoaError(.fileWriteOutOfSpace)
+        }
+        StubURLProtocol.routes["unpaywall"] = (200, unpaywall([right]))
+        StubURLProtocol.routes["right.example.org"] = (200, pdfBody)
+        let copy = try await makeService(writer: failing).fetchFullText(pmcId: nil, doi: doi, pmid: "", title: title)
+        XCTAssertEqual(copy.pdfNotSavedFrom, right)
+        try assertNoDownloadLeftWaiting()
+
+        StubURLProtocol.reset()
+        StubURLProtocol.routes["search"] = (200, Data(#"{"resultList": {"result": []}}"#.utf8))
+        StubURLProtocol.routes["api.elsevier.com"] = (200, pdfBody)
+        StubURLProtocol.routes["unpaywall"] = (404, Data())
+        let elsevier = try await makeService(elsevierAPIKey: "test-elsevier-key", writer: failing)
+            .fetchFullText(pmcId: nil, doi: doi, pmid: "", title: title)
+        XCTAssertEqual(
+            elsevier.openAccessShortfall?.entries.first,
+            OpenAccessShortfall.Entry(source: .elsevier, failure: .requestFailed, address: nil)
+        )
+        try assertNoDownloadLeftWaiting()
+    }
+
+    /// The public-to-tests download that cannot move its PDF into the cache
+    /// throws, and leaves no waiting file.
+    func testADownloadAndCacheThatCannotMoveThrowsAndLeavesNothingWaiting() async throws {
+        StubURLProtocol.routes["right.example.org"] = (200, pdfBody)
+        let blocker = cachedPath(right)
+        defer { try? FileManager.default.removeItem(atPath: blocker) }
+        do {
+            _ = try await makeService(writer: writerBlocking(blocker))
+                .downloadAndCachePDF(from: URL(string: right)!, for: cacheKey)
+            XCTFail("a PDF not moved into the cache is no cached PDF")
+        } catch FullTextError.cachingFailed {
+            // Expected
+        }
+        try assertNoDownloadLeftWaiting()
     }
 
     // MARK: - Recorded, never an absence

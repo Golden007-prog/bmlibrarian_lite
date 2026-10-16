@@ -367,17 +367,19 @@ class ElsevierService internal constructor(
      * @property status The HTTP status it ended on, or null when it got none
      * @property answer The answer classified
      * @property fetch What it comes to, when that is settled by the attempt (a PDF
-     *   saved or not saved); null for every other answer
+     *   saved, not saved, or another article's); null for every other answer
      */
     private class Ending(val status: Int?, val answer: ElsevierAnswer, val fetch: ElsevierFetch? = null)
 
     /**
      * This article's PDF from Elsevier.
      *
-     * The cache is consulted first, as every PDF tier consults it: a read is no
-     * request, so a PDF saved earlier (on the institution's network, say) is served
-     * even when Elsevier would now refuse or is paused, without spending the weekly
-     * quota. A cached file that is not a PDF is quarantined and Elsevier asked.
+     * The cache is consulted first: Elsevier's PDF is cached by its DOI, so a cached
+     * file is this address's (unlike [FullTextService.downloadPdf]'s one name per
+     * document, which is never answered from, #561). A read is no request, so a PDF
+     * saved earlier (on the institution's network, say) is served even when Elsevier
+     * would now refuse or is paused, without spending the weekly quota. A cached file
+     * that is not a PDF is quarantined and Elsevier asked.
      *
      * Never throws but for cancellation: an unexpected error is logged (never with
      * the key or the token) and answered as Elsevier unreachable.

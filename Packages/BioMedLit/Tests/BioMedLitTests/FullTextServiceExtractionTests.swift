@@ -96,7 +96,7 @@ final class FullTextServiceExtractionTests: XCTestCase {
     /// Every PMID any test in this file fetches for.
     ///
     /// Cleared before and after each test: these leave files on the machine
-    /// that runs them otherwise, and once `downloadAndCachePDF` consults the
+    /// that runs them otherwise, and once `obtainPDF` consults the
     /// cache, a leftover entry from an earlier run silently skips the download
     /// a later test is asserting on.
     private static let cachedPMIDs = [primaryPMID, secondaryPMID, unassignedPMCID]
@@ -297,7 +297,7 @@ final class FullTextServiceExtractionTests: XCTestCase {
     /// actually completed.
     ///
     /// `StubURLProtocol.failures` isolates the one call this guards: the
-    /// Unpaywall JSON answers normally, so only `downloadAndCachePDF`'s
+    /// Unpaywall JSON answers normally, so only `obtainPDF`'s
     /// `session.data(from:)` for the PDF binary itself is cancelled.
     func testACancelledPDFDownloadDoesNotFallThrough() async {
         StubURLProtocol.routes = [

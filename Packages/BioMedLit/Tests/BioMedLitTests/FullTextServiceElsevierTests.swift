@@ -710,7 +710,7 @@ final class FullTextServiceElsevierTests: RecordingLoggerTestCase {
         let session = ElsevierSession()
         session.recordNetworkRefused(credentialsDigest: KeyDigest.credentials(key: key, token: nil))
         let fetch = try await makeService(elsevierSession: session).fetchElsevierPDF(doi: doi, cacheKey: cacheKey)
-        XCTAssertEqual(fetch, .served(localPath: cachedPath))
+        XCTAssertEqual(fetch, .cached(localPath: cachedPath))
         XCTAssertEqual(elsevierRequests, 0)
     }
 
@@ -721,7 +721,7 @@ final class FullTextServiceElsevierTests: RecordingLoggerTestCase {
         session.record(endedOn: 429, keyDigest: KeyDigest.key(key))
         XCTAssertTrue(session.isPaused)
         let fetch = try await makeService(elsevierSession: session).fetchElsevierPDF(doi: doi, cacheKey: cacheKey)
-        XCTAssertEqual(fetch, .served(localPath: cachedPath))
+        XCTAssertEqual(fetch, .cached(localPath: cachedPath))
         XCTAssertEqual(elsevierRequests, 0)
     }
 

@@ -35,14 +35,18 @@ now checked where it waits, beside its cache name, on all three platforms**
 (Python's `unchecked_download_path`): Swift stages each download as
 `<cache name>.<UUID>.unchecked` (open-access copies, the render and Elsevier's
 PDF; `admit` checks, then `rename(2)` into place); Android checks the partial
-(`<id>.pdf.<n>.part`) inside `downloadPdf` and Elsevier's fetch
-(`PdfDownload.WrongArticle`, `ElsevierFetch.WrongArticle`). **Android's
+(`<cache name>.<n>.part`) in `downloadPdf`'s `admitDownload` and in Elsevier's
+fetch (`PdfDownload.WrongArticle`, `ElsevierFetch.WrongArticle`). **Android's
 `downloadPdf` never answers from the cache** (one name per document says
 nothing about the address), so the walk's `cacheBlocked` stop is gone. A cached
 PDF gone by read time (another fetch set it aside) is no copy served: Swift
 re-asks that source once (`PDFTierOutcome.vanished`; gone again is
-`request_failed`, no link), Android's Elsevier fetch asks as on a miss. Contract: `fulltext_retrieval.md`, "A PDF of another
-article".
+`request_failed`, no link, Elsevier's with no address), Android's Elsevier fetch
+asks as on a miss. A download gone before its check is never let in or linked
+(Swift `Admission.gone`, Android `REQUEST_FAILED`). Android sets a cached file
+aside only if its stamp (file key, size, mtime) is unchanged by the check.
+Lodged: #563 (Android credits the wrong address when two downloads race).
+Contract: `fulltext_retrieval.md`, "A PDF of another article".
 
 ## Recently landed (context)
 

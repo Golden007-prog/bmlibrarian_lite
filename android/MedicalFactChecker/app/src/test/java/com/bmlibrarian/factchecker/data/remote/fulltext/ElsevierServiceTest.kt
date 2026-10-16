@@ -419,7 +419,7 @@ class ElsevierServiceTest {
             ElsevierService.client(OkHttpClient()), server.url("").toString().trimEnd('/'), { dir }, { key },
             { token }, RequestPacer(0L), 0, 0L, Elsevier.newSession(),
             refuses = { checked, _, _ ->
-                // The other fetch: its check refused the cached file and moved it
+                // The other fetch: its check refused the cached file and removed it
                 if (checked == cached.path) File(checked).delete()
                 false
             }
@@ -427,6 +427,30 @@ class ElsevierServiceTest {
         assertEquals(ElsevierFetch.Served(cached.absolutePath), service.fetchPdf(doi, title))
         assertEquals("asked", 1, server.requestCount)
         assertArrayEquals(CONTRACT_PDF_BODY, cached.readBytes())
+    }
+
+    /**
+     * A PDF its check let in that cannot take its cache name is not saved (a fault of
+     * ours, logged at ERROR), never served, and leaves no partial file.
+     */
+    @Test
+    fun `a PDF that cannot take its cache name is not saved and leaves no partial`() = runBlocking {
+        val dir = cacheDir()
+        val cached = File(dir, Elsevier.cacheFileName(doi))
+        routes[path] = pdf()
+        val service = ElsevierService(
+            ElsevierService.client(OkHttpClient()), server.url("").toString().trimEnd('/'), { dir }, { key },
+            { token }, RequestPacer(0L), 0, 0L, Elsevier.newSession(),
+            refuses = { _, _, cacheName ->
+                // A directory that is not empty at the cache name: the rename fails
+                cacheName.mkdirs()
+                File(cacheName, "x").createNewFile()
+                false
+            }
+        )
+        assertEquals(ElsevierFetch.NotSaved, service.fetchPdf(doi, title))
+        assertTrue(cached.isDirectory)
+        assertEquals("no partial file left", listOf(cached.name), dir.listFiles().orEmpty().map { it.name })
     }
 
     /** A cached file that is not a PDF is set aside, and Elsevier asked. */
