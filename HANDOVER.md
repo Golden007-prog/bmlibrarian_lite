@@ -29,7 +29,7 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Wrong-article PDFs in the apps** (#546, Swift + Android; PR in review). The
+**Wrong-article PDFs in the apps** (#546, Swift + Android; PR #559). The
 desktop's title check (#532/#541) ported, contract `pdf_title_check.json` (64
 rows; each platform's case folding equals Python's `casefold` on all 137,936
 letters and numbers). **The shared rule gained a route** (maintainer's call):
