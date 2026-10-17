@@ -78,6 +78,7 @@ from ..config import LiteConfig
 from ..constants import CORE_SOURCE_LABEL, RESCUE_PRIORITY_WAITING, RESCUE_READER_WAIT_LIMIT_MS
 from ..data_models import LookupRecord
 from ..exceptions import SQLiteError
+from ..identifiers import refused_pmid_sentence
 from ..elsevier_api import ElsevierCredentials
 from ..storage import LiteStorage
 from ..pdf_library_check import check_cached_pdf, forget_kept, set_aside_note
@@ -666,6 +667,11 @@ class DocumentInterrogationTab(QWidget):
             doi, pmid = dialog.get_identifiers()
             if not (doi or pmid):
                 QMessageBox.warning(self, "No Identifier", "Please enter a DOI or PMID.")
+                return
+            # A typed value that is not a PMID would be dropped unread, and the
+            # reader told only that nothing was found (bmlib#470)
+            if refused := refused_pmid_sentence(pmid):
+                QMessageBox.warning(self, "Not a PubMed ID", refused)
                 return
 
         self._start_pdf_discovery({'doi': doi, 'pmid': pmid, 'pmcid': pmcid, 'title': title}, title or f"PDF ({doi or pmid or pmcid})")

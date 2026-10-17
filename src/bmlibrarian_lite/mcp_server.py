@@ -57,7 +57,7 @@ from bmlibrarian_lite.data_models import (
 from bmlibrarian_lite.elsevier_api import ElsevierCredentials
 from bmlibrarian_lite.exceptions import AnalysisFailedError, LiteError, SearchFailedError
 from bmlibrarian_lite.fulltext_discovery import FulltextDiscoverer
-from bmlibrarian_lite.identifiers import read_caller_ids
+from bmlibrarian_lite.identifiers import canonical_pmid, read_caller_ids
 from bmlibrarian_lite.llm import LLMClient
 from bmlibrarian_lite.search_failures import (
     retrieval_shortfalls_from_metadata,
@@ -646,7 +646,8 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
     pmid, pmc_id = read_caller_ids(given_pmid, args.get("pmc_id"))
 
     if not any([pmid, doi, pmc_id]):
-        if given_pmid not in (None, ""):
+        # Refused, not merely blank: whitespace is no PMID, not a wrong one
+        if canonical_pmid(given_pmid).refused:
             return {
                 "success": False,
                 "source": "invalid_request",

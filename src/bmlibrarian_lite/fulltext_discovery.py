@@ -376,17 +376,18 @@ class FulltextDiscoverer:
         # The PMID is read here, once, before any lookup: it reaches Europe
         # PMC's query, the ID Converter and the PubMed URLs, and a padded or
         # malformed one finds nothing or widens the query (bmlib#470, bmlib#472,
-        # bmlib#478). The caller's dict is updated in place, as it is with the
-        # year Europe PMC reports.
+        # bmlib#478). A PMID read differently from the caller's dict is put in
+        # a copy, never written back: the GUI reads its dict on its own thread
+        # while this runs on a worker's, and the value it holds is the
+        # caller's to keep.
         if doc_dict is not None:
             pmid = pmid or doc_dict.get('pmid')
             pmcid = pmcid or doc_dict.get('pmcid') or doc_dict.get('pmc_id')
         pmid, pmcid = read_caller_ids(pmid, pmcid)
-        if doc_dict is not None:
+        if doc_dict is not None and doc_dict.get('pmid') not in (None, pmid):
+            doc_dict = {k: v for k, v in doc_dict.items() if k != 'pmid'}
             if pmid:
                 doc_dict['pmid'] = pmid
-            else:
-                doc_dict.pop('pmid', None)
         result = replace(
             self._discover_fulltext(
                 doc_dict, pmid, pmcid, doi, title, year, skip_pdf, refusals=refusals

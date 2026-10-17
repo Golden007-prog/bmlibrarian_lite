@@ -88,9 +88,67 @@ def canonical_pmid(value: object) -> PmidReading:
 
 
 def is_canonical_pmid(value: object) -> bool:
-    """Whether *value* is text that is already a canonical PMID."""
+    """Whether *value* is text that is already a canonical PMID.
+
+    The lookups that send a PMID (Europe PMC, the ID Converter) check this
+    of what reaches them, since their callers canonicalise first.
+
+    Args:
+        value: The value about to be sent as a PMID.
+
+    Returns:
+        True only for a ``str`` equal to its own canonical reading: ASCII
+        digits, not all zeros, without leading zeros or whitespace.
+    """
     reading = canonical_pmid(value)
     return isinstance(value, str) and reading.pmid is not None and reading.pmid == value
+
+
+def refused_pmid_sentence(value: object) -> str | None:
+    """Tell the reader that what they gave as a PMID is not one.
+
+    A refused PMID is dropped before any lookup, so a reader who typed
+    ``PMID:33301246`` would otherwise see only that no source was found,
+    never that their value was not read.
+
+    Args:
+        value: What the reader gave as the PMID.
+
+    Returns:
+        One sentence naming the value, or ``None`` when it is a PMID, a PMC
+        ID, or blank.
+    """
+    if not canonical_pmid(value).refused:
+        return None
+    return (
+        f"{value!r} is not a PubMed ID, so it was not used: a PMID is "
+        "digits only, such as 12345678."
+    )
+
+
+def no_usable_identifier_text(
+    doi: str | None, pmid: object, pmcid: str | None
+) -> str | None:
+    """The error for a lookup whose only identifier is a refused PMID.
+
+    Without it the lookup runs with nothing to ask by and reports that no
+    source was found, which reads as the article's absence.
+
+    Args:
+        doi: The DOI given, if any.
+        pmid: What was given as the PMID, if anything.
+        pmcid: The PMC ID given, if any.
+
+    Returns:
+        The error naming the refused value, or ``None`` when a DOI, a PMC ID
+        or a usable PMID remains, or when no PMID was given at all.
+    """
+    if doi or pmcid:
+        return None
+    sentence = refused_pmid_sentence(pmid)
+    if sentence is None:
+        return None
+    return f"{sentence}\nPlease enter a DOI or a valid PMID."
 
 
 def read_caller_ids(

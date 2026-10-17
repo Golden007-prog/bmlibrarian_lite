@@ -14,7 +14,9 @@ from bmlibrarian_lite.identifiers import (
     PmidReading,
     canonical_pmid,
     is_canonical_pmid,
+    no_usable_identifier_text,
     read_caller_ids,
+    refused_pmid_sentence,
 )
 
 CONTRACT = (
@@ -141,6 +143,29 @@ def test_read_caller_ids_newline_in_value_is_not_interpolated_raw(caplog) -> Non
     assert "\nFAKE LOG LINE" not in caplog.text
 
 
+def test_refused_pmid_sentence_names_the_value() -> None:
+    """A typed ``PMID:33301246`` is named to the reader as not a PubMed ID."""
+    sentence = refused_pmid_sentence("PMID:33301246")
+    assert sentence is not None
+    assert "'PMID:33301246'" in sentence and "not a PubMed ID" in sentence
+
+
+@pytest.mark.parametrize("value", ["33301246", "0033301246", "PMC7745181", "", "  ", None])
+def test_refused_pmid_sentence_is_silent_for_usable_or_blank(value) -> None:
+    """Control: a PMID, a PMC ID or nothing is not called a wrong PMID."""
+    assert refused_pmid_sentence(value) is None
+
+
+def test_no_usable_identifier_text() -> None:
+    """Only a refused PMID with nothing beside it is an error of its own."""
+    error = no_usable_identifier_text(None, "PMID:33301246", None)
+    assert error is not None and "'PMID:33301246'" in error
+    assert no_usable_identifier_text("10.1/x", "PMID:33301246", None) is None
+    assert no_usable_identifier_text(None, "PMID:33301246", "PMC1") is None
+    assert no_usable_identifier_text(None, "33301246", None) is None
+    assert no_usable_identifier_text(None, None, None) is None
+
+
 # --- the entries ----------------------------------------------------------
 
 def test_mcp_refused_pmid_makes_no_request() -> None:
@@ -151,6 +176,18 @@ def test_mcp_refused_pmid_makes_no_request() -> None:
     result = _handle_fulltext({"pmid": "1 OR 2"}, ctx)
     assert result["success"] is False
     assert "'1 OR 2'" in result["error"]
+    ctx.fulltext_discoverer.discover_fulltext.assert_not_called()
+
+
+def test_mcp_blank_pmid_is_not_called_a_wrong_one() -> None:
+    """Whitespace is no PMID: the error asks for an identifier, naming none."""
+    from bmlibrarian_lite.mcp_server import _handle_fulltext
+
+    ctx = MagicMock()
+    result = _handle_fulltext({"pmid": "   "}, ctx)
+    assert result["success"] is False
+    assert "not a PubMed ID" not in result["error"]
+    assert "At least one of" in result["error"]
     ctx.fulltext_discoverer.discover_fulltext.assert_not_called()
 
 
@@ -274,17 +311,43 @@ def test_analyzer_pmid_entry(monkeypatch) -> None:
     assert report.errors and report.pmid is None
 
 
-def test_discover_fulltext_updates_the_callers_dict_in_place(monkeypatch) -> None:
-    """Discover fulltext updates the callers dict in place."""
+@pytest.mark.parametrize(
+    ("given", "read"), [("0033301246", "33301246"), ("1 OR 2", None)]
+)
+def test_discover_fulltext_reads_the_pmid_into_a_copy(monkeypatch, given, read) -> None:
+    """The lookups see the canonical PMID; the caller's dict keeps its own.
+
+    The GUI's dict is read on the main thread while discovery runs on a
+    worker's, so the canonicalisation never writes to or pops from it.
+    """
     d = _discoverer()
+    seen: dict = {}
+
+    def inner(self, doc_dict, pmid, *a, refusals):
+        seen.update(dict_pmid=doc_dict.get("pmid"), pmid=pmid)
+        return MagicMock(set_aside_pdf_note=None, success=True)
+
+    monkeypatch.setattr(type(d), "_discover_fulltext", inner)
+    monkeypatch.setattr("bmlibrarian_lite.fulltext_discovery.replace", lambda r, **k: r)
+    doc = {"pmid": given, "doi": "10.1/x"}
+    d.discover_fulltext(doc_dict=doc)
+    assert doc == {"pmid": given, "doi": "10.1/x"}
+    assert seen == {"dict_pmid": read, "pmid": read}
+
+
+def test_discover_fulltext_keeps_a_canonical_callers_dict(monkeypatch) -> None:
+    """Control: a dict whose PMID is already canonical is the one passed on."""
+    d = _discoverer()
+    passed: list = []
     monkeypatch.setattr(
         type(d), "_discover_fulltext",
-        lambda self, *a, refusals: MagicMock(set_aside_pdf_note=None, success=True),
+        lambda self, doc_dict, *a, refusals: passed.append(doc_dict)
+        or MagicMock(set_aside_pdf_note=None, success=True),
     )
     monkeypatch.setattr("bmlibrarian_lite.fulltext_discovery.replace", lambda r, **k: r)
-    doc = {"pmid": "0033301246"}
+    doc = {"pmid": "33301246"}
     d.discover_fulltext(doc_dict=doc)
-    assert doc == {"pmid": "33301246"}
+    assert passed[0] is doc
 
 
 def test_an_object_whose_text_is_digits_is_still_refused() -> None:
@@ -370,26 +433,22 @@ def _analyzer(monkeypatch):
 def test_analyzer_pmc_id_as_pmid_reaches_full_text_discovery(monkeypatch) -> None:
     """report.pmcid is the caller's PMC ID, passed to discovery, never replaced."""
     m, a = _analyzer(monkeypatch)
+    # The real _fetch_basic_metadata: with no PMID it asks neither PubMed
+    # nor, without a DOI, CrossRef or the ID converter
+    a.pubmed = MagicMock()
+    a.pubmed.fetch_article.side_effect = AssertionError("PubMed was asked")
+    a.pubmed.convert_ids.side_effect = AssertionError("the converter was asked")
+    a.crossref = MagicMock()
+    a.crossref.get_work.side_effect = AssertionError("CrossRef was asked")
     seen: dict = {}
-
-    def meta(self, report):
-        seen["before"] = (report.pmid, report.pmcid)
-        # as PubMed's record would, via the real assignment's guard
-        pubmed = {"pmcid": "PMC999"}
-        if pubmed.get("pmcid") and not report.pmcid:
-            report.pmcid = pubmed["pmcid"]
 
     def discover(self, report):
         seen["discover"] = (report.pmid, report.pmcid)
         raise StopIteration
 
-    monkeypatch.setattr(m.StudyTransparencyAnalyzer, "_fetch_basic_metadata", meta)
     monkeypatch.setattr(m.StudyTransparencyAnalyzer, "_discover_fulltext", discover)
-    try:
+    with pytest.raises(StopIteration):
         a.analyze(pmid="PMC7745181")
-    except StopIteration:
-        pass
-    assert seen["before"] == (None, "PMC7745181")
     assert seen["discover"] == (None, "PMC7745181")
 
 
@@ -400,8 +459,7 @@ def test_analyzer_basic_metadata_keeps_the_callers_pmc_id() -> None:
     a = m.StudyTransparencyAnalyzer.__new__(m.StudyTransparencyAnalyzer)
     a.pubmed = MagicMock()
     a.crossref = MagicMock()
-    a.pubmed.fetch_article.return_value = m.RecordFetch.served({"pmcid": "PMC999", "title": "t"}) \
-        if hasattr(m.RecordFetch, "served") else MagicMock(record={"pmcid": "PMC999"}, failure=None)
+    a.pubmed.fetch_article.return_value = m.RecordFetch.served({"pmcid": "PMC999", "title": "t"})
     report = m.TransparencyReport()
     report.pmid = "1"
     report.pmcid = "PMC7745181"
@@ -420,3 +478,76 @@ def test_analyzer_error_names_the_refused_pmid() -> None:
     a = m.StudyTransparencyAnalyzer.__new__(m.StudyTransparencyAnalyzer)
     report = a.analyze(pmid="1 OR 2")
     assert "'1 OR 2'" in report.errors[0]
+
+
+# ---- A PMID PubMed was owed (#356 kept for a refused or PMC-ID pmid) ----
+
+
+def _offline_analyzer(pubmed_record: dict | None = None):
+    """A real analyzer whose sources are stubs; PubMed raises unless given a record."""
+    from bmlibrarian_lite.study_transparency_analyzer import study_transparency_analyzer as m
+
+    a = m.StudyTransparencyAnalyzer("t@example.com", auto_discover_fulltext=False)
+    a.pubmed = MagicMock()
+    if pubmed_record is None:
+        a.pubmed.fetch_article.side_effect = AssertionError("PubMed was asked")
+    else:
+        a.pubmed.fetch_article.return_value = m.RecordFetch.served(pubmed_record)
+    a.pubmed.convert_ids.side_effect = AssertionError("the ID converter was asked")
+    a.crossref = MagicMock()
+    a.crossref.get_work.return_value = m.RecordFetch.served({"title": ["T"], "funder": []})
+    return m, a
+
+
+def test_a_pmc_id_given_as_the_pmid_leaves_funding_unassessed() -> None:
+    """PubMed was owed and never asked, so funding is never a bare "NO" (#356)."""
+    m, a = _offline_analyzer()
+    report = a.analyze(pmid="PMC7745181")
+    assert report.pmid is None and report.pmcid == "PMC7745181"
+    assert not m.funding_was_assessed(report)
+    summary = m.format_report_summary(report)
+    assert "Industry Funding: Not assessed" in summary
+    assert "Industry Funding: NO" not in summary
+    assert any("PubMed was not asked" in w for w in report.warnings)
+
+
+def test_a_refused_pmid_alone_leaves_funding_unassessed() -> None:
+    """The error report for a refused PMID does not read as "NO" either."""
+    m, a = _offline_analyzer()
+    report = a.analyze(pmid="PMID:33301246")
+    assert report.errors
+    assert not m.funding_was_assessed(report)
+    assert "Industry Funding: NO" not in m.format_report_summary(report)
+
+
+def test_a_refused_pmid_beside_a_doi_does_not_answer_from_crossref_alone() -> None:
+    """CrossRef read and PubMed owed but unasked: funding is not assessed."""
+    m, a = _offline_analyzer()
+    a.pubmed.convert_ids.side_effect = None
+    a.pubmed.convert_ids.return_value = {}
+    report = a.analyze(doi="10.1/x", pmid="PMID:33301246")
+    assert report.crossref_record_read
+    assert not m.funding_was_assessed(report)
+    assert "Industry Funding: Not assessed" in m.format_report_summary(report)
+    assert any("PubMed was not asked" in w for w in report.warnings)
+
+
+def test_a_doi_alone_still_answers_from_crossref() -> None:
+    """Control: no PMID was given, so PubMed was owed nothing and "NO" stands."""
+    m, a = _offline_analyzer()
+    a.pubmed.convert_ids.side_effect = None
+    a.pubmed.convert_ids.return_value = {}
+    report = a.analyze(doi="10.1/x")
+    assert m.funding_was_assessed(report)
+    assert "Industry Funding: NO" in m.format_report_summary(report)
+    assert not any("PubMed was not asked" in w for w in report.warnings)
+
+
+def test_a_real_pmid_whose_record_names_no_funder_still_answers_no() -> None:
+    """Control: PubMed served a record with no grants, CrossRef none: "NO"."""
+    m, a = _offline_analyzer(pubmed_record={"title": "T", "grants": []})
+    report = a.analyze(pmid="33301246")
+    assert report.pubmed_record_read
+    assert m.funding_was_assessed(report)
+    assert "Industry Funding: NO" in m.format_report_summary(report)
+    assert not any("PubMed was not asked" in w for w in report.warnings)
