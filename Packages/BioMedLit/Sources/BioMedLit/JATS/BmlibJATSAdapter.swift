@@ -37,30 +37,56 @@ import Foundation
 ///   fields, and the parse audit's warnings. Funding is WP-4.4's subject.
 public enum BmlibJATS {
     /// The bmlib crate version the linked binary was built from.
+    ///
+    /// This is bmlib-ffi's `CARGO_PKG_VERSION`, which stays the same across
+    /// many commits, so it cannot tell two builds of one version apart. The
+    /// commit that built the binary is recorded in
+    /// `Frameworks/BmlibFFI.pin.json`, not in the binary.
     public static var bmlibVersion: String { BmlibCore.bmlibVersion() }
 
+    /// The message a document that is not UTF-8 is refused with.
+    static let notUTF8Message =
+        "the document is not valid UTF-8; bmlib's reader takes UTF-8 text only, "
+        + "so a document in another declared encoding (which XMLParser would honour) "
+        + "cannot be read through it"
+
     /// Parse a JATS document with bmlib and map it into ``JATSArticle``.
+    ///
+    /// Only UTF-8 is read. The FFI takes a string, so the bytes are decoded
+    /// here, as UTF-8, before bmlib sees them; a document declaring another
+    /// encoding (`<?xml … encoding="ISO-8859-1"?>`, or UTF-16) is refused,
+    /// where `JATSXMLParser`'s `XMLParser` honours the declaration. Reading
+    /// such documents needs bytes across the FFI, which is bmlib work.
+    ///
+    /// A **panic** inside Rust is not a ``JATSParseError``: UniFFI raises it
+    /// as BmlibCore's own internal error (`UniffiInternalError.rustPanic`,
+    /// file-private to the generated bindings), so it reaches the caller as
+    /// a plain `Error` that only a catch-all `catch` sees.
     ///
     /// - Parameter data: The JATS XML bytes (UTF-8).
     /// - Returns: The mapped article.
     /// - Throws: ``JATSParseError/parsingFailed(_:)`` when the bytes are not
-    ///   UTF-8 or bmlib's reader refuses the document as malformed XML.
+    ///   UTF-8 (``notUTF8Message``), or with the XML reader's own reason when
+    ///   bmlib refuses the document as malformed XML.
     public static func parse(data: Data) throws -> JATSArticle {
         guard let xml = String(data: data, encoding: .utf8) else {
-            throw JATSParseError.parsingFailed("document is not UTF-8")
+            throw JATSParseError.parsingFailed(notUTF8Message)
         }
         do {
             return map(try parseJats(xml: xml))
-        } catch let error as JatsError {
-            throw JATSParseError.parsingFailed(error.localizedDescription)
+        } catch JatsError.Xml(let reason) {
+            throw JATSParseError.parsingFailed(reason)
         }
     }
 
     /// Map bmlib's article into BioMedLit's.
     ///
+    /// Internal so BioMedLit's public API exposes no BmlibCore type; the
+    /// tests reach it through `@testable import`.
+    ///
     /// - Parameter article: bmlib's parse.
     /// - Returns: The same article in BioMedLit's model.
-    public static func map(_ article: JatsArticle) -> JATSArticle {
+    static func map(_ article: JatsArticle) -> JATSArticle {
         JATSArticle(
             title: article.title,
             authors: article.authors.map(map),
@@ -98,15 +124,21 @@ public enum BmlibJATS {
         )
     }
 
-    /// A contributor. bmlib names a group (`<collab>`) or an undivided
-    /// `<string-name>` contributor too, where BioMedLit's builder drops any
-    /// contributor without a surname; such a contributor is carried whole in
-    /// `surname` so ``JATSAuthorInfo/fullName`` reads bmlib's `fullName`.
+    /// A contributor.
+    ///
+    /// BioMedLit's builder drops any contributor without a surname; bmlib
+    /// (like Python, the reference) keeps every contributor it can name: a
+    /// group (`<collab>`), an undivided `<string-name>`, or a person with
+    /// given names only (a mononym). The adapter keeps them, as bmlib does.
+    /// A contributor with a surname maps field for field. One without is
+    /// carried whole in `surname`, with `givenNames` empty, so
+    /// ``JATSAuthorInfo/fullName`` reads exactly bmlib's `fullName`, which is
+    /// trimmed (a given-names-only author would otherwise read `"Given "`).
     private static func map(_ author: JatsAuthor) -> JATSAuthorInfo {
-        let structured = !author.surname.isEmpty || !author.givenNames.isEmpty
+        let hasSurname = !author.surname.isEmpty
         return JATSAuthorInfo(
-            surname: structured ? author.surname : author.fullName,
-            givenNames: structured ? author.givenNames : "",
+            surname: hasSurname ? author.surname : author.fullName,
+            givenNames: hasSurname ? author.givenNames : "",
             affiliations: author.affiliations
         )
     }

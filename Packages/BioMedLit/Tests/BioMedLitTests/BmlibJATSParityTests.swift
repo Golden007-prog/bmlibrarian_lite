@@ -26,10 +26,23 @@ import XCTest
 /// differ — every difference classified in
 /// `doc/cross_platform/bmlib_sync/uniffi_spike.md` — are reported, not
 /// asserted, so the test states the divergence instead of hiding it. Set
-/// `BMLIB_PARITY_REPORT=/path/report.json` to write the per-article report.
+/// `BMLIB_PARITY_REPORT=/path/report.json` to write the per-article report,
+/// and `BMLIB_PARITY_TIMING=1` to time both parsers.
+///
+/// Body paragraphs are reported, never asserted: the 11 classified
+/// differences are not yet encoded as an allowlist, so this test cannot
+/// catch a new paragraph-level difference (see the spike record's
+/// "Before any Phase 4 switch").
 final class BmlibJATSParityTests: XCTestCase {
 
     private static let corpusPath = "doc/cross_platform/jats_corpus"
+
+    /// Set to `1` to time both parsers over the corpus (off by default, so
+    /// CI's `swift test` does not pay for it).
+    private static let timingVariable = "BMLIB_PARITY_TIMING"
+
+    /// Runs per article per parser when timing; the reported time is the mean.
+    private static let timingRepetitions = 20
 
     /// The same in-checkout walk `JATSRealCorpusTests` uses (stops at `.git`).
     private static let corpusDirectory: URL? = {
@@ -138,7 +151,57 @@ final class BmlibJATSParityTests: XCTestCase {
         let article = try BmlibJATS.parse(data: Data(xml.utf8))
         XCTAssertEqual(article.title, "T")
         XCTAssertEqual(article.bodySections.first?.paragraphs, ["P"])
-        XCTAssertThrowsError(try BmlibJATS.parse(data: Data("<article><body>".utf8)))
+    }
+
+    /// Malformed XML is a ``JATSParseError/parsingFailed(_:)`` carrying the
+    /// XML reader's reason, not the debug spelling of BmlibCore's error.
+    func testMalformedXMLThrowsParsingFailedWithTheReadersReason() {
+        XCTAssertThrowsError(try BmlibJATS.parse(data: Data("<article><body>".utf8))) { error in
+            guard case JATSParseError.parsingFailed(let reason) = error else {
+                return XCTFail("expected JATSParseError.parsingFailed, got \(type(of: error)): \(error)")
+            }
+            XCTAssertFalse(reason.isEmpty)
+            XCTAssertFalse(reason.contains("JatsError"), "debug text leaked: \(reason)")
+            XCTAssertFalse(reason.contains("Xml(reason:"), "debug text leaked: \(reason)")
+        }
+    }
+
+    /// A document in a declared non-UTF-8 encoding is refused with a message
+    /// that says why (bmlib reads UTF-8 only), not parsed as mojibake.
+    func testNonUTF8DocumentIsRefusedWithAClearMessage() {
+        var latin1 = Data(#"<?xml version="1.0" encoding="ISO-8859-1"?><article><front>"#.utf8)
+        latin1.append(contentsOf: [0x3C, 0x70, 0x3E, 0xE9, 0x3C, 0x2F, 0x70, 0x3E]) // <p>é</p> in Latin-1
+        latin1.append(Data("</front></article>".utf8))
+        XCTAssertThrowsError(try BmlibJATS.parse(data: latin1)) { error in
+            guard case JATSParseError.parsingFailed(let reason) = error else {
+                return XCTFail("expected JATSParseError.parsingFailed, got \(error)")
+            }
+            XCTAssertEqual(reason, BmlibJATS.notUTF8Message)
+        }
+    }
+
+    /// The adapter keeps every contributor bmlib names, and reads its full
+    /// name exactly: a mononym (given names only) without a trailing space, a
+    /// group author and an undivided `<string-name>` whole, and a structured
+    /// name field for field.
+    func testContributorsWithoutASurnameAreKeptWithBmlibsFullName() throws {
+        let xml = """
+            <article><front><article-meta><title-group><article-title>T</article-title></title-group>\
+            <contrib-group>\
+            <contrib contrib-type="author"><name><surname>Smith</surname><given-names>Jane</given-names></name></contrib>\
+            <contrib contrib-type="author"><name><given-names>Sukarno</given-names></name></contrib>\
+            <contrib contrib-type="author"><collab>The Writing Group</collab></contrib>\
+            <contrib contrib-type="author"><string-name>A. B. Undivided</string-name></contrib>\
+            </contrib-group></article-meta></front></article>
+            """
+        let authors = try BmlibJATS.parse(data: Data(xml.utf8)).authors
+        XCTAssertEqual(
+            authors.map(\.fullName),
+            ["Jane Smith", "Sukarno", "The Writing Group", "A. B. Undivided"]
+        )
+        XCTAssertEqual(authors.first?.surname, "Smith")
+        XCTAssertEqual(authors.first?.givenNames, "Jane")
+        XCTAssertEqual(authors.dropFirst().map(\.givenNames), ["", "", ""])
     }
 
     /// Acceptance criterion 2: the corpus through both parsers.
@@ -147,7 +210,11 @@ final class BmlibJATSParityTests: XCTestCase {
         XCTAssertEqual(files.count, 7, "the corpus has seven articles")
         var report: [[String: Any]] = []
         var swiftSeconds = 0.0, rustSeconds = 0.0
-        let repetitions = 20
+        // The timing loop parses every article 2 × timingRepetitions more
+        // times, so it runs only on request (BMLIB_PARITY_TIMING=1); otherwise
+        // each article is parsed once by each parser and no time is reported.
+        let timed = ProcessInfo.processInfo.environment[Self.timingVariable] == "1"
+        let repetitions = timed ? Self.timingRepetitions : 0
 
         for file in files {
             let name = file.deletingPathExtension().lastPathComponent
@@ -171,39 +238,45 @@ final class BmlibJATSParityTests: XCTestCase {
             let missing = Set(swiftReport.sectionPaths).subtracting(rustReport.sectionPaths)
             XCTAssertTrue(missing.isEmpty, "\(name): sections only Swift has: \(missing.sorted())")
 
-            var swiftTime = 0.0, rustTime = 0.0
-            for _ in 0..<repetitions {
-                var start = Date()
-                _ = try JATSXMLParser(data: data).parseToArticle()
-                swiftTime += Date().timeIntervalSince(start)
-                start = Date()
-                _ = try BmlibJATS.parse(data: data)
-                rustTime += Date().timeIntervalSince(start)
-            }
-            swiftSeconds += swiftTime / Double(repetitions)
-            rustSeconds += rustTime / Double(repetitions)
-
-            let line = String(
-                format: "%@: swift %.2f ms, rust %.2f ms; paragraphs swift %d rust %d; "
-                    + "sections swift %d rust %d; refs with citation swift %d rust %d",
-                name, swiftTime / Double(repetitions) * 1000, rustTime / Double(repetitions) * 1000,
-                swiftReport.paragraphCount, rustReport.paragraphCount,
-                swiftReport.sectionPaths.count, rustReport.sectionPaths.count,
-                swiftReport.referencesWithCitation, rustReport.referencesWithCitation
-            )
-            print("[bmlib-parity] \(line)")
-            report.append([
+            var entry: [String: Any] = [
                 "article": name,
-                "swiftMs": swiftTime / Double(repetitions) * 1000,
-                "rustMs": rustTime / Double(repetitions) * 1000,
                 "swift": try JSONSerialization.jsonObject(with: JSONEncoder().encode(swiftReport)),
                 "rust": try JSONSerialization.jsonObject(with: JSONEncoder().encode(rustReport)),
                 "swiftParagraphs": Self.paragraphs(swift.bodySections),
                 "rustParagraphs": Self.paragraphs(rust.bodySections),
-            ])
+            ]
+            var line = String(
+                format: "%@: paragraphs swift %d rust %d; "
+                    + "sections swift %d rust %d; refs with citation swift %d rust %d",
+                name,
+                swiftReport.paragraphCount, rustReport.paragraphCount,
+                swiftReport.sectionPaths.count, rustReport.sectionPaths.count,
+                swiftReport.referencesWithCitation, rustReport.referencesWithCitation
+            )
+            if timed {
+                var swiftTime = 0.0, rustTime = 0.0
+                for _ in 0..<repetitions {
+                    var start = Date()
+                    _ = try JATSXMLParser(data: data).parseToArticle()
+                    swiftTime += Date().timeIntervalSince(start)
+                    start = Date()
+                    _ = try BmlibJATS.parse(data: data)
+                    rustTime += Date().timeIntervalSince(start)
+                }
+                let swiftMean = swiftTime / Double(repetitions), rustMean = rustTime / Double(repetitions)
+                swiftSeconds += swiftMean
+                rustSeconds += rustMean
+                entry["swiftMs"] = swiftMean * 1000
+                entry["rustMs"] = rustMean * 1000
+                line += String(format: "; swift %.2f ms, rust %.2f ms", swiftMean * 1000, rustMean * 1000)
+            }
+            print("[bmlib-parity] \(line)")
+            report.append(entry)
         }
-        print(String(format: "[bmlib-parity] corpus total: swift %.2f ms, rust %.2f ms",
-                     swiftSeconds * 1000, rustSeconds * 1000))
+        if timed {
+            print(String(format: "[bmlib-parity] corpus total (mean of %d runs): swift %.2f ms, rust %.2f ms",
+                         repetitions, swiftSeconds * 1000, rustSeconds * 1000))
+        }
 
         if let path = ProcessInfo.processInfo.environment["BMLIB_PARITY_REPORT"] {
             let data = try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys])
