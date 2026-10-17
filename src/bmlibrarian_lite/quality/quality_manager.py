@@ -35,6 +35,10 @@ from typing import Optional, Callable
 from ..data_models import LiteDocument
 from ..config import LiteConfig
 from .data_models import (
+    CLASSIFIER_ASSESSMENT_TIER,
+    DETAILED_ASSESSMENT_TIER,
+    FAILED_ASSESSMENT_TIER,
+    METADATA_ASSESSMENT_TIER,
     QualityTier,
     QualityFilter,
     QualityAssessment,
@@ -131,7 +135,20 @@ class QualityManager:
             # Unless detailed assessment is explicitly requested
             if filter_settings.use_detailed_assessment:
                 logger.debug("Tier 3: Detailed assessment requested despite confident metadata")
-                return self.quality_agent.assess_quality(document)
+                detailed = self.quality_agent.assess_quality(document)
+                if detailed.is_failed:
+                    # A failed detailed assessment must not replace a
+                    # confident classification (bmlib#295). Tier 3 reports
+                    # a reply naming no recognised design as a failure, so
+                    # this also covers a null or "unknown" design.
+                    logger.warning(
+                        "Detailed assessment failed; kept the metadata "
+                        "classification (%s, confidence %.2f)",
+                        metadata_result.study_design.value,
+                        metadata_result.confidence,
+                    )
+                    return metadata_result
+                return detailed
             return metadata_result
 
         # Tier 2: LLM classification for unclassified/low-confidence
@@ -145,7 +162,17 @@ class QualityManager:
             # Tier 3: Detailed assessment if requested
             if filter_settings.use_detailed_assessment:
                 logger.debug("Tier 3: Detailed assessment requested")
-                return self.quality_agent.assess_quality(document)
+                detailed = self.quality_agent.assess_quality(document)
+                if not detailed.is_failed:
+                    return detailed
+                # The Tier 2 classification just paid for is the best answer
+                # there is; a failed Tier 3 must not throw it away
+                logger.warning(
+                    "Detailed assessment failed; kept the Tier 2 "
+                    "classification (%s, confidence %.2f)",
+                    classification.study_design.value,
+                    classification.confidence,
+                )
 
             # Convert classification to assessment with actual model name
             model_name = self.config.models.get_model_string(
@@ -244,7 +271,12 @@ class QualityManager:
 
         tier_counts: dict[str, int] = {}
         design_counts: dict[str, int] = {}
-        tier_sources = {1: 0, 2: 0, 3: 0, 0: 0}
+        tier_sources = {
+            METADATA_ASSESSMENT_TIER: 0,
+            CLASSIFIER_ASSESSMENT_TIER: 0,
+            DETAILED_ASSESSMENT_TIER: 0,
+            FAILED_ASSESSMENT_TIER: 0,
+        }
 
         for assessment in assessments:
             # Count by quality tier
@@ -267,10 +299,10 @@ class QualityManager:
             "by_quality_tier": tier_counts,
             "by_study_design": design_counts,
             "by_assessment_tier": {
-                "metadata": tier_sources[1],
-                "llm_classifier": tier_sources[2],
-                "llm_detailed": tier_sources[3],
-                "unclassified": tier_sources[0],
+                "metadata": tier_sources[METADATA_ASSESSMENT_TIER],
+                "llm_classifier": tier_sources[CLASSIFIER_ASSESSMENT_TIER],
+                "llm_detailed": tier_sources[DETAILED_ASSESSMENT_TIER],
+                "unclassified": tier_sources[FAILED_ASSESSMENT_TIER],
             },
             "avg_confidence": avg_confidence,
         }

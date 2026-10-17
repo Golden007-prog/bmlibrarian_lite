@@ -57,6 +57,7 @@ from bmlibrarian_lite.benchmarking.quality_statistics import (
     find_tier_disagreement_documents,
 )
 from bmlibrarian_lite.config import LiteConfig, TaskModelConfig
+from bmlibrarian_lite.constants import CONFIDENCE_PARSE_FAILURE_DEFAULT
 from bmlibrarian_lite.data_models import (
     DocumentSource,
     EvaluationErrorCode,
@@ -363,13 +364,124 @@ class TestAFailureIsRecordedAsOne:
         [
             {"study_design": "rct", "design_characteristics": "yes"},
             {"study_design": "rct", "bias_risk": ["low"]},
+            {"study_design": "rct", "design_characteristics": None},
+            {"study_design": "rct", "bias_risk": None},
         ],
-        ids=["characteristics-not-an-object", "bias-risk-not-an-object"],
+        ids=[
+            "characteristics-not-an-object",
+            "bias-risk-not-an-object",
+            "characteristics-null",
+            "bias-risk-null",
+        ],
     )
-    def test_a_malformed_field_is_that_document_s_failure(self, answer: dict[str, Any]) -> None:
-        """A named design with a malformed field is a failure, not a crash."""
+    def test_a_malformed_field_is_unstated_not_the_answer_s_failure(
+        self, answer: dict[str, Any]
+    ) -> None:
+        """A named design with a null or wrong-typed section is an answer.
+
+        It raised AttributeError and was scored INVALID_RESPONSE_FORMAT,
+        though the Tier 3 assessor reads the same reply as an RCT with the
+        section unstated (bmlib#295) -- and the prompt sanctions ``null``.
+        """
         evaluation = assess_once(ScriptedClient(json.dumps(answer)))
-        assert evaluation.failure is EvaluationErrorCode.INVALID_RESPONSE_FORMAT
+        assert evaluation.failure is None
+        assert evaluation.assessment is not None
+        assert evaluation.study_design is StudyDesign.RCT
+        assert evaluation.assessment.is_randomized is None
+
+    @pytest.mark.parametrize("read", ["classify", "assess"])
+    def test_a_boolean_confidence_is_no_measurement(self, read: str) -> None:
+        """``float(True)`` is 1.0, which the statistics then averaged."""
+        once = classify_once if read == "classify" else assess_once
+        evaluation = once(
+            ScriptedClient(json.dumps({"study_design": "rct", "confidence": True}))
+        )
+        assert evaluation.assessment is not None
+        assert evaluation.assessment.confidence == CONFIDENCE_PARSE_FAILURE_DEFAULT
+
+    @pytest.mark.parametrize("read", ["classify", "assess"])
+    def test_an_unstated_confidence_reads_as_the_tiers_read_it(self, read: str) -> None:
+        """As the quality tiers read it, not as an asserted 0.5."""
+        once = classify_once if read == "classify" else assess_once
+        evaluation = once(ScriptedClient(json.dumps({"study_design": "rct"})))
+        assert evaluation.assessment is not None
+        assert evaluation.assessment.confidence == CONFIDENCE_PARSE_FAILURE_DEFAULT
+
+    @pytest.mark.parametrize("read", ["classify", "assess"])
+    @pytest.mark.parametrize("size", [True, -5])
+    def test_a_boolean_or_negative_sample_size_is_no_count(
+        self, read: str, size: object
+    ) -> None:
+        """``int(True)`` recorded n=1; a negative count was kept."""
+        once = classify_once if read == "classify" else assess_once
+        evaluation = once(
+            ScriptedClient(json.dumps({"study_design": "rct", "sample_size": size}))
+        )
+        assert evaluation.assessment is not None
+        assert evaluation.assessment.sample_size is None
+
+    def test_a_string_flag_is_not_a_boolean(self) -> None:
+        """``"no"`` was stored raw, and passed a randomisation filter."""
+        classified = classify_once(
+            ScriptedClient(json.dumps({"study_design": "rct", "is_randomized": "no"}))
+        )
+        assessed = assess_once(
+            ScriptedClient(
+                json.dumps(
+                    {"study_design": "rct", "design_characteristics": {"randomized": "no"}}
+                )
+            )
+        )
+        assert classified.assessment is not None and assessed.assessment is not None
+        assert classified.assessment.is_randomized is None
+        assert assessed.assessment.is_randomized is None
+
+    def test_strengths_limitations_and_level_are_narrowed(self) -> None:
+        """Stored raw, a string became a list of strengths and 5 a level."""
+        evaluation = assess_once(
+            ScriptedClient(
+                json.dumps(
+                    {
+                        "study_design": "rct",
+                        "strengths": "large sample",
+                        "limitations": ["short", 3],
+                        "evidence_level": 5,
+                    }
+                )
+            )
+        )
+        assert evaluation.assessment is not None
+        assert evaluation.assessment.strengths == []
+        assert evaluation.assessment.limitations == ["short"]
+        assert evaluation.assessment.evidence_level is None
+
+    def test_a_well_formed_detailed_answer_is_kept(self) -> None:
+        """The control: real values pass through unchanged."""
+        evaluation = assess_once(
+            ScriptedClient(
+                json.dumps(
+                    {
+                        "study_design": "rct",
+                        "confidence": 0.8,
+                        "sample_size": 120,
+                        "evidence_level": "1b",
+                        "strengths": ["blinded"],
+                        "design_characteristics": {"randomized": True, "blinded": "double"},
+                    }
+                )
+            )
+        )
+        assessment = evaluation.assessment
+        assert assessment is not None
+        assert (assessment.confidence, assessment.sample_size) == (0.8, 120)
+        assert (assessment.evidence_level, assessment.strengths) == ("1b", ["blinded"])
+        assert (assessment.is_randomized, assessment.is_blinded) == (True, "double")
+
+    def test_an_integer_past_the_digit_limit_is_unreadable_json(self) -> None:
+        """json.loads raises a plain ValueError for it, not JSONDecodeError."""
+        answer = '{"study_design": "rct", "sample_size": 1' + "0" * 5000 + "}"
+        evaluation = classify_once(ScriptedClient(answer))
+        assert evaluation.failure is EvaluationErrorCode.JSON_PARSE_ERROR
 
     def test_an_infinite_sample_size_is_no_sample_size(self) -> None:
         """JSON reads 1e999 as infinity, which int() cannot take."""

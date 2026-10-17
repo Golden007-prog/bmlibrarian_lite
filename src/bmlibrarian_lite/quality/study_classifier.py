@@ -54,6 +54,7 @@ from ..constants import (
 from ..exceptions import JSONParseError, RetryExhaustedError
 from ..utils import llm_retry, classify_llm_exception
 from .data_models import StudyDesign, StudyClassification
+from .json_fields import as_bool, as_float, as_int, as_text, text_or
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +120,31 @@ STUDY_DESIGN_MAPPING: dict[str, StudyDesign] = {
     "other": StudyDesign.OTHER,
     "unknown": StudyDesign.UNKNOWN,
 }
+
+
+def stated_study_design(value: object, field: str | None = None) -> StudyDesign | None:
+    """The study design a model's answer names, if it names one.
+
+    Case and surrounding space are folded. ``"unknown"`` names no design: no
+    prompt offers it (the choices end at ``"other"``, the answer for a design
+    that fits none of them), so it is a model off the schema, not a verdict --
+    the benchmark already read it so (#314).
+
+    Args:
+        value: The decoded ``study_design`` value.
+        field: Field name for the DEBUG line when the value is no string.
+
+    Returns:
+        The design, or None when *value* is absent, ``null``, not a string,
+        not in STUDY_DESIGN_MAPPING, or ``"unknown"``.
+    """
+    text = as_text(value, field)
+    if text is None:
+        return None
+    design = STUDY_DESIGN_MAPPING.get(text.lower().strip())
+    if design is None or design is StudyDesign.UNKNOWN:
+        return None
+    return design
 
 
 class LiteStudyClassifier(LiteBaseAgent):
@@ -415,82 +441,87 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
         Returns:
             Parsed StudyClassification
         """
-        try:
-            # Security: Validate response size before parsing
-            if len(response.encode("utf-8")) > JSON_MAX_RESPONSE_SIZE_BYTES:
-                logger.error(
-                    f"Document {doc_id}: Response size "
-                    f"({len(response.encode('utf-8'))} bytes) exceeds "
-                    f"maximum ({JSON_MAX_RESPONSE_SIZE_BYTES} bytes)"
-                )
-                warnings.warn(
-                    f"Document {doc_id}: LLM response too large, classification failed",
-                    ClassificationParseWarning,
-                    stacklevel=2,
-                )
-                return StudyClassification(
-                    study_design=StudyDesign.UNKNOWN,
-                    confidence=0.0,
-                    raw_response="Response size exceeded maximum allowed",
-                )
-
-            # Clean response (remove markdown code blocks if present)
-            cleaned = self._clean_json_response(response)
-
-            # Security: Additional validation after cleaning
-            if not cleaned or not cleaned.strip():
-                logger.warning(
-                    f"Document {doc_id}: Empty response after cleaning. "
-                    f"Raw response was: {repr(response[:500]) if response else 'None/empty'}"
-                )
-                return StudyClassification(
-                    study_design=StudyDesign.UNKNOWN,
-                    confidence=0.0,
-                    raw_response=response,
-                )
-
-            data = json.loads(cleaned)
-
-            # Validate data is a dictionary
-            if not isinstance(data, dict):
-                logger.warning(
-                    f"Document {doc_id}: Response is not a JSON object: {type(data)}"
-                )
-                return StudyClassification(
-                    study_design=StudyDesign.UNKNOWN,
-                    confidence=0.0,
-                    raw_response=response,
-                )
-
-            # Parse study design
-            design_str = data.get("study_design", "unknown").lower().strip()
-            study_design = self._parse_study_design(design_str)
-
-            # Parse blinding - validate against known values
-            is_blinded = self._parse_blinding(data.get("is_blinded"), doc_id)
-
-            # Parse sample size - convert to int safely
-            sample_size = self._parse_sample_size(data.get("sample_size"), doc_id)
-
-            # Parse confidence - ensure valid range, with proper fallback handling
-            confidence = self._parse_confidence(data.get("confidence"), doc_id)
-
+        # Security: Validate response size before parsing
+        if len(response.encode("utf-8")) > JSON_MAX_RESPONSE_SIZE_BYTES:
+            logger.error(
+                f"Document {doc_id}: Response size "
+                f"({len(response.encode('utf-8'))} bytes) exceeds "
+                f"maximum ({JSON_MAX_RESPONSE_SIZE_BYTES} bytes)"
+            )
+            warnings.warn(
+                f"Document {doc_id}: LLM response too large, classification failed",
+                ClassificationParseWarning,
+                stacklevel=2,
+            )
             return StudyClassification(
-                study_design=study_design,
-                is_randomized=data.get("is_randomized"),
-                is_blinded=is_blinded,
-                sample_size=sample_size,
-                confidence=confidence,
-                raw_response=response,
+                study_design=StudyDesign.UNKNOWN,
+                confidence=0.0,
+                raw_response="Response size exceeded maximum allowed",
             )
 
-        except json.JSONDecodeError as e:
-            logger.warning(f"Document {doc_id}: Failed to parse JSON response: {e}")
+        # Clean response (remove markdown code blocks if present)
+        cleaned = self._clean_json_response(response)
+
+        # Security: Additional validation after cleaning
+        if not cleaned or not cleaned.strip():
+            logger.warning(
+                f"Document {doc_id}: Empty response after cleaning. "
+                f"Raw response was: {repr(response[:500]) if response else 'None/empty'}"
+            )
             return StudyClassification(
                 study_design=StudyDesign.UNKNOWN,
                 confidence=0.0,
                 raw_response=response,
             )
+
+        try:
+            data = json.loads(cleaned)
+        except ValueError as e:
+            # A JSONDecodeError, or the plain ValueError json.loads raises
+            # for an integer longer than sys.get_int_max_str_digits()
+            logger.warning(
+                f"Document {doc_id}: Failed to parse JSON response: {e}"
+            )
+            return StudyClassification(
+                study_design=StudyDesign.UNKNOWN,
+                confidence=0.0,
+                raw_response=response,
+            )
+
+        # Validate data is a dictionary
+        if not isinstance(data, dict):
+            logger.warning(
+                f"Document {doc_id}: Response is not a JSON object: {type(data)}"
+            )
+            return StudyClassification(
+                study_design=StudyDesign.UNKNOWN,
+                confidence=0.0,
+                raw_response=response,
+            )
+
+        # Parse study design
+        design_str = text_or(
+            data.get("study_design"), "unknown", "study_design"
+        ).lower().strip()
+        study_design = self._parse_study_design(design_str)
+
+        # Parse blinding - validate against known values
+        is_blinded = self._parse_blinding(data.get("is_blinded"), doc_id)
+
+        # Parse sample size - convert to int safely
+        sample_size = self._parse_sample_size(data.get("sample_size"), doc_id)
+
+        # Parse confidence - ensure valid range, with proper fallback handling
+        confidence = self._parse_confidence(data.get("confidence"), doc_id)
+
+        return StudyClassification(
+            study_design=study_design,
+            is_randomized=as_bool(data.get("is_randomized"), "is_randomized"),
+            is_blinded=is_blinded,
+            sample_size=sample_size,
+            confidence=confidence,
+            raw_response=response,
+        )
 
     def _clean_json_response(self, response: str) -> str:
         """
@@ -558,7 +589,7 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
         return STUDY_DESIGN_MAPPING.get(design_str, StudyDesign.UNKNOWN)
 
     def _parse_blinding(
-        self, value: Optional[str], doc_id: str | int = "unknown"
+        self, value: object, doc_id: str | int = "unknown"
     ) -> Optional[str]:
         """
         Parse and validate blinding value.
@@ -570,9 +601,10 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
         Returns:
             Validated blinding string or None
         """
-        if value is None:
+        text = as_text(value, "is_blinded")
+        if text is None:
             return None
-        normalized = str(value).lower().strip()
+        normalized = text.lower().strip()
         if normalized in VALID_BLINDING_VALUES:
             return normalized
         # Invalid value - log it but don't warn (expected for observational studies)
@@ -583,7 +615,7 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
         return None
 
     def _parse_sample_size(
-        self, value: Optional[int | str], doc_id: str | int = "unknown"
+        self, value: object, doc_id: str | int = "unknown"
     ) -> Optional[int]:
         """
         Parse sample size to integer.
@@ -597,22 +629,19 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
         """
         if value is None:
             return None
-        try:
-            result = int(value)
-            if result < 0:
-                logger.warning(
-                    f"Document {doc_id}: Negative sample size {result}, treating as None"
-                )
-                return None
-            return result
-        except (ValueError, TypeError) as e:
-            logger.debug(
-                f"Document {doc_id}: Could not parse sample size '{value}': {e}"
+        result = as_int(value, "sample_size")
+        if result is None:
+            logger.debug(f"Document {doc_id}: Could not read sample size '{value}'")
+            return None
+        if result < 0:
+            logger.warning(
+                f"Document {doc_id}: Negative sample size {result}, treating as None"
             )
             return None
+        return result
 
     def _parse_confidence(
-        self, value: Optional[float | str], doc_id: str | int = "unknown"
+        self, value: object, doc_id: str | int = "unknown"
     ) -> float:
         """
         Parse and clamp confidence value.
@@ -639,24 +668,24 @@ Note: This is part {i + 1} of {len(chunks)} sections from a long abstract."""
             )
             return CONFIDENCE_PARSE_FAILURE_DEFAULT
 
-        try:
-            conf = float(value)
+        conf = as_float(value, "confidence")
+        if conf is not None:
             return max(0.0, min(1.0, conf))
-        except (ValueError, TypeError) as e:
-            # IMPORTANT: Log and warn - don't silently return arbitrary values
-            logger.warning(
-                f"Document {doc_id}: Failed to parse confidence value '{value}': {e}. "
-                f"Using fallback value {CONFIDENCE_PARSE_FAILURE_DEFAULT} to indicate "
-                "uncertainty."
-            )
-            warnings.warn(
-                f"Document {doc_id}: Could not parse LLM confidence value. "
-                "Classification confidence set to 0.0 to indicate uncertainty. "
-                "Review the raw response for details.",
-                ClassificationParseWarning,
-                stacklevel=3,
-            )
-            return CONFIDENCE_PARSE_FAILURE_DEFAULT
+        # IMPORTANT: Log and warn - don't silently return arbitrary values
+        # (a bool, NaN and an infinity are refused here, bmlib#320)
+        logger.warning(
+            f"Document {doc_id}: Failed to parse confidence value '{value}'. "
+            f"Using fallback value {CONFIDENCE_PARSE_FAILURE_DEFAULT} to indicate "
+            "uncertainty."
+        )
+        warnings.warn(
+            f"Document {doc_id}: Could not parse LLM confidence value. "
+            "Classification confidence set to 0.0 to indicate uncertainty. "
+            "Review the raw response for details.",
+            ClassificationParseWarning,
+            stacklevel=3,
+        )
+        return CONFIDENCE_PARSE_FAILURE_DEFAULT
 
     def classify_batch(
         self,
