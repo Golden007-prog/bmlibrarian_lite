@@ -91,8 +91,8 @@ a twelfth difference:
 | 4 | Funder names lose the glued registry URL: Swift `http://dx.doi.org/10.13039/100000057National Institute…` becomes `National Institute…` | 8754430 (2 paras) | **(a)** | bmlib CHANGELOG *award-group* entry: "a funder's id is one only at `award-group > funding-source > institution-wrap`" (bmlib #284). WP-4.1 |
 | 5 | An element-only citation writes no `citation` string. Swift stores its leftover text, run together (`URLhttps://www.who.int/…`, `557`, `Fundamentals of Protein Structure and FunctionLondonGarland Science`), as a non-deposit citation | 12661592 (10 refs), 12785261 (13), 8754430 (11) | **(a)** | bmlib #314 (element-only text is "its parts run together") and #390. Harmless after mapping, because `formattedCitation` prints the structured parts first; the adapter sets `citationIsDeposit = !citation.isEmpty` |
 | 6 | `<supplementary-material>` legends are filed as section prose ("Supporting information"). Swift drops them and counts the drop | 12755737 (12 paras), 13294358 (3) | **(b)** deliberate divergence, neither right | Swift: lite #144 (`unmodelledCaptionDrops`, "characterised, known wrong"). bmlib: its own open #137 ("legend paragraphs are filed as article prose without their titles") |
-| 7 | Europe PMC's injected `<sec sec-type="associated-data">` repeats the supplementary legends, so bmlib prints them **twice** | 12755737 (+12), 13294358 (+3) | **new bmlib gap** (Swift avoids it only by dropping all legends) | bmlib suppresses the injected `<sub-article article-type="associated-data">` (its #119), but not this `<sec>` spelling. **To lodge on bmlib** |
-| 8 | A title-only abstract section (`<sec><title> Abstract</title></sec>`, BMJ) is kept by bmlib and dropped by Swift | 13295835 | **(b)** Swift ahead | bmlib's flush rule mirrors Python's (`jats_reader.rs`, `"abstract"` close). Excluded from the asserted comparison and named in the test. **To lodge on bmlib** |
+| 7 | Europe PMC's injected `<sec sec-type="associated-data">` repeats the supplementary legends, so bmlib prints them **twice** | 12755737 (+12), 13294358 (+3) | **new bmlib gap** (Swift avoids it only by dropping all legends) | bmlib suppresses the injected `<sub-article article-type="associated-data">` (its #119), but not this `<sec>` spelling. Lodged as bmlib#497 |
+| 8 | A title-only abstract section (`<sec><title> Abstract</title></sec>`, BMJ) is kept by bmlib and dropped by Swift | 13295835 | **(b)** Swift ahead | bmlib's flush rule mirrors Python's (`jats_reader.rs`, `"abstract"` close). Excluded from the asserted comparison and named in the test. Lodged as bmlib#498 |
 | 9 | 50 `<array>` cells reach no table. **Both parsers lose them**; only bmlib says so (a parse warning) | 12785261 | **(b)** bmlib ahead on reporting | Swift's `testParsingReportsNoContentLoss` passes on this article, so the loss is silent there |
 | 10 | Table bodies: bmlib carries HTML (`html_content`), BioMedLit markdown. The adapter leaves `markdownContent` empty | all 16 tables | **(c)** adapter | The `markdownDigest`, `markdownRowCount` and `markdownColumnCount` digest fields were therefore not compared |
 | 11 | `elocationId` (5 of 7 articles), funding statements and awards (3 of 7), `hasBody`, and the parse audit have no slot in BioMedLit's `JATSArticle` | — | **(c)** adapter | WP-4.3 (#265/#272) and WP-4.4 add the slots |
@@ -338,8 +338,8 @@ under criterion 4 (Swift).
    parse-warnings banner, the PMC ID mismatch warning, and the title-only abstract
    section. Each one left in the adapter is a small per-platform port again.
 3. **Two new bmlib gaps surfaced:** Europe PMC's injected `associated-data` `<sec>`
-   (duplicate legends) and the title-only abstract section. Both were lodged here and not
-   yet filed on bmlib.
+   (duplicate legends) and the title-only abstract section. Both are lodged on bmlib:
+   bmlib#497 and bmlib#498.
 4. **Digest churn.** Adopting Rust moves `JATSRealCorpusTests`' digests (body sections,
    citation counts). Read each change against the table above; it is a review, not a
    regeneration.
