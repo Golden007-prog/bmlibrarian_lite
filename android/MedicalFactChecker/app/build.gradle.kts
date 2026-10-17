@@ -1,6 +1,8 @@
 // app/build.gradle.kts
 // MedicalFactChecker Android App - Module Build Configuration
 
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,19 +13,32 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// One value each, read by both the Android config and cargo-ndk below: the
+// APK's ABIs must be exactly the ones the Rust library is built for, and
+// cargo-ndk's API level is the app's minimum SDK. 64-bit only (maintainer
+// decision 2026-10-17, doc/cross_platform/bmlib_sync/uniffi_spike.md).
+val bmlibAbis = listOf("arm64-v8a", "x86_64")
+val appMinSdk = 26
+
 android {
     namespace = "com.bmlibrarian.factchecker"
     compileSdk = 35
 
     defaultConfig {
         applicationId = "com.bmlibrarian.factchecker"
-        minSdk = 26
+        minSdk = appMinSdk
         targetSdk = 35
         versionCode = 3
         versionName = "1.6.0"
 
         // Custom test runner for Hilt dependency injection in instrumented tests
         testInstrumentationRunner = "com.bmlibrarian.factchecker.HiltTestRunner"
+
+        // 64-bit only: the ABIs cargo-ndk builds bmlib's Rust library for.
+        // A 32-bit APK would ship without the library and crash at its first call.
+        ndk {
+            abiFilters += bmlibAbis
+        }
 
         vectorDrawables {
             useSupportLibrary = true
@@ -119,6 +134,186 @@ tasks.withType<Test>().configureEach {
     }
 }
 
+// SPIKE (WP-2, doc/cross_platform/bmlib_sync/uniffi_spike.md): bmlib's Rust
+// crate through UniFFI. The .so files are built by cargo-ndk from a bmlib
+// checkout named by `bmlib.dir` in local.properties (relative to this project's
+// root, where local.properties lives) or BMLIB_DIR in the environment (CI: an
+// actions/checkout of hherb/bmlib at the pinned commit).
+//
+// - The checkout must be at the commit the committed Kotlin bindings
+//   (org/bmlib/ffi/bmlib_ffi.kt) were generated from: BmlibFFI.pin.json's
+//   bmlibCommit, the one pin both apps share. checkBmlibPin refuses any other
+//   commit, or uncommitted changes under rust/, before cargo runs, because a
+//   library from another commit fails UniFFI's checksum check at its first
+//   call. -Pbmlib.allowUnpinnedCommit=true builds anyway, with a warning.
+// - With no checkout configured, nothing here runs: a debug build carries no
+//   library and BmlibJatsFfiTest skips itself. A release APK or bundle is
+//   refused instead (checkBmlibForRelease), so no release ships without it.
+val bmlibDir: File? = run {
+    val props = Properties()
+    val local = rootProject.file("local.properties")
+    if (local.isFile) local.inputStream().use { props.load(it) }
+    (props.getProperty("bmlib.dir") ?: System.getenv("BMLIB_DIR"))
+        ?.takeIf { it.isNotBlank() }
+        ?.let { rootProject.file(it) }
+}
+val bmlibJniLibs = layout.buildDirectory.dir("generated/bmlib/jniLibs")
+val bmlibHostLib = layout.buildDirectory.dir("generated/bmlib/host")
+val bmlibPinFile: File = rootProject.file("../../Packages/BioMedLit/Frameworks/BmlibFFI.pin.json")
+val bmlibAllowUnpinnedProperty = "bmlib.allowUnpinnedCommit"
+val bmlibAllowUnpinned: Boolean =
+    (findProperty(bmlibAllowUnpinnedProperty) as String?)?.toBoolean() == true
+val bmlibLibraryName = "libbmlib_ffi.so"
+
+/** The pin's `bmlibCommit` (a full 40-hex SHA), or null when the pin has none. */
+fun bmlibPinnedCommit(pin: File): String? {
+    if (!pin.isFile) return null
+    return Regex("\"bmlibCommit\"\\s*:\\s*\"([0-9a-f]{40})\"")
+        .find(pin.readText())
+        ?.groupValues
+        ?.get(1)
+}
+
+/** The trimmed output of `git -C <dir> <args>`, or null when git fails. */
+fun gitOutput(dir: File, vararg args: String): String? {
+    val process = ProcessBuilder(listOf("git", "-C", dir.absolutePath) + args)
+        .redirectErrorStream(true)
+        .start()
+    val output = process.inputStream.bufferedReader().readText().trim()
+    return if (process.waitFor() == 0) output else null
+}
+
+// Every release APK or bundle must carry the library for every ABI it ships.
+// Unit tests and debug builds are not hooked, so they keep working (and the
+// FFI test keeps skipping) without a bmlib checkout.
+val checkBmlibForRelease = tasks.register("checkBmlibForRelease") {
+    group = "bmlib"
+    description = "Fail a release build that would ship without $bmlibLibraryName"
+    val configured = bmlibDir != null
+    val abis = bmlibAbis
+    doLast {
+        if (!configured) {
+            throw GradleException(
+                "A release build needs bmlib's Rust library ($bmlibLibraryName), and no bmlib " +
+                    "checkout is configured. Set bmlib.dir in local.properties, or BMLIB_DIR, to a " +
+                    "checkout at BmlibFFI.pin.json's bmlibCommit " +
+                    "(doc/cross_platform/bmlib_sync/uniffi_spike.md)."
+            )
+        }
+        val jniLibs = bmlibJniLibs.get().asFile
+        val missing = abis.filterNot { File(jniLibs, "$it/$bmlibLibraryName").isFile }
+        if (missing.isNotEmpty()) {
+            throw GradleException("cargoNdkBmlib produced no $bmlibLibraryName for $missing under $jniLibs")
+        }
+    }
+}
+val bmlibReleasePackagingTasks =
+    setOf("assembleRelease", "bundleRelease", "packageRelease", "packageReleaseBundle")
+tasks.matching { it.name in bmlibReleasePackagingTasks }.configureEach {
+    dependsOn(checkBmlibForRelease)
+}
+
+if (bmlibDir != null) {
+    val rustWorkspace = File(bmlibDir, "rust")
+    val rustInputs = fileTree(rustWorkspace) {
+        include("bmlib/src/**", "bmlib-ffi/src/**", "**/Cargo.toml", "Cargo.lock", "bmlib-ffi/uniffi.toml")
+    }
+    // Where the host build lands: CARGO_TARGET_DIR when set (relative to the
+    // Rust workspace, where cargo runs), else rust/target. It is passed to
+    // cargo as --target-dir too, so a .cargo/config.toml target-dir cannot
+    // send cargo and the copy below to different places.
+    val cargoTargetDir: File = System.getenv("CARGO_TARGET_DIR")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { File(it).let { dir -> if (dir.isAbsolute) dir else File(rustWorkspace, it) } }
+        ?: File(rustWorkspace, "target")
+
+    val checkBmlibPin = tasks.register("checkBmlibPin") {
+        group = "bmlib"
+        description = "Refuse a bmlib checkout at another commit than BmlibFFI.pin.json's"
+        val checkout = bmlibDir
+        val pin = bmlibPinFile
+        val allowUnpinned = bmlibAllowUnpinned
+        doLast {
+            val pinned = bmlibPinnedCommit(pin)
+            val head = gitOutput(checkout, "rev-parse", "HEAD")
+            val changes = gitOutput(checkout, "status", "--porcelain", "--", "rust")
+            val problem = when {
+                pinned == null -> "no bmlibCommit could be read from $pin"
+                head == null -> "$checkout is not a git checkout, so its commit cannot be checked"
+                head != pinned -> "$checkout is at $head, but the committed Kotlin bindings were " +
+                    "generated from $pinned (BmlibFFI.pin.json)"
+                !changes.isNullOrEmpty() -> "$checkout has uncommitted changes under rust/:\n$changes"
+                else -> null
+            }
+            if (problem != null) {
+                if (!allowUnpinned) {
+                    throw GradleException(
+                        "bmlib's library would not match the committed bindings: $problem. " +
+                            "Check out the pinned commit, or pass -P$bmlibAllowUnpinnedProperty=true " +
+                            "to build it anyway (a mismatch fails UniFFI's checksum check at the first call)."
+                    )
+                }
+                logger.warn(
+                    "WARNING: -P$bmlibAllowUnpinnedProperty=true: building bmlib's library " +
+                        "UNPINNED, so it may not match the committed bindings: $problem"
+                )
+            }
+        }
+    }
+
+    val cargoNdkBmlib = tasks.register<Exec>("cargoNdkBmlib") {
+        group = "bmlib"
+        description = "Build $bmlibLibraryName for ${bmlibAbis.joinToString()} with cargo-ndk"
+        dependsOn(checkBmlibPin)
+        workingDir = rustWorkspace
+        inputs.files(rustInputs)
+        outputs.dir(bmlibJniLibs)
+        commandLine(
+            listOf("cargo", "ndk") +
+                bmlibAbis.flatMap { listOf("-t", it) } +
+                listOf(
+                    "-p", appMinSdk.toString(),
+                    "-o", bmlibJniLibs.get().asFile.absolutePath,
+                    "build", "-p", "bmlib-ffi", "--profile", "release-ffi"
+                )
+        )
+    }
+
+    // The host build JVM unit tests load through JNA.
+    val cargoHostBmlib = tasks.register<Exec>("cargoHostBmlib") {
+        group = "bmlib"
+        description = "Build the host libbmlib_ffi for JVM unit tests"
+        dependsOn(checkBmlibPin)
+        workingDir = rustWorkspace
+        inputs.files(rustInputs)
+        outputs.dir(bmlibHostLib)
+        commandLine(
+            "cargo", "build", "-p", "bmlib-ffi", "--profile", "release-ffi",
+            "--target-dir", cargoTargetDir.absolutePath
+        )
+        doLast {
+            val built = File(cargoTargetDir, "release-ffi")
+            copy {
+                from(built) {
+                    include("libbmlib_ffi.dylib", bmlibLibraryName, "bmlib_ffi.dll")
+                }
+                into(bmlibHostLib)
+            }
+            if (bmlibHostLib.get().asFile.listFiles().isNullOrEmpty()) {
+                throw GradleException("cargo built no host libbmlib_ffi under $built")
+            }
+        }
+    }
+
+    android.sourceSets.getByName("main").jniLibs.srcDir(bmlibJniLibs)
+    tasks.named("preBuild") { dependsOn(cargoNdkBmlib) }
+    checkBmlibForRelease.configure { dependsOn(cargoNdkBmlib) }
+    tasks.withType<Test>().configureEach {
+        dependsOn(cargoHostBmlib)
+        systemProperty("jna.library.path", bmlibHostLib.get().asFile.absolutePath)
+    }
+}
+
 dependencies {
     // Core Android
     implementation("androidx.core:core-ktx:1.12.0")
@@ -185,6 +380,15 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
     // Optional: NNAPI delegate for hardware acceleration on supported devices
     implementation("org.tensorflow:tensorflow-lite-gpu-delegate-plugin:0.4.4")
+
+    // SPIKE (WP-2): UniFFI's Kotlin bindings call the Rust library through JNA.
+    // The AAR carries JNA's dispatch library for each Android ABI; JVM unit
+    // tests need the JAR, which carries the desktop ones (darwin-aarch64 etc.).
+    // 5.19.1, not 5.14.0: 5.14.0's x86_64 libjnidispatch.so has 4 KB-aligned
+    // LOAD segments; 5.19.1's are 16 KB-aligned on both shipped ABIs, as
+    // Android 15+ devices with 16 KB pages require.
+    implementation("net.java.dev.jna:jna:5.19.1@aar")
+    testImplementation("net.java.dev.jna:jna:5.19.1")
 
     // Testing
     testImplementation("junit:junit:4.13.2")
