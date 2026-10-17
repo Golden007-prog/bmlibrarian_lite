@@ -294,6 +294,12 @@ class TestAFailureIsRecordedAsOne:
 
         assert scored.score == EvaluationErrorCode.JSON_PARSE_ERROR.value
 
+    def test_a_superscript_digit_is_a_parse_failure_not_a_crash(self) -> None:
+        """``"²".isdigit()`` is true and ``int("²")`` raised, outside the try."""
+        scored = score_once(ScriptedClient('{"score": "²"}'))
+
+        assert scored.score == EvaluationErrorCode.JSON_PARSE_ERROR.value
+
     def test_an_unreadable_answer_still_costs_what_it_cost(self) -> None:
         """The call was made and billed; only its answer was unusable."""
         scored = score_once(ScriptedClient("I cannot help with that."))

@@ -90,10 +90,9 @@ val requestFailureParityFixtures: File =
 val fulltextParityFixtures: File =
     rootProject.file("../../doc/cross_platform/fulltext_parity")
 
-// The PubMed efetch fixture (lite #404), one file the Python, Swift and Android
-// suites all read, declared for the same reason.
-val pubmedEfetchFixture: File =
-    rootProject.file("../../tests/fixtures/pubmed_efetch_33301246.xml")
+// The relevance-score contract, read the same way and for the same reason.
+val llmParityFixtures: File =
+    rootProject.file("../../doc/cross_platform/llm_parity")
 
 tasks.withType<Test>().configureEach {
     // Absent in a partial checkout of android/ alone; the test itself fails with
@@ -113,10 +112,10 @@ tasks.withType<Test>().configureEach {
             .withPathSensitivity(PathSensitivity.RELATIVE)
             .withPropertyName("fulltextParityFixtures")
     }
-    if (pubmedEfetchFixture.isFile) {
-        inputs.file(pubmedEfetchFixture)
+    if (llmParityFixtures.isDirectory) {
+        inputs.dir(llmParityFixtures)
             .withPathSensitivity(PathSensitivity.RELATIVE)
-            .withPropertyName("pubmedEfetchFixture")
+            .withPropertyName("llmParityFixtures")
     }
 }
 
