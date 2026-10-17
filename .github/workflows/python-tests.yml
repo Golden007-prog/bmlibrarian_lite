@@ -77,28 +77,45 @@ jobs:
         # instead of a silently-ignored no-op.
         run: pytest tests/ -m "not integration" --strict-markers
 
-      # The ledger check runs after the tests, and whether or not they passed,
-      # so a ledger miss never hides the test results and a test failure never
-      # hides a ledger miss.
+  bmlib-ledger:
+    name: Every bmlib change has a ledger entry
+    # Its own job, so a ledger miss is labelled as itself and never hides, or
+    # is hidden by, the test results. The checker needs only the standard
+    # library and bmlib's CHANGELOG.md. This job checks the pinned commit;
+    # bmlib-drift.yml checks bmlib's main weekly.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: Read the ledger's bmlib commit
-        # The ledger holds the full SHA (tests/test_bmlib_ledger.py pins its
-        # shape), which actions/checkout requires of a commit ref, so bumping
-        # it there is how a sync starts and nothing resolves it.
-        if: ${{ !cancelled() }}
         id: bmlib_commit
+        # --print-commit validates the ledger first and exits 2 on a malformed
+        # one. The assignment carries the script's exit status, which bash's
+        # -e turns into a failed step, and an empty SHA fails it too: an
+        # empty ref would check out bmlib's default branch instead.
         run: |
-          echo "sha=$(python -c "import json; print(json.load(open('doc/cross_platform/bmlib_sync/ledger.json'))['bmlib_commit'])")" >> "$GITHUB_OUTPUT"
+          sha="$(python scripts/check_bmlib_ledger.py --print-commit)"
+          test -n "$sha"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
-        # hherb/bmlib is public, so no token beyond the job's own is needed.
-        if: ${{ !cancelled() }}
+        # hherb/bmlib is public, so no token is needed.
         with:
           repository: hherb/bmlib
           ref: ${{ steps.bmlib_commit.outputs.sha }}
           path: bmlib-checkout
+          persist-credentials: false
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
 
-      - name: Every bmlib change has a ledger entry
-        if: ${{ !cancelled() }}
+      - name: Check the ledger against the pinned commit
         run: python scripts/check_bmlib_ledger.py --bmlib bmlib-checkout
 
   lint-delta:

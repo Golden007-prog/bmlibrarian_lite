@@ -1,0 +1,62 @@
+name: bmlib drift
+
+# The Python workflow checks the ledger against the bmlib commit it is pinned
+# to (ledger.json's bmlib_commit). That run can only fail if someone edits the
+# ledger, so on its own it never sees bmlib move. This workflow checks the
+# ledger against bmlib's main once a week and fails, naming every change not
+# yet triaged, until the pin is bumped and the new entries are added (see
+# doc/cross_platform/bmlib_sync/README.md). It runs on a schedule and by hand
+# only, never on a pull request, so bmlib moving never blocks a merge here.
+on:
+  schedule:
+    # Mondays 06:17 UTC; off the hour, when GitHub's scheduler is least busy.
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Every change on bmlib's main has a ledger entry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - uses: actions/checkout@v4
+        # hherb/bmlib is public, so no token is needed.
+        with:
+          repository: hherb/bmlib
+          ref: main
+          path: bmlib-checkout
+          persist-credentials: false
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+
+      - name: Check the ledger against bmlib's main
+        # The report also goes to the run's summary page, so the missing ids
+        # can be read there without opening the log.
+        run: |
+          head="$(git -C bmlib-checkout rev-parse HEAD)"
+          pinned="$(python scripts/check_bmlib_ledger.py --print-commit)"
+          status=0
+          python scripts/check_bmlib_ledger.py --bmlib bmlib-checkout > report.txt 2>&1 || status=$?
+          cat report.txt
+          {
+            echo "### bmlib main \`$head\`, ledger pinned at \`$pinned\`"
+            echo
+            if [ "$status" -eq 1 ]; then
+              echo "bmlib has changes the ledger hasn't triaged. Bump \`bmlib_commit\` to \`$head\` and add the entries below."
+            fi
+            echo '```'
+            cat report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"

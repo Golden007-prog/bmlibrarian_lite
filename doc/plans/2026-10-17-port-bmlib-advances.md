@@ -43,14 +43,19 @@
 - Create: `doc/cross_platform/bmlib_sync/README.md`
 - Create: `scripts/check_bmlib_ledger.py`
 - Create: `tests/test_bmlib_ledger.py`
-- Modify: `.github/workflows/` (the Python CI workflow: one step)
+- Modify: `.github/workflows/python-tests.yml` (a `bmlib-ledger` job: the pinned commit)
+- Create: `.github/workflows/bmlib-drift.yml` (weekly and on demand: bmlib's `main`)
 
 **Interfaces:**
 - Produces: `ledger.json` with schema
   `{"schema": 1, "bmlib_commit": "<sha>", "from_bmlib": [Entry], "to_bmlib": [Entry]}`, where an `Entry` is
   `{"id": "bmlib#474" | "lite:<contract or feature>", "title": str, "python": Status, "swift": Status, "android": Status, "bmlib": Status, "issue": "#N" | null, "note": str}`.
   `Status` is one of `"owed" | "ported" | "equivalent" | "n/a" | "declined"`. In `from_bmlib` entries the `bmlib` key is omitted; in `to_bmlib` entries only `bmlib` is required.
-- Produces: `scripts/check_bmlib_ledger.py --bmlib <path>` exits 1 when a bmlib issue number referenced in the bold title line of any `CHANGELOG.md` entry newer than `## [0.10.0]` has no `from_bmlib` entry. It prints the missing numbers, then counts of `owed` per platform.
+- Produces: `scripts/check_bmlib_ledger.py --bmlib <path>`. It exits 1 in either of these cases:
+  - a bmlib issue number in the title group of a `CHANGELOG.md` entry newer than `## [0.10.0]` has no `from_bmlib` entry (a range `#a-#b` names every issue in it, up to 50);
+  - an entry whose group names no issue has no `bmlib:<slug>` entry with its title.
+
+  It prints what is missing, then counts of `owed` per platform. It exits 2 when an input can't be read: a malformed ledger, or a changelog with no `## [0.10.0]` heading, no `- **` entries, or an entry bulleted `*` or `+`. Without that, an unparsed changelog would pass as "nothing missing". `--print-commit` validates the ledger and prints `bmlib_commit`.
 - Produces: `missing_entries(changelog_text: str, ledger: dict) -> list[str]` and `changelog_issue_ids(changelog_text: str) -> set[str]` in the script, importable for tests.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_bmlib_ledger.py`:
@@ -90,8 +95,10 @@ A title line is a line beginning `- **`, together with its continuation lines up
 
 - [ ] **Step 2:** Run `pytest tests/test_bmlib_ledger.py -v`. Expected: FAIL (module not found).
 - [ ] **Step 3:** Implement the script. Seed `ledger.json` from [Appendix A](#appendix-a-gap-register) (`from_bmlib`) and from the bmlib plan's Appendix (`to_bmlib`), with `bmlib_commit: "f4b7c52"`. The README says: bumping `bmlib_commit` is how a sync starts; every new id must be triaged before CI passes; `declined` needs a `note` giving the reason.
-- [ ] **Step 4:** Run `pytest tests/test_bmlib_ledger.py -v` and `python scripts/check_bmlib_ledger.py --bmlib ~/src/bmlib`. Expected: PASS, then exit 0.
-- [ ] **Step 5:** Add a CI step that checks out `hherb/bmlib` at `bmlib_commit` and runs the script. If the repository is private, the step needs a read token, and the README must say which secret holds it.
+- [ ] **Step 4:** Run `pytest tests/test_bmlib_ledger.py -v`. Expected: PASS. Then run the script against `CHANGELOG.md` as it stands at `bmlib_commit`, not against the working tree of `~/src/bmlib`, which may be ahead of it. The README gives the commands (`git -C ~/src/bmlib show <sha>:CHANGELOG.md`). Expected: exit 0.
+- [ ] **Step 5:** Add a CI job that checks out `hherb/bmlib` at `bmlib_commit` and runs the script (`hherb/bmlib` is public, so no token is needed).
+
+  That job can fail only when someone edits the ledger, so it can't see bmlib move. Add a second workflow, `bmlib-drift.yml`, on a weekly cron and `workflow_dispatch`. It runs the script against bmlib's `main` and fails, listing the missing ids, until the pin is bumped and the entries are added. It never runs on a pull request, so bmlib moving never blocks a merge.
 - [ ] **Step 6:** Commit: `feat(sync): a ledger of bmlib's changes and their port status, checked in CI`.
 
 ---
@@ -437,7 +444,7 @@ Each step deletes a lite module, its ledger rows become `"python": "ported"` per
 
 ## Appendix A: Gap register
 
-Audit of 2026-10-17, bmlib `f4b7c52`, lite `ca9de635`. **Status:** N = not ported, P = partial, Y = done, — = not applicable. **WP** = the task or work package that closes the row.
+Audit of 2026-10-17, bmlib `f4b7c52`, lite `ca9de635`. Since then the ledger has gained rows this table doesn't have: it was bumped to bmlib `a368a67` (bmlib#145, bmlib#475), and it now holds the 16 changelog entries that name no issue (`bmlib:unreleased-*`) and the issues inside the range `#165-#170`. **Status:** N = not ported, P = partial, Y = done, — = not applicable. **WP** = the task or work package that closes the row.
 
 | bmlib | Change | Py | Swift | Android | WP |
 |---|---|---|---|---|---|
