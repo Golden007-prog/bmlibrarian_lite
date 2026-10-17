@@ -22,12 +22,15 @@ import com.bmlibrarian.factchecker.data.remote.europepmc.FullTextUrlEntry
 import com.bmlibrarian.factchecker.util.Constants
 
 /**
- * Which of Europe PMC's `fullTextUrl` entries is the free PDF (bmlib#79).
+ * Which of Europe PMC's `fullTextUrl` entries is its own free PDF (bmlib#79).
  *
- * `availability == "Free"` alone accepted about 4% of the free PDFs: the rest are
- * labelled "Open access" (`OA`), the same `?pdf=render` URL on the same host. The rule
- * is the shared contract `fulltext_parity/europepmc_free_pdf.json`, which Python and
- * Swift read too.
+ * `availability == "Free"` alone accepted about 4% of Europe PMC's own free PDFs: the
+ * rest are labelled "Open access" (`OA`). Only Europe PMC's own entries
+ * ([Constants.EUROPE_PMC_OWN_PDF_SITE]) are this tier's: the list also carries free PDFs
+ * Europe PMC took from Unpaywall or PubMedCentral, on publishers' and NCBI's hosts, and
+ * lists them first. Taking one here would end the chain on a publisher's URL before the
+ * Unpaywall tier, which recognises bot walls, is asked. The rule is the shared contract
+ * `fulltext_parity/europepmc_free_pdf.json`, which Python and Swift read too.
  */
 internal object EuropePmcFreePdf {
     private const val TAG = "EuropePmcFreePdf"
@@ -51,10 +54,12 @@ internal object EuropePmcFreePdf {
     }
 
     /**
-     * The first free PDF URL among an article's entries.
+     * The first of Europe PMC's own free PDF URLs among an article's entries.
      *
-     * Only `documentStyle == "pdf"` entries count; an entry without a URL is skipped. A
-     * PDF entry seen and not taken is logged, so it is visible in a trace.
+     * Only `documentStyle == "pdf"` entries from [Constants.EUROPE_PMC_OWN_PDF_SITE]
+     * count. An entry whose URL is missing, empty or blank is skipped, so it cannot mask a
+     * later real one when [FullTextService.PmcResolution]s are merged. A PDF entry seen
+     * and not taken is logged, so it is visible in a trace.
      *
      * @param entries The article's `fullTextUrl` entries, or null if it has none
      * @return The first downloadable PDF URL, or null if there is none
@@ -62,11 +67,15 @@ internal object EuropePmcFreePdf {
     fun extractUrl(entries: List<FullTextUrlEntry>?): String? {
         for (entry in entries.orEmpty()) {
             if (entry.documentStyle != Constants.EUROPE_PMC_PDF_DOCUMENT_STYLE) continue
+            if (entry.site != Constants.EUROPE_PMC_OWN_PDF_SITE) {
+                Log.d(TAG, "Leaving a Europe PMC PDF entry from site=${entry.site} to the other tiers: ${entry.url}")
+                continue
+            }
             if (!isFreeToDownload(entry)) {
                 reportRejected(entry)
                 continue
             }
-            entry.url?.let { return it }
+            entry.url?.takeIf { it.isNotBlank() }?.let { return it }
         }
         return null
     }

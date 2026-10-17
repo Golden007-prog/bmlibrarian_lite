@@ -55,10 +55,21 @@ public enum BioMedLitConstants {
     /// | Free | `F` | 14 | 4.3% |
     /// | Subscription required | `S` | 0 | — |
     ///
-    /// Both accepted labels are the identical `…?pdf=render` URL on the identical
-    /// host, so accepting only "Free" discarded 95.7% of the free PDFs this tier
-    /// exists to find.
+    /// Accepting only "Free" discarded 95.7% of the free PDFs this tier exists to
+    /// find. Which *site's* entries this tier takes is
+    /// ``europePMCOwnPDFSite``: free PDFs on publishers' hosts carry the same codes.
     public static let europePMCFreePDFAvailabilityCodes: Set<String> = ["OA", "F"]
+
+    /// The ``site`` of the ``fullTextUrl`` entries that are Europe PMC's own copy.
+    ///
+    /// Europe PMC's own copy is a `?pdf=render` URL or, for a preprint, an
+    /// `api/fulltextRepo` URL. The same list also carries free PDFs Europe PMC
+    /// took from Unpaywall or PubMedCentral, on publishers' and NCBI's hosts, and
+    /// lists them *before* its own: of 800 live results, 232 offered both an
+    /// Unpaywall and a Europe_PMC entry, the Unpaywall one first every time. Those
+    /// are left to the Unpaywall and DOI tiers, which recognise bot walls. An
+    /// entry naming no site is not taken: it may be a publisher's.
+    public static let europePMCOwnPDFSite = "Europe_PMC"
 
     /// Europe PMC ``availability`` display strings accepted for an entry with no code.
     ///

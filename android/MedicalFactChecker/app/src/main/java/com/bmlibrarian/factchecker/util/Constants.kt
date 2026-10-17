@@ -521,10 +521,19 @@ object Constants {
 
     /**
      * Europe PMC `availabilityCode` values that mark a downloadable PDF entry (bmlib#79).
-     * `OA` ("Open access") is about 96% of the free PDFs, `F` ("Free") the rest. Pinned by
-     * fulltext_parity/europepmc_free_pdf.json.
+     * `OA` ("Open access") is about 96% of Europe PMC's own free PDFs, `F` ("Free") the
+     * rest. Pinned by fulltext_parity/europepmc_free_pdf.json.
      */
     val EUROPE_PMC_FREE_PDF_CODES = setOf("OA", "F")
+
+    /**
+     * The `site` of the `fullTextUrl` entries that are Europe PMC's own copy (a
+     * `?pdf=render` URL, or for a preprint an `api/fulltextRepo` URL). The same list also
+     * carries free PDFs Europe PMC took from Unpaywall or PubMedCentral, on publishers' and
+     * NCBI's hosts, and lists them first; those are left to the Unpaywall and DOI tiers,
+     * which recognise bot walls. An entry with no site is not taken.
+     */
+    const val EUROPE_PMC_OWN_PDF_SITE = "Europe_PMC"
 
     /**
      * Europe PMC `availability` display strings accepted for an entry with no code. Never

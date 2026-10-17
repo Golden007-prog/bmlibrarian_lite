@@ -151,7 +151,12 @@ class FullTextServicePmcOpenDataTest {
             EuropePMCArticle(
                 id = "123", source = "MED", pmcid = "PMC7", title = "t",
                 fullTextUrlList = FullTextUrlList(
-                    listOf(FullTextUrlEntry(availability = "Free", documentStyle = "pdf", url = "https://europepmc.org/a.pdf"))
+                    listOf(
+                        FullTextUrlEntry(
+                            availability = "Free", documentStyle = "pdf", site = "Europe_PMC",
+                            url = "https://europepmc.org/a.pdf"
+                        )
+                    )
                 )
             )
         )
@@ -169,7 +174,12 @@ class FullTextServicePmcOpenDataTest {
             EuropePMCArticle(
                 id = "123", source = "MED", pmcid = "PMC7", title = "t",
                 fullTextUrlList = FullTextUrlList(
-                    listOf(FullTextUrlEntry(availability = "Free", documentStyle = "pdf", url = "https://europepmc.org/a.pdf"))
+                    listOf(
+                        FullTextUrlEntry(
+                            availability = "Free", documentStyle = "pdf", site = "Europe_PMC",
+                            url = "https://europepmc.org/a.pdf"
+                        )
+                    )
                 )
             )
         )

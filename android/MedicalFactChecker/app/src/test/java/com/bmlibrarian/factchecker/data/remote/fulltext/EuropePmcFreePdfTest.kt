@@ -91,7 +91,7 @@ class EuropePmcFreePdfTest {
     fun `every contract key is read here`() {
         assertEquals(
             setOf(
-                "schema_version", "description", "source", "free_codes", "free_labels",
+                "schema_version", "description", "source", "own_site", "free_codes", "free_labels",
                 "known_unavailable_codes", "cases"
             ),
             contract.keys
@@ -103,6 +103,7 @@ class EuropePmcFreePdfTest {
         assertEquals(strings("free_codes"), Constants.EUROPE_PMC_FREE_PDF_CODES)
         assertEquals(strings("free_labels"), Constants.EUROPE_PMC_FREE_PDF_LABELS)
         assertEquals(strings("known_unavailable_codes"), Constants.EUROPE_PMC_UNAVAILABLE_PDF_CODES)
+        assertEquals((contract.getValue("own_site") as JsonPrimitive).content, Constants.EUROPE_PMC_OWN_PDF_SITE)
     }
 
     @Test
@@ -123,11 +124,12 @@ class EuropePmcFreePdfTest {
         }
     }
 
-    private fun single(code: String?, label: String?): JsonArray = JsonArray(
+    private fun single(code: String?, label: String?, site: String = "Europe_PMC"): JsonArray = JsonArray(
         listOf(
             JsonObject(
                 buildMap {
                     put("documentStyle", JsonPrimitive("pdf"))
+                    put("site", JsonPrimitive(site))
                     put("url", JsonPrimitive("https://example.org/x.pdf"))
                     if (code != null) put("availabilityCode", JsonPrimitive(code))
                     if (label != null) put("availability", JsonPrimitive(label))
@@ -149,6 +151,37 @@ class EuropePmcFreePdfTest {
         for (entries in listOf(single("S", "Subscription required"), single(null, "Subscription required"), single("", null))) {
             EuropePmcFreePdf.extractUrl(article(entries).fullTextUrlList?.fullTextUrl)
         }
+        verify(exactly = 0) { Log.w(any<String>(), any<String>()) }
+    }
+
+    @Test
+    fun `an empty URL from one search does not mask a later search's real one`() {
+        val render = "https://europepmc.org/articles/PMC1234567?pdf=render"
+        fun searchWith(url: String) = FullTextService.PmcResolution.fromArticle(
+            article(
+                JsonArray(
+                    listOf(
+                        JsonObject(
+                            mapOf(
+                                "documentStyle" to JsonPrimitive("pdf"),
+                                "site" to JsonPrimitive("Europe_PMC"),
+                                "availabilityCode" to JsonPrimitive("OA"),
+                                "url" to JsonPrimitive(url)
+                            )
+                        )
+                    )
+                )
+            )
+        )
+        assertEquals(render, searchWith("").merging(searchWith(render)).pdfRenderUrl)
+        assertEquals(render, searchWith("  ").merging(searchWith(render)).pdfRenderUrl)
+    }
+
+    @Test
+    fun `another site's entry with an unrecognised code is not a warning`() {
+        assertNull(
+            EuropePmcFreePdf.extractUrl(article(single("Z", "Free", site = "Unpaywall")).fullTextUrlList?.fullTextUrl)
+        )
         verify(exactly = 0) { Log.w(any<String>(), any<String>()) }
     }
 
