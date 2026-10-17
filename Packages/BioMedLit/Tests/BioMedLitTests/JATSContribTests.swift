@@ -101,3 +101,102 @@ final class JATSContribTests: XCTestCase {
         XCTAssertEqual(article.authors.map(\.surname), ["Real"])
     }
 }
+
+/// The contributor-role rule the three platforms share (bmlib#111, bmlib#266;
+/// `doc/cross_platform/jats_parsing.md`, "Contributor Roles"). Each case is one
+/// where Swift's earlier rule differed from Python's `_article_authors`, which is
+/// canonical; none occurs in the 1,623-article survey corpus.
+final class JATSContribRoleParityTests: XCTestCase {
+
+    private func contrib(_ surname: String, _ attrs: String = "") -> String {
+        "<contrib \(attrs)><name><surname>\(surname)</surname><given-names>A</given-names></name></contrib>"
+    }
+
+    /// The surnames read from an article whose `<front>` holds `front`.
+    private func authors(front: String) throws -> [String] {
+        let xml = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <article><front>\(front)</front><body><p>Prose.</p></body></article>
+        """
+        return try JATSXMLParser(data: Data(xml.utf8)).parseToArticle().authors.map(\.surname)
+    }
+
+    /// The surnames read from an `<article-meta>` holding `meta`.
+    private func authors(meta: String) throws -> [String] {
+        try authors(front: "<article-meta><title-group><article-title>T</article-title></title-group>\(meta)</article-meta>")
+    }
+
+    func testAnEmptyContribTypeDeclaresNothing() throws {
+        XCTAssertEqual(try authors(meta: "<contrib-group>\(contrib("Smith", "contrib-type=\"\""))</contrib-group>"), ["Smith"])
+    }
+
+    func testAnEmptyGroupContentTypeDeclaresNothing() throws {
+        XCTAssertEqual(try authors(meta: #"<contrib-group content-type="">"# + contrib("Smith") + "</contrib-group>"), ["Smith"])
+    }
+
+    /// Only `author` is an author; `authors` is not a JATS role value.
+    func testAuthorsPluralIsNotAnAuthorRole() throws {
+        XCTAssertEqual(try authors(meta: #"<contrib-group content-type="authors">"# + contrib("Smith") + "</contrib-group>"), [])
+    }
+
+    func testRoleValuesAreTrimmed() throws {
+        let meta = #"<contrib-group content-type=" Author ">"# + contrib("Smith")
+            + contrib("Ed", "contrib-type=\" editor \"") + "</contrib-group>"
+        XCTAssertEqual(try authors(meta: meta), ["Smith"])
+    }
+
+    func testAJournalMetaContribIsNoAuthor() throws {
+        let front = "<journal-meta><contrib-group>\(contrib("Bare"))\(contrib("Own", #"contrib-type="author""#))</contrib-group></journal-meta>"
+            + "<article-meta><contrib-group>\(contrib("Smith"))</contrib-group></article-meta>"
+        XCTAssertEqual(try authors(front: front), ["Smith"])
+    }
+
+    func testABareContribInASupplementOrSecMetaGroupIsNoAuthor() throws {
+        let meta = "<contrib-group>\(contrib("Smith"))</contrib-group>"
+            + #"<supplement><contrib-group content-type="author">"# + contrib("SupAuthor") + "</contrib-group></supplement>"
+            + "<sec-meta><contrib-group>\(contrib("SecAuthor"))</contrib-group></sec-meta>"
+        XCTAssertEqual(try authors(meta: meta), ["Smith"])
+    }
+
+    /// Control: a contributor's own author role is read in a nested group.
+    func testAnOwnAuthorRoleInASupplementGroupIsStillRead() throws {
+        let meta = "<supplement><contrib-group>\(contrib("Own", #"contrib-type="author""#))\(contrib("Bare"))</contrib-group></supplement>"
+        XCTAssertEqual(try authors(meta: meta), ["Own"])
+    }
+
+    func testACollabRosterIsNotListed() throws {
+        let meta = #"<contrib-group content-type="author">"# + contrib("Smith")
+            + "<contrib><collab>Study Group<contrib-group>\(contrib("Member"))"
+            + "\(contrib("OwnMember", #"contrib-type="author""#))</contrib-group></collab></contrib>"
+            + "</contrib-group>"
+        XCTAssertEqual(try authors(meta: meta), ["Smith"])
+    }
+
+    /// The innermost *declared* group decides, not the innermost group.
+    func testABareRosterInsideAnEditorGroupStaysEditors() throws {
+        let meta = #"<contrib-group content-type="editor"><contrib-group>"# + contrib("Ed")
+            + "</contrib-group></contrib-group>"
+            + #"<contrib-group content-type="author">"# + contrib("Smith") + "</contrib-group>"
+        XCTAssertEqual(try authors(meta: meta), ["Smith"])
+    }
+
+    /// Control: a nested undeclared group inside an author group is authors.
+    func testABareRosterInsideAnAuthorGroupIsAuthors() throws {
+        let meta = #"<contrib-group content-type="author"><contrib-group>"# + contrib("Inner")
+            + "</contrib-group>" + #"<contrib-group content-type="editor">"# + contrib("InnerEd")
+            + "</contrib-group></contrib-group>"
+        XCTAssertEqual(try authors(meta: meta), ["Inner"])
+    }
+
+    /// PMC12337215's contributor, verbatim: the last spelling is kept, as in
+    /// bmlib (bmlib#143), Python and Android.
+    func testNameAlternativesGiveTheLastSpelling() throws {
+        let meta = """
+        <contrib-group><contrib contrib-type="author"><name-alternatives>\
+        <name name-style="eastern"><surname>周</surname><given-names initials="诚程">诚程</given-names></name>\
+        <name xml:lang="en" name-style="western"><surname>Zhou</surname><given-names initials="C">Chengcheng</given-names></name>\
+        </name-alternatives><xref rid="aff1" ref-type="aff">1</xref></contrib></contrib-group>
+        """
+        XCTAssertEqual(try authors(meta: meta), ["Zhou"])
+    }
+}

@@ -235,21 +235,21 @@ public final class JATSXMLParser: NSObject {
     // Article metadata state
     private var inFront = false
     private var inArticleMeta = false
-    /// `content-type` of each open `<contrib-group>`, lowercased, innermost last.
+    /// `content-type` of each open `<contrib-group>`, trimmed and lowercased,
+    /// innermost last; an empty string where a group declares none.
     ///
     /// JATS allows the contributor role to be declared once on the group instead
     /// of on every `<contrib>`. PLOS uses that form — `<contrib-group
     /// content-type="author">` with bare `<contrib>` children — so requiring
     /// `contrib-type="author"` on the child dropped every author it publishes.
     ///
-    /// A stack rather than a single value: JATS permits a `<contrib-group>` nested
-    /// inside `<collab>` for consortium authorship, and clearing on the inner
-    /// `</contrib-group>` left the outer group typeless — which ``isAuthorContrib``
-    /// reads as "author", admitting the very editors the group type excludes.
-    private var contribGroupTypeStack: [String?] = []
-
-    /// `content-type` of the innermost open `<contrib-group>`, if any.
-    private var currentContribGroupType: String? { contribGroupTypeStack.last ?? nil }
+    /// A stack rather than a single value: a `<contrib-group>` may nest in
+    /// another (and in `<collab>`, for consortium authorship), and clearing on
+    /// the inner `</contrib-group>` left the outer group typeless — which
+    /// ``isAuthorContrib`` reads as "author", admitting the very editors the
+    /// group type excludes. The innermost *declared* role decides, so an
+    /// undeclared group inside an editor group stays editors.
+    private var contribGroupTypeStack: [String] = []
     private var inContrib = false
     private var inAff = false
 
@@ -1666,22 +1666,44 @@ public final class JATSXMLParser: NSObject {
 extension JATSXMLParser: XMLParserDelegate {
     // MARK: - Contributor Helpers
 
-    /// Whether a `<contrib>` is an author.
+    /// Whether a `<contrib>` is one of the article's authors (bmlib#111).
     ///
-    /// An explicit `contrib-type` decides on its own — that is the contributor's
-    /// own claim, and it must be able to say "editor" inside a group of authors.
-    /// A `<contrib>` carrying none inherits the group: an author group, or a
-    /// `<contrib-group>` with no `content-type` at all, which JATS treats as
-    /// authors by convention.
+    /// The rule Python's `_article_authors` and Android's `isAuthorContrib`
+    /// share (`doc/cross_platform/jats_parsing.md`, "Contributor Roles"):
+    ///
+    /// - Only the article's own `<article-meta>` names its authors: never
+    ///   `<journal-meta>`, a sub-article (already skipped by `inSubArticle`), or
+    ///   a `<collab>`'s member roster, whatever the contributor's own role says.
+    /// - A contributor's own non-empty `contrib-type` then decides alone — it
+    ///   must be able to say "editor" inside a group of authors.
+    /// - A bare contributor is inferred only inside a `<contrib-group>` that is a
+    ///   direct child of `<article-meta>` (bmlib#266), not one under
+    ///   `<supplement>` or `<sec-meta>`. There the innermost enclosing group that
+    ///   declares a non-empty `content-type` decides; where none does, the
+    ///   contributor is an author.
+    ///
+    /// An empty attribute declares nothing; values are trimmed and case is
+    /// folded; only `author` is an author.
     ///
     /// - Parameter attributes: Attributes of the `<contrib>` element.
     /// - Returns: True if this contributor should be collected as an author.
     private func isAuthorContrib(_ attributes: [String: String]) -> Bool {
-        if let type = attributes["contrib-type"]?.lowercased() {
-            return type == "author"
-        }
-        guard let groupType = currentContribGroupType else { return true }
-        return groupType == "author" || groupType == "authors"
+        guard inArticleMeta, !elementStack.contains("collab") else { return false }
+        let own = Self.declaredRole(attributes["contrib-type"])
+        if !own.isEmpty { return own == "author" }
+        guard let outermostGroup = elementStack.firstIndex(of: "contrib-group"),
+              outermostGroup >= 1,
+              elementStack[outermostGroup - 1] == "article-meta" else { return false }
+        guard let declared = contribGroupTypeStack.last(where: { !$0.isEmpty }) else { return true }
+        return declared == "author"
+    }
+
+    /// A role attribute's value, trimmed and lowercased; empty when absent.
+    ///
+    /// - Parameter value: A `contrib-type` or `content-type` value, if present.
+    /// - Returns: The normalised role, or an empty string when none is declared.
+    private static func declaredRole(_ value: String?) -> String {
+        (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     // MARK: - Section and Caption Helpers
@@ -1844,7 +1866,7 @@ extension JATSXMLParser: XMLParserDelegate {
         case "article-meta":
             inArticleMeta = true
         case "contrib-group":
-            contribGroupTypeStack.append(attributeDict["content-type"]?.lowercased())
+            contribGroupTypeStack.append(Self.declaredRole(attributeDict["content-type"]))
         case "contrib":
             if isAuthorContrib(attributeDict) {
                 inContrib = true
@@ -2471,13 +2493,15 @@ extension JATSXMLParser: XMLParserDelegate {
         case "surname":
             if inRefPersonGroup {
                 currentReference?.currentAuthorSurname = text
-            } else if inContrib {
+            } else if inContrib && !elementStack.contains("collab") {
+                // A collab's roster member is not the article's author, so the
+                // enclosing collab contributor's builder must not take its name.
                 currentAuthor?.surname = text
             }
         case "given-names":
             if inRefPersonGroup {
                 currentReference?.currentAuthorGivenNames = text
-            } else if inContrib {
+            } else if inContrib && !elementStack.contains("collab") {
                 currentAuthor?.givenNames = text
             }
         case "name":

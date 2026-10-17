@@ -276,6 +276,50 @@ function normalize_pmc_id(id: string) -> string:
     return "PMC" + id
 ```
 
+## Contributor Roles
+
+JATS spells a contributor's role two ways: `contrib-type` on the `<contrib>`,
+and `content-type` on the enclosing `<contrib-group>` with bare children
+(`<contrib-group content-type="author">`, the dominant form in open-access
+articles, bmlib#111). All three platforms apply one rule, bmlib's
+`_is_author_contrib` — Python `jats_markdown._article_authors`, Swift and
+Kotlin `JATSXMLParser.isAuthorContrib`:
+
+1. **Scope first.** Only the article's own `<article-meta>` names its authors.
+   A contributor in `<journal-meta>` (the journal's editors), in a
+   `<sub-article>` or `<response>` (PLOS lists a decision letter's academic
+   editor with `contrib-type="author"`), or in a `<collab>`'s member roster is
+   never an author, whatever its own role says. A `<front>` without an
+   `<article-meta>` names no author.
+2. **A contributor's own non-empty `contrib-type` decides alone**, so it can
+   say `editor` inside an author group.
+3. **A bare contributor's role is inferred only inside a `<contrib-group>` that
+   is a direct child of `<article-meta>`**, or a group nested in one
+   (bmlib#266). A group under `<supplement>`, `<sec-meta>` or any other element
+   lists someone else's contributors, so it infers nothing, even when it
+   declares `content-type="author"`.
+4. Where inferred, **the innermost enclosing group that declares a non-empty
+   `content-type` decides**; where none does, the contributor is an author. An
+   undeclared group inside an editor group therefore stays editors.
+
+Values are trimmed and case-folded, an empty attribute declares nothing, and
+only `author` is an author (not `authors`). A contributor named only in
+`<name-alternatives>` is named by its last `<name>` (bmlib#143): the real
+articles that use it put the native-script spelling first and the Latin one
+last.
+
+```pseudocode
+function is_author_contrib(contrib) -> bool:
+    if not inside(article_meta) or inside(sub_article, response, collab):
+        return false
+    own = trim(contrib["contrib-type"]).lower()
+    if own: return own == "author"
+    outermost_group = first "contrib-group" on element_stack
+    if parent_of(outermost_group) != "article-meta": return false
+    declared = last non-empty entry of contrib_group_types   # trimmed, lowercased
+    return declared is none or declared == "author"
+```
+
 ## Abstract Parsing
 
 Europe PMC returns structured abstracts with sections:

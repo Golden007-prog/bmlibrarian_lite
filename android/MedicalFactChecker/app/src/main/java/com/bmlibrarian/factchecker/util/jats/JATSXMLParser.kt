@@ -108,7 +108,16 @@ class JATSXMLParser(
     // Article metadata state
     private var inFront = false
     private var inArticleMeta = false
-    private var inContribGroup = false
+
+    /**
+     * The `content-type` of each open `<contrib-group>`, innermost last; an empty
+     * string where a group declares none. A stack, not one value, because a group
+     * may nest directly in another group, and the innermost *declared* role
+     * decides: an undeclared group inside an editor group stays editors. (A
+     * collaboration's roster also nests a group, but its members are never
+     * authors — see [isAuthorContrib].)
+     */
+    private val contribGroupTypes = mutableListOf<String>()
     private var inContrib = false
     private var inAff = false
 
@@ -227,6 +236,36 @@ class JATSXMLParser(
     }
 
     /**
+     * Is this `<contrib>` one of the article's authors (bmlib#111)?
+     *
+     * Only the article's own `<article-meta>` names its authors: a contributor in
+     * `<journal-meta>` (the journal's editors), in a `<sub-article>` or
+     * `<response>` (PLOS lists a decision letter's academic editor with
+     * `contrib-type="author"`), or in a collaboration's member roster is never
+     * one, whatever its own role says. These scope checks run first.
+     *
+     * Then a contributor's own non-empty `contrib-type` decides alone. Otherwise
+     * the innermost enclosing `<contrib-group>` that declares a non-empty
+     * `content-type` decides; where none does, the contributor is an author. An
+     * empty attribute declares nothing, and the comparison folds case. A bare
+     * contributor is inferred an author only within a `<contrib-group>` that is a
+     * direct child of `<article-meta>` (bmlib#266): the outermost open group's
+     * parent must be `article-meta`, so a group under `<supplement>` or
+     * `<sec-meta>` infers nothing, while groups nested inside the article's own
+     * group still follow the innermost declared role.
+     */
+    private fun isAuthorContrib(contribType: String?): Boolean {
+        if (!inArticleMeta || "collab" in elementStack) return false
+        if ("sub-article" in elementStack || "response" in elementStack) return false
+        val own = contribType?.trim().orEmpty()
+        if (own.isNotEmpty()) return own.equals("author", ignoreCase = true)
+        val outermostGroup = elementStack.indexOf("contrib-group")
+        if (outermostGroup < 1 || elementStack[outermostGroup - 1] != "article-meta") return false
+        val declared = contribGroupTypes.lastOrNull { it.isNotEmpty() }
+        return declared == null || declared.equals("author", ignoreCase = true)
+    }
+
+    /**
      * Parse the XML and return the structured article data.
      *
      * @return JATSArticle containing all parsed data.
@@ -293,9 +332,11 @@ class JATSXMLParser(
             // Document structure
             "front" -> inFront = true
             "article-meta" -> inArticleMeta = true
-            "contrib-group" -> inContribGroup = true
+            "contrib-group" -> {
+                contribGroupTypes.add(parser.getAttributeValue(null, "content-type")?.trim().orEmpty())
+            }
             "contrib" -> {
-                if (parser.getAttributeValue(null, "contrib-type") == "author") {
+                if (isAuthorContrib(parser.getAttributeValue(null, "contrib-type"))) {
                     inContrib = true
                     currentAuthor = AuthorBuilder()
                 }
@@ -410,7 +451,7 @@ class JATSXMLParser(
             // Document structure
             "front" -> inFront = false
             "article-meta" -> inArticleMeta = false
-            "contrib-group" -> inContribGroup = false
+            "contrib-group" -> contribGroupTypes.removeLastOrNull()
             "contrib" -> {
                 if (inContrib) {
                     currentAuthor?.build()?.let { authors.add(it) }
@@ -557,13 +598,13 @@ class JATSXMLParser(
             "surname" -> {
                 when {
                     inRefPersonGroup -> currentReference?.currentAuthorSurname = text
-                    inContrib -> currentAuthor?.surname = text
+                    inContrib && "collab" !in elementStack -> currentAuthor?.surname = text
                 }
             }
             "given-names" -> {
                 when {
                     inRefPersonGroup -> currentReference?.currentAuthorGivenNames = text
-                    inContrib -> currentAuthor?.givenNames = text
+                    inContrib && "collab" !in elementStack -> currentAuthor?.givenNames = text
                 }
             }
             "name" -> {
