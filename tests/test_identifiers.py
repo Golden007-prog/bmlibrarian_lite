@@ -48,6 +48,15 @@ def test_integers() -> None:
     assert canonical_pmid(-5).refused
 
 
+def test_an_integer_too_long_to_print_is_refused_not_raised() -> None:
+    """An int past the int-to-str digit limit is refused, never a ValueError.
+
+    ``str(10**5000)`` raises ValueError (the 4300-digit conversion limit), so
+    "it never raises" was not true of a huge int (as bmlib#479 found).
+    """
+    assert canonical_pmid(10**5000) == PmidReading(refused=True)
+
+
 @pytest.mark.parametrize("value", [1.5, b"123", ["1"], object()])
 def test_other_types_are_refused(value: object) -> None:
     """Other types are refused."""

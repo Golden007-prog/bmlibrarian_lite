@@ -45,9 +45,10 @@ class PmidReading:
 def canonical_pmid(value: object) -> PmidReading:
     """Read a caller's PMID.
 
-    Surrounding whitespace is stripped and a blank is no PMID. An ``int`` is
-    its decimal digits, and ``0`` is no PMID; a ``bool`` is refused although
-    it is an ``int``. Text must be ASCII digits, not all zeros, and is
+    Surrounding whitespace (what ``str.strip()`` removes) is stripped and a
+    blank is no PMID. An ``int`` is its decimal digits, and ``0`` is no PMID;
+    a ``bool`` is refused although it is an ``int``, and so is an ``int``
+    too long to convert to text. Text must be ASCII digits, not all zeros, and is
     returned without its leading zeros. ``PMC`` then ASCII digits is a PMC ID
     given as a PMID: no PMID carries that prefix, so it names the article's
     PMC record. Anything else is refused.
@@ -65,8 +66,13 @@ def canonical_pmid(value: object) -> PmidReading:
     if isinstance(value, int):
         if value == 0:
             return PmidReading()
-        text = str(value) if value > 0 else ""
-        if not text:
+        if value < 0:
+            return PmidReading(refused=True)
+        try:
+            text = str(value)
+        except ValueError:
+            # Past the int-to-str digit limit (sys.get_int_max_str_digits()):
+            # no PMID is that long, and the promise is never to raise.
             return PmidReading(refused=True)
     elif isinstance(value, str):
         text = str.strip(value)
