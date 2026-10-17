@@ -1,19 +1,34 @@
 # WP-2 spike: do the mobile apps consume bmlib's Rust crate through UniFFI?
 
-**Date:** 2026-10-17. **Plan:** `doc/plans/2026-10-17-port-bmlib-advances.md`, Phase 2 / WP-2.
+**Date:** 2026-10-17. **Plan:** `doc/plans/2026-10-17-port-bmlib-advances.md`, Phase 2 / WP-2
+(the plan and the rest of `bmlib_sync/` arrive with PR #564, which merges first).
 
 **Verdict: Phase 4 consumes Rust.**
 
-All five acceptance criteria were met with measured numbers. The Rust reader agrees with
-both apps' expectations on every metadata, figure, table and reference field across the
-seven corpus articles. Every body-text difference is one of three things: a bmlib fix that
-Swift still lacks, a known divergence, or a field the adapter does not carry yet. The
+All five acceptance criteria were met with measured numbers. The evidence for the parse is
+narrower than a full parity proof, and is stated as such:
+
+- **Swift vs Rust**, on the seven corpus articles: the agreed subset (identifiers,
+  metadata, author names, figures, table labels/captions/footnotes, references, abstracts;
+  listed under criterion 2) is **asserted equal**. Body paragraphs are **not asserted**:
+  they were compared once, by a paragraph diff that is not committed, and every difference
+  it showed is one of three things: a bmlib fix that Swift still lacks, a known divergence,
+  or a field the adapter does not carry yet (the 11 rows under criterion 2).
+- **Android vs Rust**: never compared. The Android test checks bmlib against `corpus.json`'s
+  hand-read values on a subset of fields (identifiers, journal, year, volume, title, and
+  author, figure, table and reference counts, table labels, the first figure's graphic),
+  not against the Kotlin `JATSXMLParser`, and CI does not run it.
+- Seven articles is a small corpus; [Before any Phase 4 switch](#before-any-phase-4-switch)
+  lists what would widen it.
+
+The
 adapter costs about 0.65 MB per architecture on iOS and 0.82 MB per ABI on Android
 (1.0 MB with JNA). The Xcode Cloud fresh-clone archive passes, and Gradle builds the `.so`
 files itself. Hand-porting WP-4.1 to WP-4.6 would mean porting the work behind the 41 issue
 numbers those packages cite twice (Swift, then Kotlin), and then keeping three parsers in step forever. Consuming Rust
-turns Phase 4 into adapter work, plus four items to settle first (see
-[What the maintainer must decide](#what-the-maintainer-must-decide)).
+turns Phase 4 into adapter work. The four items to settle first are decided (see
+[Maintainer decisions](#maintainer-decisions-2026-10-17)); what remains before a switch is
+listed under [Before any Phase 4 switch](#before-any-phase-4-switch).
 
 ## What was built
 
@@ -39,6 +54,9 @@ archive. Both test suites exercise it.
   and reference counts, plus table labels and the first figure's graphic. Result: **2/2
   pass, 0 skipped**. The full Android unit suite still passes: **1,703 tests, 0 failures**
   (18 skipped).
+- **CI never runs the Android FFI test.** `android-tests.yml` configures no bmlib
+  checkout, so `BmlibJatsFfiTest` skips there; it ran on the spike's host only. Wiring it
+  is under [What GitHub Actions needs](#5-gradle-builds-the-so-files--prototyped-and-working).
 
 ### 2. Corpus comparison — **met; every difference classified**
 
@@ -60,7 +78,10 @@ Also asserted: every body-section path Swift produces exists in bmlib's tree. No
 Swift titles is lost.
 
 **Reported, not asserted:** the body-section tree and its paragraphs, and the citation
-strings. A paragraph-level diff gives the full list of differences:
+strings. A paragraph-level diff, run once by hand from the `BMLIB_PARITY_REPORT` output and
+**not committed**, gave the list of differences below. They are **Swift vs Rust only**; no
+Kotlin-vs-Rust diff was made. Since the test does not assert paragraphs, it would not catch
+a twelfth difference:
 
 | # | Difference | Where (corpus) | Class | Evidence |
 |---|---|---|---|---|
@@ -80,8 +101,12 @@ The digest's `unmodelledCaptionDrops`, `markdownScalarCount` and `htmlScalarCoun
 **not compared**: they measure the Swift renderers, not the parse.
 
 Neither parser captures author affiliations: 0 on every author, in both. That is lite
-#154, and it is shared. No corpus article has a group (`<collab>`) author, so the adapter's
-group-author rule is untested by the corpus.
+#154, and it is shared. No corpus article has a group (`<collab>`), `<string-name>` or
+given-names-only author, so the adapter's rule for a contributor without a surname is
+tested by a synthetic document instead
+(`testContributorsWithoutASurnameAreKeptWithBmlibsFullName`). The adapter keeps such a
+contributor with bmlib's trimmed full name, as bmlib and Python do; Swift's parser drops
+it. That is a class (b) divergence with Rust ahead.
 
 **Swift behaviours bmlib lacks or exposes differently** (class (b), not visible in the
 corpus diff):
@@ -163,8 +188,11 @@ needs ("CoreSimulator is out of date"). The generic-device archive does compile 
 | Local `swift test` | Works offline, no Rust needed | Every developer needs Rust plus 5 targets |
 
 **Recommendation: (i)**, with dynamic frameworks. Add a CI guard (GitHub Actions, macOS)
-that rebuilds the xcframework from the pinned bmlib commit and compares tree hashes, so the
-committed binary is checked rather than trusted.
+that rebuilds the xcframework from the pinned bmlib commit and compares tree hashes
+(`.github/scripts/xcframework_tree_sha256.py <xcframework> --check BmlibFFI.pin.json`), so
+the committed binary is checked rather than trusted. **That guard cannot pass yet**: the
+build compiles the builder's absolute paths into each slice (risk 9), so a runner's build
+never matches a developer's. bmlib #490 makes the build path-independent first.
 
 Dynamic rather than static matters most for repository size: one order of magnitude.
 Static would make the shipped app ~0.1 MB smaller, since the generated Swift and the
@@ -172,20 +200,35 @@ library dead-strip together.
 
 ### 5. Gradle builds the `.so` files — **prototyped and working**
 
-`app/build.gradle.kts` adds two tasks. Both are registered only when a bmlib checkout is
-named by `bmlib.dir` (`local.properties`) or by `BMLIB_DIR`:
+`app/build.gradle.kts` adds three tasks. They are registered only when a bmlib checkout is
+named by `bmlib.dir` (`local.properties`, relative to the Android project root) or by
+`BMLIB_DIR`:
 
+- `checkBmlibPin` reads `bmlibCommit` from `Packages/BioMedLit/Frameworks/BmlibFFI.pin.json`
+  (the one pin both apps share; the committed Kotlin bindings came from that commit too)
+  and fails when `git -C <bmlib> rev-parse HEAD` differs, or when `rust/` has uncommitted
+  changes. Both cargo tasks depend on it. `-Pbmlib.allowUnpinnedCommit=true` builds anyway,
+  with a warning, for working on bmlib itself.
 - `cargoNdkBmlib` runs `cargo ndk -t arm64-v8a -t x86_64 -p 26 -o build/generated/bmlib/jniLibs build -p bmlib-ffi --profile release-ffi`.
-  It is wired as a `jniLibs.srcDir`, and `preBuild` depends on it. Inputs (Rust sources,
-  manifests, the lockfile) and the output directory are declared, so Gradle skips it when
-  nothing changed.
-- `cargoHostBmlib` runs the host build and copies `libbmlib_ffi.{dylib,so}` to
-  `build/generated/bmlib/host`. Every `Test` task depends on it and gets
-  `jna.library.path`.
+  The ABIs and the API level are the same values as `abiFilters` and `minSdk` (one `val`
+  each). It is wired as a `jniLibs.srcDir`, and `preBuild` depends on it. Inputs (Rust
+  sources, manifests, the lockfile) and the output directory are declared, so Gradle skips
+  it when nothing changed.
+- `cargoHostBmlib` runs the host build into `CARGO_TARGET_DIR` (default `rust/target`,
+  passed as `--target-dir`) and copies `libbmlib_ffi.{dylib,so}` to
+  `build/generated/bmlib/host`, failing if no library was built. Every `Test` task depends
+  on it and gets `jna.library.path`.
+
+`checkBmlibForRelease` is always registered, and `assembleRelease`, `bundleRelease`,
+`packageRelease` and `packageReleaseBundle` depend on it. It fails a release build that
+has no bmlib checkout, or whose `jniLibs` lack the library for a shipped ABI. Once Phase 4
+calls Rust, such an APK would throw `UnsatisfiedLinkError` (an `Error`, which a
+`catch (e: Exception)` does not catch). Debug builds and unit tests are not hooked: without
+a checkout they build as before, and the FFI test skips.
 
 Measured: `./gradlew :app:testDebugUnitTest --tests '*BmlibJatsFfiTest*'` ran both cargo
 tasks and the test, with no manual step. `assembleDebug` packed both `.so` files. Without
-the property, the build is unchanged and the test skips with a message.
+the property, the debug build is unchanged and the test skips with a message.
 
 **What GitHub Actions (`android-tests.yml`) needs:**
 
@@ -204,11 +247,16 @@ also covers.
 
 **Two findings for Android:**
 
-- **There is no `armeabi-v7a` build.** The app already ships `armeabi-v7a` and `x86` for its
-  other native libraries (MediaPipe, TFLite). On such a device the first call into Rust
-  would throw `UnsatisfiedLinkError`. Either add `-t armeabi-v7a -t x86` (the rustup
-  targets are installed), or set `abiFilters` to the 64-bit ABIs. That is a product
-  decision.
+- **There was no `armeabi-v7a` build.** The app shipped `armeabi-v7a` and `x86` for its
+  other native libraries (MediaPipe, TFLite), and on such a device the first call into
+  Rust would throw `UnsatisfiedLinkError`. **Settled by decision 4:** `abiFilters` is now
+  the 64-bit ABIs only. This takes effect when this branch merges, before any Rust call,
+  so the 32-bit devices lose the app at that release (a release-notes item).
+- **JNA's 16 KB page alignment.** JNA 5.14.0's x86_64 `libjnidispatch.so` has 4 KB-aligned
+  `LOAD` segments, which Android 15+ devices with 16 KB pages refuse (targetSdk is 35). The
+  app now uses JNA **5.19.1**, whose arm64-v8a and x86_64 dispatch libraries are both
+  16 KB-aligned (checked from the program headers). `libbmlib_ffi.so`'s own alignment has
+  not been checked.
 - **`assembleRelease` already fails in R8** on the base commit (missing
   `javax.lang.model` / autovalue and markwon `Strikethrough` classes; verified on
   `d3ae21db`), and the release build is not in CI. So the JNA keep rules added here
@@ -218,12 +266,17 @@ also covers.
 ## Other measurements
 
 **Parse time.** Times are per article, the mean of 20 runs on the same machine. Rust
-includes the FFI marshalling and the adapter.
+includes the FFI marshalling and the adapter. Run with `BMLIB_PARITY_TIMING=1` (the timing
+loop is off by default, so CI does not pay for it).
 
 | Build | Swift `JATSXMLParser` | Rust via UniFFI + adapter |
 |---|---|---|
 | debug Swift / release Rust | 145 ms for the 7 articles (8–34 ms each) | 17 ms (1.0–3.8 ms each) |
-| **release / release** | **132 ms** (7–29 ms each) | **24 ms** (1.5–5.4 ms each), **~5.6× faster** |
+| **release / release** | **132 ms** (7–29 ms each) | **24 ms** (1.5–5.4 ms each) |
+
+The Rust path is release-built in both rows, yet its corpus total was 17 ms in one run and
+24 ms in the other, so the numbers are noisy. Against the release Swift parser that is
+**roughly 5.5× to 8× faster** (132/24 to 132/17). Only the order of magnitude is claimed.
 
 Android, through JNA, including first library load: 72 ms for all seven.
 
@@ -239,7 +292,15 @@ should be.
 The `ForeignHttpClient` sketch is synchronous too, because bmlib's `HttpClient` is. A Swift
 implementation would block a background thread on a `URLSession` task (a semaphore), or
 bmlib would grow an async transport, which UniFFI supports through `async` exports and a
-runtime.
+runtime. The sketch is also **exported**: it ships in the committed xcframework, both
+bindings and their checksum checks, although nothing calls it. bmlib #492 removes it (or
+puts it behind a feature) before the pinned commit.
+
+**Errors.** `BmlibJATS.parse(data:)` throws `JATSParseError.parsingFailed` with the XML
+reader's own reason for malformed XML. A Rust **panic** is different: UniFFI raises it as
+the bindings' file-private `UniffiInternalError.rustPanic`, which reaches the caller as a
+plain `Error` that only a catch-all `catch` sees. Kotlin's bindings raise an
+`InternalException` there, likewise outside `JatsException`.
 
 **Release pinning.** Bindings and binary must come from **one** build. UniFFI checks
 per-function checksums at the first call, and a mismatch fails loudly rather than
@@ -249,11 +310,22 @@ lite pins three things in `Packages/BioMedLit/Frameworks/BmlibFFI.pin.json`:
 
 - the bmlib commit, which becomes a tag when this lands (e.g. `bmlib-ffi-v0.2.0`);
 - the UniFFI version;
-- `treeSha256`, over every file in the xcframework.
+- `treeSha256`, over every file in the xcframework. Its recipe is defined by
+  `.github/scripts/xcframework_tree_sha256.py` (named in the pin as `treeSha256Script`):
+  one line per file, `<path> <sha256>`, or `<path> -> <target>` per symlink, with paths
+  starting `BmlibFFI.xcframework/`; sorted, `\n`-joined, with a trailing `\n`. A Python
+  test checks that the committed xcframework reproduces the pinned hash.
 
-Android pins the same tag through the CI checkout. `bmlib_version()` lets either app
-assert the version at run time. The pin's guard is the CI rebuild-and-compare recommended
-under criterion 4.
+Android reads the same commit from the same pin: Gradle's `checkBmlibPin` refuses a bmlib
+checkout at any other commit (criterion 5). CI's checkout should use it too.
+
+`bmlib_version()` does **not** identify the build. It returns bmlib-ffi's
+`CARGO_PKG_VERSION`, `0.2.0` on every commit of that version, so both tests'
+`== "0.2.0"` assertions cannot tell the pinned commit from another. UniFFI's checksums
+catch an interface mismatch, but not a behaviour change behind the same interface. bmlib
+#493 asks bmlib-ffi to expose the commit, so the apps can assert it against the pin. Until
+then, the guards are the pin check (Android) and the CI rebuild-and-compare recommended
+under criterion 4 (Swift).
 
 ## Risks
 
@@ -278,6 +350,42 @@ under criterion 4.
    cached articles keep the old parse. This holds whichever route Phase 4 takes.
 8. **The `sqlite`/`http-ureq` defaults are a bmlib API change** (additive, default-on). They
    need a bmlib CHANGELOG entry and bmlib's CI matrix extended with `--no-default-features`.
+9. **The binaries carry the builder's home path, so they are not reproducible.** `strings`
+   on the committed `ios-arm64` slice finds 23 `/Users/<builder>/…` panic-location paths
+   (`~/.rustup/…/rustlib/src`, `~/.cargo/registry/src/…`). That leaks the developer's home
+   path into every shipped app, and it means the recommended CI rebuild-and-compare guard
+   can never match a runner's build (`/Users/runner`). Fix on bmlib (#490): build with
+   `RUSTFLAGS="--remap-path-prefix=$HOME/.cargo=/cargo --remap-path-prefix=$HOME/.rustup=/rustup --remap-path-prefix=<bmlib root>=/bmlib"`,
+   and rebuild the committed xcframework (and Android's `.so` builds) with it.
+10. **Only UTF-8 crosses the FFI.** `parse_jats` takes a string, so the adapter decodes the
+    bytes as UTF-8 and refuses anything else (with a message saying so), where
+    `XMLParser` honours a declared encoding (ISO-8859-1, UTF-16). Reading those needs a
+    bytes entry point in bmlib (#491); the apps must not each guess the encoding.
+11. **A Rust panic is not a parse error** (see *Errors* above). Phase 4 callers need a
+    catch-all around the call, or the adapter must map the internal error.
+12. **`bmlib_version()` cannot identify the build** (see *Release pinning*); bmlib #493.
+13. **The evidence is seven articles, Swift vs Rust.** See the section below.
+
+## Before any Phase 4 switch
+
+The spike shows the route works. These would show that the Rust parse can replace both
+apps' parsers:
+
+1. **An allowlisted paragraph diff in the Swift test.** Encode the 11 classified
+   differences (criterion 2's table) as an allowlist, and assert every other body
+   paragraph equal. Today paragraphs are only reported, so a new difference passes
+   unnoticed. Commit the diff the table was made from, too.
+2. **A Kotlin-vs-Rust diff.** Android has only been compared with `corpus.json`'s
+   hand-read fields, never with the Kotlin `JATSXMLParser`. Run the same agreed subset
+   and paragraph diff in a JVM unit test, and wire that test into CI (a bmlib checkout at
+   the pinned commit plus a Rust toolchain, as criterion 5 lists).
+3. **A survey of a few hundred PMC articles.** Seven articles hid defects before: a
+   synthetic or small corpus missed JATS defects that affected about half of real
+   articles. Run both comparisons over a few hundred live PMC articles, and classify every
+   new difference as the table does.
+4. **The bmlib items:** reproducible builds (#490), bytes across the FFI (#491), the HTTP
+   sketch out of the exported surface (#492), and the build commit exposed (#493), each
+   followed by a rebuild of the committed binaries and bindings.
 
 ## Maintainer decisions (2026-10-17)
 
@@ -292,7 +400,9 @@ All four were decided as recommended:
    plan's WP-B9 FFI surface).
 4. **Android ABIs: 64-bit only.** `defaultConfig.ndk.abiFilters` is `arm64-v8a` and `x86_64`,
    the two ABIs cargo-ndk builds, so no APK ships an ABI without the library. Google Play
-   requires 64-bit anyway.
+   requires 64-bit anyway. This applies from the release that includes this branch, ahead
+   of any Rust call, so 32-bit-only devices stop receiving the app then (a release-notes
+   item).
 
 Separately, the release build's existing R8 failure should be fixed before any JNA code
 ships.
@@ -303,6 +413,9 @@ ships.
   `rust/bmlib-ffi/README.md`).
 - Swift: `cd Packages/BioMedLit && swift test --filter BmlibJATSParityTests`. Add
   `BMLIB_PARITY_REPORT=<file>.json` to write the per-article report, which includes every
-  paragraph from both parsers.
-- Android: put `bmlib.dir=<bmlib checkout>` in `android/MedicalFactChecker/local.properties`,
-  then run `./gradlew :app:testDebugUnitTest --tests '*BmlibJatsFfiTest*'`.
+  paragraph from both parsers, and `BMLIB_PARITY_TIMING=1` to time both parsers.
+- The xcframework's tree hash:
+  `python3 .github/scripts/xcframework_tree_sha256.py Packages/BioMedLit/Frameworks/BmlibFFI.xcframework --check Packages/BioMedLit/Frameworks/BmlibFFI.pin.json`.
+- Android: put `bmlib.dir=<bmlib checkout at the pinned commit>` in
+  `android/MedicalFactChecker/local.properties`, then run
+  `./gradlew :app:testDebugUnitTest --tests '*BmlibJatsFfiTest*'`.
