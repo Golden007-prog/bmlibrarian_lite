@@ -177,6 +177,31 @@
         }
       ],
       "expected_url": "https://europepmc.org/articles/PMC1234567?pdf=render"
+    },
+    {
+      "name": "open_access_code_without_availability_label_is_accepted",
+      "fullTextUrl": [
+        {
+          "documentStyle": "pdf",
+          "site": "Europe_PMC",
+          "availabilityCode": "OA",
+          "url": "https://europepmc.org/articles/PMC1234567?pdf=render"
+        }
+      ],
+      "expected_url": "https://europepmc.org/articles/PMC1234567?pdf=render"
+    },
+    {
+      "name": "open_access_code_decides_over_contrary_label",
+      "fullTextUrl": [
+        {
+          "documentStyle": "pdf",
+          "site": "Europe_PMC",
+          "availability": "Subscription required",
+          "availabilityCode": "OA",
+          "url": "https://europepmc.org/articles/PMC1234567?pdf=render"
+        }
+      ],
+      "expected_url": "https://europepmc.org/articles/PMC1234567?pdf=render"
     }
   ]
 }
