@@ -659,8 +659,9 @@ class PubMedService @Inject constructor(
                 "Abstract" -> inAbstract = true
                 "AbstractText" -> abstractLabel = attributes.getValue("Label")
                 "MeshHeading" -> inMeshHeading = true
-                "ELocationID" -> eLocationIdType = attributes.getValue("EIdType")
-                "ArticleId" -> articleIdType = attributes.getValue("IdType")
+                // Types are compared lower-cased, as Python and Swift compare them
+                "ELocationID" -> eLocationIdType = attributes.getValue("EIdType")?.lowercase()
+                "ArticleId" -> articleIdType = attributes.getValue("IdType")?.lowercase()
             }
             elementStack.addLast(qName)
             // Start a fresh capture only for extracted elements, so inline-markup

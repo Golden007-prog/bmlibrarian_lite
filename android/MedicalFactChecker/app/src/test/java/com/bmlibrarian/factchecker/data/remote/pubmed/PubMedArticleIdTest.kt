@@ -27,20 +27,31 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import retrofit2.Response
+import java.io.File
 
 /**
  * A PubMed record's own identifiers, not those of the papers it cites (lite #404).
  *
- * The fixture is a trimmed real efetch body for PMID 33301246 (the Python
- * suite reads the same file): its own PMC ID and DOI differ from those of
- * the two papers in its `ReferenceList`.
+ * The fixture is a trimmed real efetch body for PMID 33301246, read from
+ * the repository's `tests/fixtures`, the one copy the Python and Swift
+ * suites read too: its own PMC ID and DOI differ from those of the two
+ * papers in its `ReferenceList`.
  */
 class PubMedArticleIdTest {
 
-    private val body: String =
-        requireNotNull(javaClass.classLoader?.getResource("pubmed/efetch_33301246.xml")) {
-            "the efetch fixture is missing"
-        }.readText()
+    private val body: String by lazy { fixtureFile().readText() }
+
+    private fun fixtureFile(): File {
+        val relative = "tests/fixtures/pubmed_efetch_33301246.xml"
+        var directory: File? = File("").absoluteFile
+        while (directory != null) {
+            val candidate = File(directory, relative)
+            if (candidate.isFile) return candidate
+            if (File(directory, ".git").exists()) break
+            directory = directory.parentFile
+        }
+        error("could not locate $relative above ${File("").absolutePath}")
+    }
 
     private suspend fun searchFor(xml: String): List<ParsedArticle> {
         val api: PubMedApi = mockk()
@@ -91,5 +102,41 @@ class PubMedArticleIdTest {
         )
         assertTrue(withoutOwnPmc != body)
         assertNull(searchFor(withoutOwnPmc).first().pmcId)
+    }
+
+    @Test
+    fun `an id type is read in any case`() = runTest {
+        // Without its ELocationID, the record's DOI is only in its ArticleIdList
+        val upperCased = body
+            .replace(
+                "<ArticleId IdType=\"doi\">10.1056/NEJMoa2034577</ArticleId></ArticleIdList><ReferenceList>",
+                "<ArticleId IdType=\"DOI\">10.1056/NEJMoa2034577</ArticleId></ArticleIdList><ReferenceList>"
+            )
+            .replace(
+                "<ArticleId IdType=\"pmc\">PMC7745181</ArticleId>",
+                "<ArticleId IdType=\"PMC\">PMC7745181</ArticleId>"
+            )
+            .replace(
+                "<ELocationID EIdType=\"doi\" ValidYN=\"Y\">10.1056/NEJMoa2034577</ELocationID>",
+                ""
+            )
+        assertTrue(upperCased.contains("IdType=\"DOI\"") && upperCased.contains("IdType=\"PMC\""))
+        assertTrue(!upperCased.contains("EIdType=\"doi\""))
+        val article = searchFor(upperCased).first()
+        assertEquals("10.1056/NEJMoa2034577", article.doi)
+        assertEquals("PMC7745181", article.pmcId)
+    }
+
+    @Test
+    fun `an elocation id type is read in any case`() = runTest {
+        // Without its own ArticleId DOI, the record's DOI is only in its ELocationID
+        val upperCased = body
+            .replace(
+                "<ArticleId IdType=\"doi\">10.1056/NEJMoa2034577</ArticleId></ArticleIdList><ReferenceList>",
+                "</ArticleIdList><ReferenceList>"
+            )
+            .replace("EIdType=\"doi\"", "EIdType=\"DOI\"")
+        assertTrue(upperCased.contains("EIdType=\"DOI\""))
+        assertEquals("10.1056/NEJMoa2034577", searchFor(upperCased).first().doi)
     }
 }
