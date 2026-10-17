@@ -692,8 +692,8 @@ class EuropePMCClient:
             query = f"PMCID:{accession}"
         elif pmid:
             if not is_canonical_pmid(pmid):
-                # The entries canonicalise a caller's PMID (bmlib#470, #472,
-                # #478); one that gets here unread is a programming error,
+                # The entries canonicalise a caller's PMID (bmlib#470, bmlib#472,
+                # bmlib#478); one that gets here unread is a programming error,
                 # and an unchecked value widens the query ("1 OR 2") or finds
                 # nothing (a padded PMID). Not asking is not absent.
                 logger.error(

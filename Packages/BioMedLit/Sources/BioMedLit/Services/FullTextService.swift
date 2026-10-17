@@ -2231,7 +2231,7 @@ public actor FullTextService {
     ///   - kind: What the record said it is, when it said.
     /// - Returns: The query, paired with how to name the identifier in a log,
     ///   or `nil` when the identifier is a PMID that is not canonical digits
-    ///   (bmlib#470, #472, #478): it is logged and not sent.
+    ///   (bmlib#470, bmlib#472, bmlib#478): it is logged and not sent.
     private static func primaryIdentifierQuery(
         for identifier: String,
         kind: ArticleIdentifierKind?
@@ -2256,7 +2256,7 @@ public actor FullTextService {
             )
 
         case .pubmed:
-            // A PMID is sent canonical or not at all (bmlib#470, #472, #478)
+            // A PMID is sent canonical or not at all (bmlib#470, bmlib#472, bmlib#478)
             return medlineQuery(for: identifier, describedAs: "PMID")
 
         // Nothing named this identifier's kind and its shape does not settle it.
@@ -2271,7 +2271,7 @@ public actor FullTextService {
 
     /// The `src:med` query for a slot that should hold a PMID, or `nil`.
     ///
-    /// A PMID is sent canonical or not at all (bmlib#470, #472, #478). A PMC ID
+    /// A PMID is sent canonical or not at all (bmlib#470, bmlib#472, bmlib#478). A PMC ID
     /// given where a PMID was expected is asked for as the PMC ID it is.
     private static func medlineQuery(for identifier: String, describedAs label: String) -> PMCQuery? {
         let reading = PMID.canonical(identifier)

@@ -93,7 +93,7 @@ final class FullTextServiceExtractionTests: XCTestCase {
     /// the rest.
     ///
     /// Digits, unlike `primaryPMID`: a slot of no stated kind is asked about
-    /// only as a canonical PMID (bmlib#470, #472, #478), and this test needs
+    /// only as a canonical PMID (bmlib#470, bmlib#472, bmlib#478), and this test needs
     /// that query to be sent. PubMed has assigned no PMID this high.
     private static let secondaryPMID = "99999002"
 

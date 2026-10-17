@@ -640,7 +640,7 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
     given_pmid = args.get("pmid")
     doi = args.get("doi")
     # The PMID is read before anything is asked with it: a padded one finds
-    # nothing and "1 OR 2" widens the query (bmlib#470, #472, #478). A
+    # nothing and "1 OR 2" widens the query (bmlib#470, bmlib#472, bmlib#478). A
     # refused one is the caller's, so the call goes on without it if a DOI
     # or PMC ID remains, and names it if none does
     pmid, pmc_id = read_caller_ids(given_pmid, args.get("pmc_id"))

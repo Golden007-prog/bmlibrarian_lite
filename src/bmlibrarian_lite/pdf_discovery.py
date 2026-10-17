@@ -738,7 +738,7 @@ class PDFDiscoverer:
         set_aside_paths: list[Path] = []
         # Read here, at the entry, so every caller is covered: the GUI's
         # download worker calls this directly with a stored PMID
-        # (bmlib#470, #472, #478)
+        # (bmlib#470, bmlib#472, bmlib#478)
         pmid, pmcid = read_caller_ids(pmid, pmcid)
         result = self._discover_and_download(
             output_path, doi, pmid, pmcid, title, expected_title, earlier_lookups,
@@ -1419,8 +1419,8 @@ class PDFDiscoverer:
             this path takes out the whole PMC route (#347).
         """
         if not is_canonical_pmid(pmid):
-            # The entries canonicalise a caller's PMID (bmlib#470, #472,
-            # #478); one that gets here unread is a programming error, and
+            # The entries canonicalise a caller's PMID (bmlib#470, bmlib#472,
+            # bmlib#478); one that gets here unread is a programming error, and
             # the converter would read "1,2" as two records. Not asking is
             # our failure, never the converter holding no record.
             logger.error(

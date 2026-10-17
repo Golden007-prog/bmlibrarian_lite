@@ -20,7 +20,7 @@ package com.bmlibrarian.factchecker.data.remote.fulltext
 import com.bmlibrarian.factchecker.util.Constants
 
 /**
- * What a caller's PMID value turned out to be (bmlib#470, #472, #478).
+ * What a caller's PMID value turned out to be (bmlib#470, bmlib#472, bmlib#478).
  *
  * @property pmid The canonical PMID (ASCII digits, no leading zeros), or null.
  * @property pmcId A PMC ID the caller passed as the PMID, or null.

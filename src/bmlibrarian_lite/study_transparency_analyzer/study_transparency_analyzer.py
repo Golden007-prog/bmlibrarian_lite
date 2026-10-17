@@ -2897,7 +2897,7 @@ class StudyTransparencyAnalyzer:
 
         # A PMID reaches efetch, which reads every run of digits as a PMID of
         # its own, and Europe PMC's query; it is read once here, before any
-        # request (bmlib#470, #472, #478). A refused one is logged and the
+        # request (bmlib#470, bmlib#472, bmlib#478). A refused one is logged and the
         # analysis goes on without it. A PMC ID given as the PMID is read as a
         # PMC ID and kept as the report's, for full-text discovery; it is the
         # caller's, so PubMed's own PMC ID never replaces it.

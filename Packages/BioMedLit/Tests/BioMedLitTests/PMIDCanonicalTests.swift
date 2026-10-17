@@ -5,7 +5,7 @@
 import XCTest
 @testable import BioMedLit
 
-/// A PMID is canonical ASCII digits, or it is not sent (bmlib#470, #472, #478):
+/// A PMID is canonical ASCII digits, or it is not sent (bmlib#470, bmlib#472, bmlib#478):
 /// the shared rows of `doc/cross_platform/fulltext_parity/pmid_canonical.json`,
 /// then where the reading is used.
 final class PMIDCanonicalTests: XCTestCase {

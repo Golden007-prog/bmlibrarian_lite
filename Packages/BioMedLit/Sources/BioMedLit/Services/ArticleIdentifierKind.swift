@@ -306,7 +306,7 @@ public enum ArticleIdentifierKind: Equatable, Hashable, Sendable {
               !value.isEmpty,
               resolved(declared: declared, accession: value) == .pubmed,
               isAllASCIIDigits(value) else { return nil }
-        // Canonical, for the URL (bmlib#470, #472, #478); all zeros is no PMID
+        // Canonical, for the URL (bmlib#470, bmlib#472, bmlib#478); all zeros is no PMID
         return PMID.canonical(value).pmid
     }
 
@@ -329,7 +329,7 @@ public enum ArticleIdentifierKind: Equatable, Hashable, Sendable {
     }
 }
 
-/// What a caller's PMID value turned out to be (bmlib#470, #472, #478).
+/// What a caller's PMID value turned out to be (bmlib#470, bmlib#472, bmlib#478).
 ///
 /// The three fields mirror Python's `PmidReading` and Kotlin's `PmidReading`;
 /// `doc/cross_platform/fulltext_parity/pmid_canonical.json` is the contract

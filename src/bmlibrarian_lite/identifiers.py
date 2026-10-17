@@ -2,7 +2,7 @@
 
 A PMID reaches Europe PMC's ``ext_id:`` query, NCBI's ID Converter and
 efetch. Until it was checked it reached all three as given, and two things
-went wrong (bmlib#470, #472, #478): Europe PMC finds nothing for a padded
+went wrong (bmlib#470, bmlib#472, bmlib#478): Europe PMC finds nothing for a padded
 ``0033301246`` where ``33301246`` finds the paper, so a padded PMID read as
 "Europe PMC holds no record"; and nothing required digits, so ``"1 OR 2"``
 widened the query past its ``src:med`` guard.

@@ -1,4 +1,4 @@
-"""A PMID is canonical ASCII digits, or it is not sent (bmlib#470, #472, #478)."""
+"""A PMID is canonical ASCII digits, or it is not sent (bmlib#470, bmlib#472, bmlib#478)."""
 
 from __future__ import annotations
 

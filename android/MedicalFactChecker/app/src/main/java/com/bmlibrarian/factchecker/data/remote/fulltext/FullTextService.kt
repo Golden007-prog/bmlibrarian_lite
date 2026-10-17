@@ -87,7 +87,7 @@ class FullTextService @Inject constructor(
         /**
          * The Europe PMC queries that name an article by the primary slot and DOI.
          *
-         * A PMID is sent canonical or not at all (bmlib#470, #472, #478): padded
+         * A PMID is sent canonical or not at all (bmlib#470, bmlib#472, bmlib#478): padded
          * digits lose their zeros, a refused value is not queried, and a PMC ID
          * given as the PMID is asked for as one.
          *
@@ -1025,7 +1025,7 @@ class FullTextService @Inject constructor(
         val queries = pmidQueries(pmid, doi)
         if (pmid != null && Pmid.canonical(pmid).refused) {
             // The caller's value, quoted so it cannot pass for a log line of
-            // its own (bmlib#470, #472, #478)
+            // its own (bmlib#470, bmlib#472, bmlib#478)
             Log.w(TAG, "Not a usable PMID, so Europe PMC was not asked about it: '${pmid.take(PMID_LOG_LIMIT)}'")
         }
         var accumulated = PmcResolution()

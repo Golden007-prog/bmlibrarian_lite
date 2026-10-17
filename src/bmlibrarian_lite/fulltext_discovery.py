@@ -375,8 +375,8 @@ class FulltextDiscoverer:
         refusals = _Refusals()
         # The PMID is read here, once, before any lookup: it reaches Europe
         # PMC's query, the ID Converter and the PubMed URLs, and a padded or
-        # malformed one finds nothing or widens the query (bmlib#470, #472,
-        # #478). The caller's dict is updated in place, as it is with the
+        # malformed one finds nothing or widens the query (bmlib#470, bmlib#472,
+        # bmlib#478). The caller's dict is updated in place, as it is with the
         # year Europe PMC reports.
         if doc_dict is not None:
             pmid = pmid or doc_dict.get('pmid')
