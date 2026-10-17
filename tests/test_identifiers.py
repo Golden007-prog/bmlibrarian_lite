@@ -253,3 +253,126 @@ def test_an_object_whose_text_is_digits_is_still_refused() -> None:
 
     assert canonical_pmid(Digits()).refused
     assert canonical_pmid(decimal.Decimal(33301246)).refused
+
+
+def test_discover_and_download_canonicalises_at_its_entry(monkeypatch) -> None:
+    """A stored padded PMID reaches the ID Converter canonical, with no ERROR."""
+    from bmlibrarian_lite import pdf_discovery
+    from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
+
+    d = PDFDiscoverer.__new__(PDFDiscoverer)
+    d._session = MagicMock()
+    d._session.get.return_value.json.return_value = {"records": []}
+    monkeypatch.setattr(pdf_discovery, "replace", lambda r, **k: r)
+    asked: list = []
+
+    def fake_inner(self, output_path, doi, pmid, pmcid, *a, **k):
+        asked.append(self._get_pmcid_from_pmid(pmid) if pmid else None)
+        return MagicMock()
+
+    monkeypatch.setattr(PDFDiscoverer, "_discover_and_download", fake_inner)
+    d.discover_and_download(Path("/x.pdf"), pmid="0033301246")
+    url = d._session.get.call_args.args[0]
+    assert "ids=33301246&" in url
+
+
+def test_discover_and_download_refuses_a_bad_pmid(monkeypatch, caplog) -> None:
+    """No ID Converter request, a WARNING and no ERROR."""
+    from bmlibrarian_lite import pdf_discovery
+    from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
+
+    d = PDFDiscoverer.__new__(PDFDiscoverer)
+    d._session = MagicMock()
+    monkeypatch.setattr(pdf_discovery, "replace", lambda r, **k: r)
+    seen: dict = {}
+
+    def fake_inner(self, output_path, doi, pmid, pmcid, *a, **k):
+        seen.update(pmid=pmid, pmcid=pmcid)
+        return MagicMock()
+
+    monkeypatch.setattr(PDFDiscoverer, "_discover_and_download", fake_inner)
+    with caplog.at_level(logging.WARNING):
+        d.discover_and_download(Path("/x.pdf"), pmid="1 OR 2", doi="10.1/x")
+    assert seen == {"pmid": None, "pmcid": None}
+    d._session.get.assert_not_called()
+    assert "'1 OR 2'" in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+
+def test_discover_and_download_reads_a_pmc_id_given_as_pmid(monkeypatch) -> None:
+    """The PMC ID fills pmcid when the caller gave none."""
+    from bmlibrarian_lite import pdf_discovery
+    from bmlibrarian_lite.pdf_discovery import PDFDiscoverer
+
+    d = PDFDiscoverer.__new__(PDFDiscoverer)
+    monkeypatch.setattr(pdf_discovery, "replace", lambda r, **k: r)
+    seen: dict = {}
+    monkeypatch.setattr(
+        PDFDiscoverer, "_discover_and_download",
+        lambda self, o, doi, pmid, pmcid, *a, **k: seen.update(pmid=pmid, pmcid=pmcid) or MagicMock(),
+    )
+    d.discover_and_download(Path("/x.pdf"), pmid="PMC7745181")
+    assert seen == {"pmid": None, "pmcid": "PMC7745181"}
+
+
+def _analyzer(monkeypatch):
+    from bmlibrarian_lite.study_transparency_analyzer import study_transparency_analyzer as m
+
+    a = m.StudyTransparencyAnalyzer.__new__(m.StudyTransparencyAnalyzer)
+    a._auto_discover_fulltext = True
+    return m, a
+
+
+def test_analyzer_pmc_id_as_pmid_reaches_full_text_discovery(monkeypatch) -> None:
+    """report.pmcid is the caller's PMC ID, passed to discovery, never replaced."""
+    m, a = _analyzer(monkeypatch)
+    seen: dict = {}
+
+    def meta(self, report):
+        seen["before"] = (report.pmid, report.pmcid)
+        # as PubMed's record would, via the real assignment's guard
+        pubmed = {"pmcid": "PMC999"}
+        if pubmed.get("pmcid") and not report.pmcid:
+            report.pmcid = pubmed["pmcid"]
+
+    def discover(self, report):
+        seen["discover"] = (report.pmid, report.pmcid)
+        raise StopIteration
+
+    monkeypatch.setattr(m.StudyTransparencyAnalyzer, "_fetch_basic_metadata", meta)
+    monkeypatch.setattr(m.StudyTransparencyAnalyzer, "_discover_fulltext", discover)
+    try:
+        a.analyze(pmid="PMC7745181")
+    except StopIteration:
+        pass
+    assert seen["before"] == (None, "PMC7745181")
+    assert seen["discover"] == (None, "PMC7745181")
+
+
+def test_analyzer_basic_metadata_keeps_the_callers_pmc_id() -> None:
+    """The real _fetch_basic_metadata does not overwrite a caller's PMC ID."""
+    from bmlibrarian_lite.study_transparency_analyzer import study_transparency_analyzer as m
+
+    a = m.StudyTransparencyAnalyzer.__new__(m.StudyTransparencyAnalyzer)
+    a.pubmed = MagicMock()
+    a.crossref = MagicMock()
+    a.pubmed.fetch_article.return_value = m.RecordFetch.served({"pmcid": "PMC999", "title": "t"}) \
+        if hasattr(m.RecordFetch, "served") else MagicMock(record={"pmcid": "PMC999"}, failure=None)
+    report = m.TransparencyReport()
+    report.pmid = "1"
+    report.pmcid = "PMC7745181"
+    a._fetch_basic_metadata(report)
+    assert report.pmcid == "PMC7745181"
+    report2 = m.TransparencyReport()
+    report2.pmid = "1"
+    a._fetch_basic_metadata(report2)
+    assert report2.pmcid == "PMC999"
+
+
+def test_analyzer_error_names_the_refused_pmid() -> None:
+    """With nothing else to go on, the error names the value passed."""
+    from bmlibrarian_lite.study_transparency_analyzer import study_transparency_analyzer as m
+
+    a = m.StudyTransparencyAnalyzer.__new__(m.StudyTransparencyAnalyzer)
+    report = a.analyze(pmid="1 OR 2")
+    assert "'1 OR 2'" in report.errors[0]

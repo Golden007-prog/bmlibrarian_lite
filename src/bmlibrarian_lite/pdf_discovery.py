@@ -98,7 +98,7 @@ from .data_models import (
     SourceLookupFailure,
     SourceLookupSkipped,
 )
-from .identifiers import is_canonical_pmid
+from .identifiers import is_canonical_pmid, read_caller_ids
 from .elsevier_api import ElsevierArticleClient, ElsevierFetch, ElsevierOutcome, elsevier_eligible
 from .oa_landing_page import (
     choose_unpaywall_url,
@@ -736,6 +736,10 @@ class PDFDiscoverer:
         # Held by this call, never on the discoverer, so a discoverer used
         # for two discoveries at once never mixes their PDFs
         set_aside_paths: list[Path] = []
+        # Read here, at the entry, so every caller is covered: the GUI's
+        # download worker calls this directly with a stored PMID
+        # (bmlib#470, #472, #478)
+        pmid, pmcid = read_caller_ids(pmid, pmcid)
         result = self._discover_and_download(
             output_path, doi, pmid, pmcid, title, expected_title, earlier_lookups,
             core_text, set_aside_paths=set_aside_paths,
