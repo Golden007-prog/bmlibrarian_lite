@@ -189,4 +189,41 @@ class JATSAuthorRoleTest {
             </contrib-group>"""
         assertEquals(listOf("Inner"), authors(groups))
     }
+
+    // PR #570's review: the scope checks run before a contributor's own role.
+
+    @Test
+    fun `an own author role in a sub-article front-stub adds no author`() {
+        // PMC13298931's shape: PLOS's decision letter lists its academic editor
+        // with contrib-type="author".
+        val after = """<sub-article article-type="aggregated-review-documents"><front-stub><contrib-group>
+            <contrib contrib-type="author"><name><surname>Reviewer</surname><given-names>R</given-names></name>
+            <role>Academic Editor</role></contrib></contrib-group></front-stub></sub-article>"""
+        assertEquals(listOf("Smith"), authorsOf(ownMeta, after))
+    }
+
+    @Test
+    fun `an own author role in journal-meta adds no author`() {
+        val front = """<journal-meta><contrib-group>${contrib("Editor", attrs = "contrib-type=\"author\"")}</contrib-group>
+            </journal-meta>$ownMeta"""
+        assertEquals(listOf("Smith"), authorsOf(front))
+    }
+
+    @Test
+    fun `an own author role in a collab roster is not listed`() {
+        val groups = """<contrib-group content-type="author">${contrib("Smith")}
+            <contrib><collab>Study Group<contrib-group>${contrib("Member", attrs = "contrib-type=\"author\"")}
+            </contrib-group></collab></contrib></contrib-group>"""
+        assertEquals(listOf("Smith"), authors(groups))
+    }
+
+    @Test
+    fun `name-alternatives give the last spelling`() {
+        // PMC12337215's contributor, verbatim: the native-script spelling first.
+        val groups = """<contrib-group><contrib contrib-type="author"><name-alternatives>
+            <name name-style="eastern"><surname>周</surname><given-names initials="诚程">诚程</given-names></name>
+            <name xml:lang="en" name-style="western"><surname>Zhou</surname><given-names initials="C">Chengcheng</given-names></name>
+            </name-alternatives><xref rid="aff1" ref-type="aff">1</xref></contrib></contrib-group>"""
+        assertEquals(listOf("Zhou"), authors(groups))
+    }
 }
