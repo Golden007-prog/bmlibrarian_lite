@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "bmlib_commit": "f4b7c5291d55c5bf825939b14662da5785fa96af",
+  "bmlib_commit": "a368a673d4467897ac7837945a556f8d67075a44",
   "from_bmlib": [
     {
       "id": "lite:pubmed-articleid-reference-list",
@@ -796,7 +796,7 @@
     },
     {
       "id": "bmlib#138",
-      "title": "No number is invented for an exhibit the publisher did not number",
+      "title": "Both JATS corpora are redrawn from a named public artifact, and the walk is scoped the way the parser is",
       "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
@@ -837,7 +837,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Article metadata read only where deposited; WP 4.1 / 4.3 with bmlib#254, bmlib#259."
+      "note": "Article metadata read only where deposited; WP 4.1 / 4.3 with bmlib#254, bmlib#259; unaudited at seeding."
     },
     {
       "id": "bmlib#158",
@@ -945,7 +945,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Python gates on has_fulltext_xml (no PMID asked at fullTextXML); mobile not audited."
+      "note": "Python gates on has_fulltext_xml (no PMID asked at fullTextXML); swift and android unaudited at seeding."
     },
     {
       "id": "bmlib#190",
@@ -999,7 +999,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206."
+      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206; unaudited at seeding."
     },
     {
       "id": "bmlib#200",
@@ -1017,7 +1017,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206."
+      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206; unaudited at seeding."
     },
     {
       "id": "bmlib#203",
@@ -1026,7 +1026,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206."
+      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206; unaudited at seeding."
     },
     {
       "id": "bmlib#204",
@@ -1214,8 +1214,8 @@
       "python": "owed",
       "swift": "owed",
       "android": "owed",
-      "issue": null,
-      "note": "One structured component is never a citation; WP 4.2."
+      "issue": "#299",
+      "note": "One structured component is never a citation; WP 4.2; lite #299 tracks the Swift and Kotlin defect; unaudited at seeding."
     },
     {
       "id": "bmlib#271",
@@ -1278,7 +1278,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308."
+      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308; unaudited at seeding."
     },
     {
       "id": "bmlib#301",
@@ -1287,7 +1287,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308."
+      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308; unaudited at seeding."
     },
     {
       "id": "bmlib#303",
@@ -1296,7 +1296,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308."
+      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308; unaudited at seeding."
     },
     {
       "id": "bmlib#305",
@@ -1341,7 +1341,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
     },
     {
       "id": "bmlib#312",
@@ -1350,7 +1350,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
     },
     {
       "id": "bmlib#317",
@@ -1359,7 +1359,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
     },
     {
       "id": "bmlib#318",
@@ -1368,7 +1368,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
     },
     {
       "id": "bmlib#319",
@@ -1377,7 +1377,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
     },
     {
       "id": "bmlib#323",
@@ -1504,6 +1504,204 @@
       "android": "owed",
       "issue": null,
       "note": "Unpaired-surrogate body must not escape analyze(); WP 3.7 area; unaudited at seeding."
+    },
+    {
+      "id": "bmlib#145",
+      "title": "A JATS contributor carries its affiliations",
+      "python": "n/a",
+      "swift": "owed",
+      "android": "owed",
+      "issue": "#154",
+      "note": "WP 4.1. Swift's and Kotlin's public `JATSAuthorInfo.affiliations` is always empty: Swift writes `currentAffiliations` and never reads it, Kotlin only toggles `inAff` (lite #154). Nothing renders affiliations, as bmlib's HTML does not, so no reader sees a wrong value today. The desktop's markdown prints author names only and has no contributor model."
+    },
+    {
+      "id": "bmlib#475",
+      "title": "A caller's DOI is stripped, and a blank one is no DOI",
+      "python": "owed",
+      "swift": "owed",
+      "android": "owed",
+      "issue": "#574",
+      "note": "WP 3.7. Transparency takes a blank DOI as an identifier on all three: Python `if not doi and not pmid` (study_transparency_analyzer.py), Swift `doi != nil`, Kotlin `doi == null` (lite #574). Full text partly done: Android trims and drops a blank DOI (FullTextService.kt), Swift trims at several sources, Python's PDF discovery strips; the rest of each chain hasn't been read."
+    },
+    {
+      "id": "bmlib#166",
+      "title": "Six ways the exhibit sampler reported more than it measured",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib#167",
+      "title": "Six ways the exhibit sampler reported more than it measured",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib#168",
+      "title": "Six ways the exhibit sampler reported more than it measured",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib#169",
+      "title": "Six ways the exhibit sampler reported more than it measured",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-manual-log-level-and-warning-channels",
+      "title": "The manual documented a log level that had been replaced, and indexed two of ten WARNING channels",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib documentation; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-readme-and-manual-reconciled",
+      "title": "`README.md` and `docs/manual/index.md` are reconciled with the package",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib documentation; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-api-sampler-request-and-draw",
+      "title": "`scripts/sample_api_failures.py` measured a request bmlib does not make, and its draw was not the one its numbers describe",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-counter-redefined-in-place",
+      "title": "A counter redefined in place is invisible to every sentinel, and a stale journal pooled with it",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-stale-cross-corpus-sums",
+      "title": "Stale cross-corpus sums",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "Figures quoted in bmlib's docs and comments; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-label-owners-printed",
+      "title": "The #162 label owners were measured, committed, and printed nowhere",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-counter-generation-sentinel",
+      "title": "A counter generation reached the registry and not the sentinel",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-counter-population-totals",
+      "title": "An article carrying a `Counter` population counted as none of them",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-exhibit-sampler-months-ago",
+      "title": "`--months-ago` on `scripts/sample_jats_exhibits.py`",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib:unreleased-undeclared-archival-master",
+      "title": "An undeclared archival master beat the web image beside it",
+      "python": "n/a",
+      "swift": "owed",
+      "android": "owed",
+      "issue": "#578",
+      "note": "WP 4.1 / 4.5, with bmlib#117. The desktop renders no figure image (`graphic` is in jats_markdown's `_SILENT_TAGS`). Swift ranks a master from `mime-subtype` alone, so an undeclared TIFF deposited first beats the JPEG after it (lite #578). Android keeps the last `<graphic>`, which has no such regression, but its bmlib#117 port must bring this rule with it (lite #165)."
+    },
+    {
+      "id": "bmlib:unreleased-nested-exhibit-graphic",
+      "title": "A nested exhibit's `<graphic>` was donated to the figure enclosing it",
+      "python": "n/a",
+      "swift": "owed",
+      "android": "owed",
+      "issue": "#578",
+      "note": "WP 4.1 / 4.5, with bmlib#117. The desktop renders no figure image. Swift routes a `<graphic>` by its owner but treats only `<alternatives>` as transparent, not `<p>`, so a figure whose graphic sits in a `<p>` loses it (lite #578). Android hands every `<graphic>` to the open figure (lite #165)."
+    },
+    {
+      "id": "bmlib:unreleased-inner-exhibit-label-and-caption",
+      "title": "An inner exhibit's label and caption went to the exhibit enclosing it",
+      "python": "owed",
+      "swift": "ported",
+      "android": "owed",
+      "issue": "#165",
+      "note": "WP 4.1 / 4.5, with bmlib#115 and bmlib#116. Python's `.//caption/p` takes the first caption anywhere under a `<fig>`, a nested table's when the figure has none. Swift routes both by `innermostExhibit`. Android routes `<label>` and caption `<p>` on `inFigure` before `inTableWrap` (lite #165)."
+    },
+    {
+      "id": "bmlib:unreleased-identifier-from-declared-type",
+      "title": "An identifier is read from the type the document declares, not from its shape",
+      "python": "equivalent",
+      "swift": "ported",
+      "android": "owed",
+      "issue": "#573",
+      "note": "The desktop reads only `pub-id-type=\"doi\"` (jats_markdown.py) and has no shape fallback. Swift: lite PR #142. Android takes any untyped or unrecognised-type id starting `10.` as the DOI, over a typed one (lite #573)."
+    },
+    {
+      "id": "bmlib:unreleased-untyped-pmc-article-id",
+      "title": "An untyped `PMC…` article-id no longer overwrites the PMC id",
+      "python": "n/a",
+      "swift": "ported",
+      "android": "owed",
+      "issue": "#573",
+      "note": "The desktop reads no PMC id from JATS. Swift: lite PR #142 (`pmcIdIsAuthoritative`). Android's fallback overwrites the caller's and the typed PMC id, and `pmcid-ver` reaches it (lite #573)."
+    },
+    {
+      "id": "bmlib:unreleased-suppressed-nested-articles",
+      "title": "`JATSArticle.suppressed_nested_articles`",
+      "python": "owed",
+      "swift": "owed",
+      "android": "owed",
+      "issue": null,
+      "note": "WP 4.5, with bmlib#110. Python and Swift skip `<sub-article>`/`<response>` and count nothing, so a reader can't tell that a nested article was there. Android skips none yet (bmlib#110 owed) and needs the count with it. No stored text moves."
+    },
+    {
+      "id": "bmlib:unreleased-efetch-paging-sampler",
+      "title": "`scripts/sample_efetch_paging.py`",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
     }
   ],
   "to_bmlib": [
