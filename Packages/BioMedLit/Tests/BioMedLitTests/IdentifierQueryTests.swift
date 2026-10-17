@@ -126,17 +126,20 @@ final class IdentifierQueryTests: XCTestCase {
         )
     }
 
-    /// An accession shape the routing does not recognise falls through to
-    /// `src:med`, where it matches nothing.
+    /// An accession shape the routing does not recognise is not asked of
+    /// `src:med`, where it could match nothing.
     ///
     /// Europe PMC returns records whose `id` is an `PAT…`, `AGR…` or `ETH…`
-    /// accession, and none of those is a PubMed ID. Pinned so the fall-through
-    /// is a decision on record rather than an accident: a future rung for one of
-    /// these shapes should change this expectation deliberately. The zero-hit
-    /// search it produces is now logged by `searchForPMCIdAndPDFUrl`, which is
-    /// what keeps it from being silent the way #202 was.
-    func testAnUnrecognisedAccessionShapeFallsThroughToTheMedlineSource() {
-        XCTAssertEqual(queries(pmid: "CN101548780", doi: nil), ["ext_id:CN101548780 src:med"])
+    /// accession, and none of those is a PubMed ID. It used to fall through to
+    /// `ext_id:<id> src:med`, a search that could only come back empty; since
+    /// bmlib#470 only canonical digits reach that query, because an unchecked
+    /// value there can also widen it (`1 OR 2`). Changed deliberately: the
+    /// dead end is now logged by `primaryIdentifierQuery` instead of asked,
+    /// which keeps it from being silent the way #202 was. A future rung for
+    /// one of these shapes should change this expectation deliberately too.
+    func testAnUnrecognisedAccessionShapeIsNotAskedOfTheMedlineSource() {
+        XCTAssertEqual(queries(pmid: "CN101548780", doi: nil), [])
+        XCTAssertEqual(queries(pmid: "CN101548780", doi: "10.1/abc"), ["DOI:\"10.1/abc\""])
     }
 
     // MARK: - The Kind Europe PMC Stated (#209)
@@ -173,12 +176,14 @@ final class IdentifierQueryTests: XCTestCase {
     }
 
     /// `.unknown` is what a record that stated nothing resolves to when its
-    /// shape does not settle the kind either, and it keeps the documented
-    /// fall-through rather than inventing a source.
-    func testAnUnknownKindKeepsTheMedlineFallThrough() {
+    /// shape does not settle the kind either. It invents no source: bare
+    /// digits are asked of `src:med` as a PMID, and anything else is not asked
+    /// at all (bmlib#470), as with no stated kind above.
+    func testAnUnknownKindAsksOnlyDigitsOfTheMedlineSource() {
+        XCTAssertEqual(queries(pmid: "CN101548780", doi: nil, primaryKind: .unknown), [])
         XCTAssertEqual(
-            queries(pmid: "CN101548780", doi: nil, primaryKind: .unknown),
-            ["ext_id:CN101548780 src:med"]
+            queries(pmid: "33301246", doi: nil, primaryKind: .unknown),
+            ["ext_id:33301246 src:med"]
         )
     }
 }

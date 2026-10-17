@@ -2168,8 +2168,10 @@ public actor FullTextService {
         primaryKind: ArticleIdentifierKind? = nil
     ) -> [PMCQuery] {
         var queries: [PMCQuery] = []
-        if let identifier = trimmed(pmid) {
-            queries.append(primaryIdentifierQuery(for: identifier, kind: primaryKind))
+        // Stripped as the PMID contract strips: a trailing U+200B is kept, and refused
+        if let identifier = pmid.map(PMID.stripped), !identifier.isEmpty,
+           let query = primaryIdentifierQuery(for: identifier, kind: primaryKind) {
+            queries.append(query)
         }
         if let pmcId = trimmed(pmcId) {
             queries.append(
@@ -2227,11 +2229,13 @@ public actor FullTextService {
     /// - Parameters:
     ///   - identifier: The trimmed, non-empty primary identifier.
     ///   - kind: What the record said it is, when it said.
-    /// - Returns: The query, paired with how to name the identifier in a log.
+    /// - Returns: The query, paired with how to name the identifier in a log,
+    ///   or `nil` when the identifier is a PMID that is not canonical digits
+    ///   (bmlib#470, bmlib#472, bmlib#478): it is logged and not sent.
     private static func primaryIdentifierQuery(
         for identifier: String,
         kind: ArticleIdentifierKind?
-    ) -> PMCQuery {
+    ) -> PMCQuery? {
         switch ArticleIdentifierKind.resolved(declared: kind, accession: identifier) {
         case .preprint:
             return PMCQuery(
@@ -2252,22 +2256,69 @@ public actor FullTextService {
             )
 
         case .pubmed:
-            return PMCQuery(
-                describedAs: "PMID \(identifier)",
-                query: "ext_id:\(identifier) src:\(BioMedLitConstants.europePMCMedlineSource)"
-            )
+            // A PMID is sent canonical or not at all (bmlib#470, bmlib#472, bmlib#478)
+            return medlineQuery(for: identifier, describedAs: "PMID")
 
         // Nothing named this identifier's kind and its shape does not settle it.
-        // `src:med` is where such a value has always gone; it matches nothing
-        // unless the value really is a PubMed ID, and
-        // `searchForPMCIdAndPDFUrl` logs the empty result so the dead end is
-        // visible rather than silent.
+        // Bare digits, which is how a PMID arrives from a record that stated
+        // nothing, are asked of `src:med`, canonical. Anything else is not
+        // sent: `src:med` holds only PubMed records, so a patent or AGRICOLA
+        // accession (`CN101548780`) can match nothing there, and an unchecked
+        // value can widen the query (`1 OR 2`; bmlib#470). It is logged rather
+        // than asked, so the dead end is visible rather than silent (#202),
+        // and named for what it is: an identifier of unstated kind, not a
+        // malformed PMID.
         case .unknown:
+            guard PMID.canonical(identifier).pmid != nil else {
+                BioMedLitLib.logger?.info(
+                    "An identifier of unstated kind is not a PubMed ID, so Europe PMC's "
+                        + "PubMed source was not asked about it: \(PMID.logQuoted(identifier))",
+                    category: .fullText
+                )
+                return nil
+            }
+            return medlineQuery(for: identifier, describedAs: "identifier")
+        }
+    }
+
+    /// The `src:med` query for a slot that should hold a PMID, or `nil`.
+    ///
+    /// A PMID is sent canonical or not at all (bmlib#470, bmlib#472, bmlib#478). A PMC ID
+    /// given where a PMID was expected is asked for as the PMC ID it is.
+    private static func medlineQuery(for identifier: String, describedAs label: String) -> PMCQuery? {
+        let reading = PMID.canonical(identifier)
+        if let pmcId = reading.pmcId {
+            // As Python's read_caller_ids and Kotlin log it
+            BioMedLitLib.logger?.warning(
+                "The PMID \(PMID.logQuoted(identifier)) is a PMC ID, so it is read as one",
+                category: .fullText
+            )
             return PMCQuery(
-                describedAs: "identifier \(identifier)",
-                query: "ext_id:\(identifier) src:\(BioMedLitConstants.europePMCMedlineSource)"
+                describedAs: "PMC ID \(pmcId)",
+                query: "\(BioMedLitConstants.europePMCPMCIDField):\(pmcId)"
             )
         }
+        guard let pmid = canonicalPMIDOrLog(identifier) else { return nil }
+        return PMCQuery(
+            describedAs: "\(label) \(pmid)",
+            query: "ext_id:\(pmid) src:\(BioMedLitConstants.europePMCMedlineSource)"
+        )
+    }
+
+    /// The canonical PMID a `src:med` query may carry, or `nil` after logging.
+    ///
+    /// Padded digits come back without their zeros, which Europe PMC finds
+    /// where it finds nothing for the padded form. Anything that is not ASCII
+    /// digits is not sent: it would widen the query (`1 OR 2`) or name no
+    /// record. The value is logged quoted and escaped (``PMID/logQuoted(_:)``),
+    /// so a newline in it cannot start a log line of its own.
+    private static func canonicalPMIDOrLog(_ identifier: String) -> String? {
+        if let pmid = PMID.canonical(identifier).pmid { return pmid }
+        BioMedLitLib.logger?.warning(
+            "Not a usable PMID, so Europe PMC was not asked about it: \(PMID.logQuoted(identifier))",
+            category: .fullText
+        )
+        return nil
     }
 
     /// The primary slot's value, when it really is a PubMed ID.
