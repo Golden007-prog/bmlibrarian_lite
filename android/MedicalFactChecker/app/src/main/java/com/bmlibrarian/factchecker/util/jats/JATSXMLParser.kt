@@ -109,6 +109,13 @@ class JATSXMLParser(
     private var inFront = false
     private var inArticleMeta = false
     private var inContribGroup = false
+
+    /**
+     * The `content-type` of each open `<contrib-group>`, innermost last; an empty
+     * string where a group declares none. A stack, not one value, because a group
+     * may nest (a collaboration's roster): the innermost *declared* role decides.
+     */
+    private val contribGroupTypes = mutableListOf<String>()
     private var inContrib = false
     private var inAff = false
 
@@ -227,6 +234,24 @@ class JATSXMLParser(
     }
 
     /**
+     * Is this `<contrib>` one of the article's authors (bmlib#111)?
+     *
+     * A contributor's own non-empty `contrib-type` decides alone. Otherwise the
+     * innermost enclosing `<contrib-group>` that declares a non-empty
+     * `content-type` decides; where none does, the contributor is an author. An
+     * empty attribute declares nothing, and the comparison folds case. A bare
+     * contributor outside `<front>` (a reference's) is not inferred an author.
+     */
+    private fun isAuthorContrib(contribType: String?): Boolean {
+        val own = contribType?.trim().orEmpty()
+        if (own.isNotEmpty()) return own.equals("author", ignoreCase = true)
+        // A collaboration's member roster is not the article's authors.
+        if (!inFront || "collab" in elementStack) return false
+        val declared = contribGroupTypes.lastOrNull { it.isNotEmpty() }
+        return declared == null || declared.equals("author", ignoreCase = true)
+    }
+
+    /**
      * Parse the XML and return the structured article data.
      *
      * @return JATSArticle containing all parsed data.
@@ -293,9 +318,12 @@ class JATSXMLParser(
             // Document structure
             "front" -> inFront = true
             "article-meta" -> inArticleMeta = true
-            "contrib-group" -> inContribGroup = true
+            "contrib-group" -> {
+                inContribGroup = true
+                contribGroupTypes.add(parser.getAttributeValue(null, "content-type")?.trim().orEmpty())
+            }
             "contrib" -> {
-                if (parser.getAttributeValue(null, "contrib-type") == "author") {
+                if (isAuthorContrib(parser.getAttributeValue(null, "contrib-type"))) {
                     inContrib = true
                     currentAuthor = AuthorBuilder()
                 }
@@ -410,7 +438,10 @@ class JATSXMLParser(
             // Document structure
             "front" -> inFront = false
             "article-meta" -> inArticleMeta = false
-            "contrib-group" -> inContribGroup = false
+            "contrib-group" -> {
+                contribGroupTypes.removeLastOrNull()
+                inContribGroup = contribGroupTypes.isNotEmpty()
+            }
             "contrib" -> {
                 if (inContrib) {
                     currentAuthor?.build()?.let { authors.add(it) }
@@ -557,13 +588,13 @@ class JATSXMLParser(
             "surname" -> {
                 when {
                     inRefPersonGroup -> currentReference?.currentAuthorSurname = text
-                    inContrib -> currentAuthor?.surname = text
+                    inContrib && "collab" !in elementStack -> currentAuthor?.surname = text
                 }
             }
             "given-names" -> {
                 when {
                     inRefPersonGroup -> currentReference?.currentAuthorGivenNames = text
-                    inContrib -> currentAuthor?.givenNames = text
+                    inContrib && "collab" !in elementStack -> currentAuthor?.givenNames = text
                 }
             }
             "name" -> {
