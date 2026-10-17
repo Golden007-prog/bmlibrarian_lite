@@ -6,6 +6,8 @@
 
 **Architecture:** Phase 0 builds the sync ledger and its CI check. Phase 1 fixes the defects that give wrong results today (full TDD tasks below). Phase 2 is a gate: a spike that decides whether Swift and Android take bmlib's Rust crate through UniFFI instead of hand-porting. Phases 3–7 are work packages; each is expanded into its own plan with this document's conventions when it is picked up, and Phase 4 (JATS on mobile) is shaped by the Phase 2 decision. Every rule shared by more than one platform gets a contract JSON under `doc/cross_platform/` that all three test suites read.
 
+**Status (2026-10-18):** Phases 0 to 2 have landed: the ledger (PR #564), Tasks 1 to 6 (PRs #565 to #570), and WP-2 (PR #572; verdict "Phase 4 consumes Rust"). The ledger's statuses were updated after they merged, and its pin was bumped to bmlib 0.11.0. Phase 7's retraction checking is next.
+
 **Tech Stack:** Python 3.12 / pytest / ElementTree; Swift 6 / SwiftPM / XCTest; Kotlin / JUnit / kxml2 (JVM tests); Rust + UniFFI (Phase 2 only).
 
 **Spec:** The 2026-10-17 audit of bmlib `[Unreleased]` against all three ports, recorded as the gap register in [Appendix A](#appendix-a-gap-register). The bmlib side of each rule is its `CHANGELOG.md` entry, cited by bmlib issue number (`bmlib#N`). The earlier gap list is `doc/cross_platform/ios_bmlib_alignment.md` (dated 2026-08-20). The opposite direction is `~/src/bmlib/docs/superpowers/plans/2026-10-17-adopt-bmlibrarian-lite-advances.md`.
@@ -58,7 +60,7 @@
   It prints what is missing, then counts of `owed` per platform. It exits 2 when an input can't be read: a malformed ledger, or a changelog with no `## [0.10.0]` heading, no `- **` entries, or an entry bulleted `*` or `+`. Without that, an unparsed changelog would pass as "nothing missing". `--print-commit` validates the ledger and prints `bmlib_commit`.
 - Produces: `missing_entries(changelog_text: str, ledger: dict) -> list[str]` and `changelog_issue_ids(changelog_text: str) -> set[str]` in the script, importable for tests.
 
-- [ ] **Step 1: Write the failing tests** in `tests/test_bmlib_ledger.py`:
+- [x] **Step 1: Write the failing tests** in `tests/test_bmlib_ledger.py`:
 
 ```python
 CHANGELOG = """## [Unreleased]
@@ -93,13 +95,13 @@ def test_the_committed_ledger_is_well_formed() -> None:
 
 A title line is a line beginning `- **`, together with its continuation lines up to the first line that does not end inside the parenthesised group. Take the issue numbers from that group only.
 
-- [ ] **Step 2:** Run `pytest tests/test_bmlib_ledger.py -v`. Expected: FAIL (module not found).
-- [ ] **Step 3:** Implement the script. Seed `ledger.json` from [Appendix A](#appendix-a-gap-register) (`from_bmlib`) and from the bmlib plan's Appendix (`to_bmlib`), with `bmlib_commit: "f4b7c52"`. The README says: bumping `bmlib_commit` is how a sync starts; every new id must be triaged before CI passes; `declined` needs a `note` giving the reason.
-- [ ] **Step 4:** Run `pytest tests/test_bmlib_ledger.py -v`. Expected: PASS. Then run the script against `CHANGELOG.md` as it stands at `bmlib_commit`, not against the working tree of `~/src/bmlib`, which may be ahead of it. The README gives the commands (`git -C ~/src/bmlib show <sha>:CHANGELOG.md`). Expected: exit 0.
-- [ ] **Step 5:** Add a CI job that checks out `hherb/bmlib` at `bmlib_commit` and runs the script (`hherb/bmlib` is public, so no token is needed).
+- [x] **Step 2:** Run `pytest tests/test_bmlib_ledger.py -v`. Expected: FAIL (module not found).
+- [x] **Step 3:** Implement the script. Seed `ledger.json` from [Appendix A](#appendix-a-gap-register) (`from_bmlib`) and from the bmlib plan's Appendix (`to_bmlib`), with `bmlib_commit: "f4b7c52"`. The README says: bumping `bmlib_commit` is how a sync starts; every new id must be triaged before CI passes; `declined` needs a `note` giving the reason.
+- [x] **Step 4:** Run `pytest tests/test_bmlib_ledger.py -v`. Expected: PASS. Then run the script against `CHANGELOG.md` as it stands at `bmlib_commit`, not against the working tree of `~/src/bmlib`, which may be ahead of it. The README gives the commands (`git -C ~/src/bmlib show <sha>:CHANGELOG.md`). Expected: exit 0.
+- [x] **Step 5:** Add a CI job that checks out `hherb/bmlib` at `bmlib_commit` and runs the script (`hherb/bmlib` is public, so no token is needed).
 
   That job can fail only when someone edits the ledger, so it can't see bmlib move. Add a second workflow, `bmlib-drift.yml`, on a weekly cron and `workflow_dispatch`. It runs the script against bmlib's `main` and fails, listing the missing ids, until the pin is bumped and the entries are added. It never runs on a pull request, so bmlib moving never blocks a merge.
-- [ ] **Step 6:** Commit: `feat(sync): a ledger of bmlib's changes and their port status, checked in CI`.
+- [x] **Step 6:** Commit: `feat(sync): a ledger of bmlib's changes and their port status, checked in CI`.
 
 ---
 
@@ -122,7 +124,7 @@ bmlib#474, plus a defect bmlib never had. `study_transparency_analyzer.py:1527` 
 - Produces: `served_pmids(root: ET.Element) -> list[str]`, used for the WARNING.
 - Changes: `PubMedClient._parse_pubmed_xml(self, xml_text: str, pmid: str) -> RecordFetch`. `fetch_article` passes its `pmid`.
 
-- [ ] **Step 1: Write the failing tests** in `tests/test_pubmed_record_ids.py`. Build the fixture from a trimmed real efetch body (PMID 33301246: its own ids `PMC7745181` / `10.1056/NEJMoa2034577`, plus one `<Reference>` carrying `PMC7289658` / `10.1056/NEJMoa2027906`).
+- [x] **Step 1: Write the failing tests** in `tests/test_pubmed_record_ids.py`. Build the fixture from a trimmed real efetch body (PMID 33301246: its own ids `PMC7745181` / `10.1056/NEJMoa2034577`, plus one `<Reference>` carrying `PMC7289658` / `10.1056/NEJMoa2027906`).
 
 ```python
 def test_a_reference_id_is_never_the_articles() -> None:
@@ -156,12 +158,12 @@ def test_no_pubmed_article_is_still_absent() -> None:   # control
 
 Use the existing accessor names on `RecordFetch` in `data_models.py:224`. Add one test for `search_client` that parses the same body and asserts the article's own `doi` and `pmc_id`.
 
-- [ ] **Step 2:** Run `pytest tests/test_pubmed_record_ids.py -v`. Expected: FAIL.
-- [ ] **Step 3:** Implement `record_ids.py`. Use it in `_parse_pubmed_xml`: select the record with `record_for_pmid`; when PubMed served records and none matches, return `RecordFetch.unreachable(RequestFailure(RequestFailureKind.MALFORMED_RESPONSE))` with a WARNING naming `served_pmids`. Replace both `.//ArticleId` loops in `search_client.py` with `own_article_ids`.
-- [ ] **Step 4:** Run `pytest tests/ -q -k "pubmed or transparency or absence"`. Expected: PASS. Bump `TRANSPARENCY_ANALYZER_VERSION`, because stored COI and data ratings can move.
-- [ ] **Step 5: Android.** Write `PubMedArticleIdTest.kt`, asserting that the same body (as a test resource) yields the article's own DOI and PMC ID. Run `./gradlew test --tests '*PubMedArticleIdTest*'` and expect FAIL. Then track `ReferenceList` depth in the pull parser and ignore `ArticleId` while the depth is above 0; the first value per type wins. Expect PASS.
-- [ ] **Step 6:** Mutation-sweep `record_ids.py` (the fixed path, direct-child PMID, strip, first-wins). Every mutant must be killed.
-- [ ] **Step 7:** Commit: `fix(pubmed): read a record's own ids, from the record asked about (bmlib#474)`. Tag lite #404 for the Android half.
+- [x] **Step 2:** Run `pytest tests/test_pubmed_record_ids.py -v`. Expected: FAIL.
+- [x] **Step 3:** Implement `record_ids.py`. Use it in `_parse_pubmed_xml`: select the record with `record_for_pmid`; when PubMed served records and none matches, return `RecordFetch.unreachable(RequestFailure(RequestFailureKind.MALFORMED_RESPONSE))` with a WARNING naming `served_pmids`. Replace both `.//ArticleId` loops in `search_client.py` with `own_article_ids`.
+- [x] **Step 4:** Run `pytest tests/ -q -k "pubmed or transparency or absence"`. Expected: PASS. Bump `TRANSPARENCY_ANALYZER_VERSION`, because stored COI and data ratings can move.
+- [x] **Step 5: Android.** Write `PubMedArticleIdTest.kt`, asserting that the same body (as a test resource) yields the article's own DOI and PMC ID. Run `./gradlew test --tests '*PubMedArticleIdTest*'` and expect FAIL. Then track `ReferenceList` depth in the pull parser and ignore `ArticleId` while the depth is above 0; the first value per type wins. Expect PASS.
+- [x] **Step 6:** Mutation-sweep `record_ids.py` (the fixed path, direct-child PMID, strip, first-wins). Every mutant must be killed.
+- [x] **Step 7:** Commit: `fix(pubmed): read a record's own ids, from the record asked about (bmlib#474)`. Tag lite #404 for the Android half.
 
 ### Task 2: A PMID is canonical ASCII digits, or it is not sent
 
@@ -186,13 +188,13 @@ bmlib#470, bmlib#472, bmlib#478. Python passes PMIDs unchecked into `europepmc.p
 - Produces: `canonical_pmid(value: object) -> PmidReading` in `identifiers.py`, where `PmidReading` is a frozen dataclass `(pmid: str | None, pmc_id: str | None, refused: bool)`. An `int` is its digits; `0` is no PMID; `bool` is refused.
 - Swift: `PMID.canonical(_ raw: String) -> PMIDReading`. Kotlin: `Pmid.canonical(raw: String): PmidReading`. Same three fields.
 
-- [ ] **Step 1:** Write `tests/test_identifiers.py`. It loads the contract and asserts every case, plus Python-only cases: `canonical_pmid(33301246).pmid == "33301246"`, `canonical_pmid(0).pmid is None and not canonical_pmid(0).refused`, `canonical_pmid(True).refused`. Add an MCP test: `get_document_fulltext({"pmid": "1 OR 2"})` makes no request (a mocked session asserts no call) and the result names the refused value.
-- [ ] **Step 2:** Run `pytest tests/test_identifiers.py tests/test_mcp_server.py -v`. Expected: FAIL.
-- [ ] **Step 3:** Implement `canonical_pmid` with `[0-9]+` and `re.ASCII`, then `lstrip("0")`. An all-zeros value is refused. Call it at the three entry points. A refused PMID logs a WARNING naming the value and proceeds as if no PMID were given, the way a malformed `pmcid` does. A PMC ID given as `pmid` fills `pmcid` only when the caller gave none. The Europe PMC lookup and the ID Converter assert they receive canonical input, which is a programming error otherwise.
-- [ ] **Step 4:** Run `pytest tests/ -q`. Expected: PASS.
-- [ ] **Step 5:** In Swift, write `PMIDCanonicalTests.swift` reading the same JSON from `doc/cross_platform/fulltext_parity/`, the way the existing fulltext-parity tests locate it. Run `swift test --filter PMIDCanonical` and expect FAIL. Implement it, use it wherever a `.unknown`-kind identifier reaches a URL, and expect PASS.
-- [ ] **Step 6:** Do the same on Android: `PmidCanonicalTest.kt`, then `./gradlew test --tests '*PmidCanonical*'`.
-- [ ] **Step 7:** Mutation-sweep `identifiers.py`. Commit: `fix(identifiers): send a PMID canonical or not at all, on all three platforms (bmlib#470, bmlib#472, bmlib#478)`.
+- [x] **Step 1:** Write `tests/test_identifiers.py`. It loads the contract and asserts every case, plus Python-only cases: `canonical_pmid(33301246).pmid == "33301246"`, `canonical_pmid(0).pmid is None and not canonical_pmid(0).refused`, `canonical_pmid(True).refused`. Add an MCP test: `get_document_fulltext({"pmid": "1 OR 2"})` makes no request (a mocked session asserts no call) and the result names the refused value.
+- [x] **Step 2:** Run `pytest tests/test_identifiers.py tests/test_mcp_server.py -v`. Expected: FAIL.
+- [x] **Step 3:** Implement `canonical_pmid` with `[0-9]+` and `re.ASCII`, then `lstrip("0")`. An all-zeros value is refused. Call it at the three entry points. A refused PMID logs a WARNING naming the value and proceeds as if no PMID were given, the way a malformed `pmcid` does. A PMC ID given as `pmid` fills `pmcid` only when the caller gave none. The Europe PMC lookup and the ID Converter assert they receive canonical input, which is a programming error otherwise.
+- [x] **Step 4:** Run `pytest tests/ -q`. Expected: PASS.
+- [x] **Step 5:** In Swift, write `PMIDCanonicalTests.swift` reading the same JSON from `doc/cross_platform/fulltext_parity/`, the way the existing fulltext-parity tests locate it. Run `swift test --filter PMIDCanonical` and expect FAIL. Implement it, use it wherever a `.unknown`-kind identifier reaches a URL, and expect PASS.
+- [x] **Step 6:** Do the same on Android: `PmidCanonicalTest.kt`, then `./gradlew test --tests '*PmidCanonical*'`.
+- [x] **Step 7:** Mutation-sweep `identifiers.py`. Commit: `fix(identifiers): send a PMID canonical or not at all, on all three platforms (bmlib#470, bmlib#472, bmlib#478)`.
 
 ### Task 3: One rule for reading a relevance score, on all three platforms
 
@@ -221,11 +223,11 @@ Android invents a score of 3 for any unreadable reply (`util/ResponseParser.kt:1
 - Android: `ScoreResult(score: Int?, rationale: String, parseFailed: Boolean)`. `LLMService.scoreDocument` maps `parseFailed` to `Result.failure(IllegalStateException("parse: <reason>"))`, so `isParseError` retries it.
 - Remove `DEFAULT_SCORE`.
 
-- [ ] **Step 1:** Write `tests/test_score_parity.py`. Assert every contract case against `parse_score_response(response: str) -> tuple[int, str] | None` in `agents/scoring_agent.py:147`, so that the not-JSON and missing-key cases are covered too. The desktop also reads a score from prose (`_prose_score`, e.g. "Score: 4/5"), which the apps do not. The contract's not-JSON case must therefore carry no score in prose ("I cannot assess this document."). Record the prose fallback as a desktop-only divergence in the contract's `description`. Run it; expect PASS, because the desktop is the reference. If a case fails, the contract is wrong, not the code.
-- [ ] **Step 2:** Write Android `ResponseParserTest` cases from the contract. Add `` `an unreadable score is retried and never relevant` ``, driving `ParallelScoringService` with a fake `LLMService` that answers `{"score": "high"}` `MAX_PARSE_RETRIES` times; assert a failed `ScoringResult`, not a success. Run `./gradlew test --tests '*ResponseParserTest*' --tests '*ParallelScoring*'`. Expected: FAIL.
-- [ ] **Step 3:** Implement on Android. Kotlin's `jsonPrimitive.isString` distinguishes `"4"` from `4`. Refuse booleans (`booleanOrNull != null` on an unquoted primitive). Accept a double only when it is finite and integral.
-- [ ] **Step 4:** Write Swift `ScoreParityTests` from the contract, run `swift test --filter ScoreParity`, and expect FAIL on `true` and `1e300`. Fix it: check `CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID()` before the numeric cases, and require `doubleScore.isFinite && doubleScore.rounded() == doubleScore` with the value inside `Int`'s range before converting. Expect PASS.
-- [ ] **Step 5:** Commit: `fix(scoring): an unreadable relevance score is a parse failure on every platform`.
+- [x] **Step 1:** Write `tests/test_score_parity.py`. Assert every contract case against `parse_score_response(response: str) -> tuple[int, str] | None` in `agents/scoring_agent.py:147`, so that the not-JSON and missing-key cases are covered too. The desktop also reads a score from prose (`_prose_score`, e.g. "Score: 4/5"), which the apps do not. The contract's not-JSON case must therefore carry no score in prose ("I cannot assess this document."). Record the prose fallback as a desktop-only divergence in the contract's `description`. Run it; expect PASS, because the desktop is the reference. If a case fails, the contract is wrong, not the code.
+- [x] **Step 2:** Write Android `ResponseParserTest` cases from the contract. Add `` `an unreadable score is retried and never relevant` ``, driving `ParallelScoringService` with a fake `LLMService` that answers `{"score": "high"}` `MAX_PARSE_RETRIES` times; assert a failed `ScoringResult`, not a success. Run `./gradlew test --tests '*ResponseParserTest*' --tests '*ParallelScoring*'`. Expected: FAIL.
+- [x] **Step 3:** Implement on Android. Kotlin's `jsonPrimitive.isString` distinguishes `"4"` from `4`. Refuse booleans (`booleanOrNull != null` on an unquoted primitive). Accept a double only when it is finite and integral.
+- [x] **Step 4:** Write Swift `ScoreParityTests` from the contract, run `swift test --filter ScoreParity`, and expect FAIL on `true` and `1e300`. Fix it: check `CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID()` before the numeric cases, and require `doubleScore.isFinite && doubleScore.rounded() == doubleScore` with the value inside `Int`'s range before converting. Expect PASS.
+- [x] **Step 5:** Commit: `fix(scoring): an unreadable relevance score is a parse failure on every platform`.
 
 ### Task 4: The desktop quality tiers narrow every value a model sends
 
@@ -254,7 +256,7 @@ bmlib#295, bmlib#320. In `quality/quality_agent.py:195-262` and `quality/study_c
   - `as_str_list(value, field=None) -> list[str] | None`
 - Each `_parse_*` helper keeps its signature and default, and reads through these.
 
-- [ ] **Step 1:** Write `tests/test_quality_narrowing.py`, porting the relevant tests by name from bmlib's `tests/test_quality_narrowing.py`:
+- [x] **Step 1:** Write `tests/test_quality_narrowing.py`, porting the relevant tests by name from bmlib's `tests/test_quality_narrowing.py`:
   - `test_as_int`, `test_as_float`, `test_as_bool` (parametrised; include `True`, `float("nan")`, `float("inf")`, `"3"`, `"true"`);
   - `test_a_null_design_characteristics`, `test_a_null_bias_risk`, `test_a_null_study_design` (each assessment keeps its other fields);
   - `test_a_boolean_sample_size_is_not_a_count`, `test_an_infinite_sample_size_does_not_take_the_assessment_down`;
@@ -266,10 +268,10 @@ bmlib#295, bmlib#320. In `quality/quality_agent.py:195-262` and `quality/study_c
   - `test_a_failed_tier_3_keeps_a_confident_tier_1`: `QualityManager` with a metadata-confirmed RCT and an agent stub returning UNCLASSIFIED at confidence 0; assert the RCT result is kept and the failure is logged.
 
   Apply the same narrowing tests to `StudyClassifier._parse_response`.
-- [ ] **Step 2:** Run `pytest tests/test_quality_narrowing.py -v`. Expected: FAIL.
-- [ ] **Step 3:** Implement `json_fields.py` and route both parsers through it. In `quality_manager`, return the metadata result when Tier 3 yields `UNCLASSIFIED`.
-- [ ] **Step 4:** Run `pytest tests/ -q -k quality`. Expected: PASS, including the existing benchmark tests.
-- [ ] **Step 5:** Mutation-sweep `json_fields.py`. Commit: `fix(quality): narrow every value a model sends (bmlib#295, bmlib#320)`.
+- [x] **Step 2:** Run `pytest tests/test_quality_narrowing.py -v`. Expected: FAIL.
+- [x] **Step 3:** Implement `json_fields.py` and route both parsers through it. In `quality_manager`, return the metadata result when Tier 3 yields `UNCLASSIFIED`.
+- [x] **Step 4:** Run `pytest tests/ -q -k quality`. Expected: PASS, including the existing benchmark tests.
+- [x] **Step 5:** Mutation-sweep `json_fields.py`. Commit: `fix(quality): narrow every value a model sends (bmlib#295, bmlib#320)`.
 
 ### Task 5: Europe PMC's free-PDF allow-list, as a contract
 
@@ -288,10 +290,10 @@ bmlib#79 (0.9.1). Python (`europepmc.py:130`, `_extract_free_pdf_url`) and Andro
   - Only `documentStyle == "pdf"` counts; an entry without a URL is skipped; the first accepted entry wins.
 - Constants: `EUROPE_PMC_FREE_PDF_CODES`, `EUROPE_PMC_FREE_PDF_LABELS` in each platform's constants file.
 
-- [ ] **Step 1:** Write the contract from the Swift tests, then make all three suites read it. Run them. Expected: Python and Android FAIL; Swift PASS.
-- [ ] **Step 2:** Implement in Python and Android, logging an unrecognised code at WARNING with its label, as Swift does.
-- [ ] **Step 3:** Run all three suites. Expected: PASS.
-- [ ] **Step 4:** Commit: `fix(fulltext): Europe PMC's open-access PDFs are free PDFs, on all three platforms (bmlib#79)`.
+- [x] **Step 1:** Write the contract from the Swift tests, then make all three suites read it. Run them. Expected: Python and Android FAIL; Swift PASS.
+- [x] **Step 2:** Implement in Python and Android, logging an unrecognised code at WARNING with its label, as Swift does.
+- [x] **Step 3:** Run all three suites. Expected: PASS.
+- [x] **Step 4:** Commit: `fix(fulltext): Europe PMC's open-access PDFs are free PDFs, on all three platforms (bmlib#79)`.
 
 ### Task 6: An author role declared on the contributor group
 
@@ -310,7 +312,7 @@ bmlib#111: about 57% of open-access articles declare `content-type="author"` on 
   - comparison folds case;
   - every `contrib-group` under `article-meta` is read, not only the first.
 
-- [ ] **Step 1:** Write the tests:
+- [x] **Step 1:** Write the tests:
   - `test_a_group_role_makes_bare_contribs_authors`
   - `test_an_editor_group_is_not_authors`
   - `test_a_contribs_own_editor_role_wins_inside_an_author_group`
@@ -320,11 +322,11 @@ bmlib#111: about 57% of open-access articles declare `content-type="author"` on 
   - control: `test_contrib_type_author_still_reads`
 
   Use minimal JATS like the probe already run (`<contrib-group content-type="author"><contrib><name>…`).
-- [ ] **Step 2:** Run `pytest tests/test_jats_author_roles.py -v`. Expected: FAIL on the group-role tests.
-- [ ] **Step 3:** Implement with a recursive walk carrying the stack of declared group types. Bump `JATS_MARKDOWN_CONVERTER_VERSION` so cached renders are re-made.
-- [ ] **Step 4:** Run `pytest tests/ -q -k jats`. Expected: PASS.
-- [ ] **Step 5:** Port the same tests to Kotlin. Run `./gradlew test --tests '*JATSAuthorRole*'` (FAIL), implement, run again (PASS). Regenerate and read the corpus digests as the Global Constraints require.
-- [ ] **Step 6:** Commit: `fix(jats): an author role declared on the group (bmlib#111)`.
+- [x] **Step 2:** Run `pytest tests/test_jats_author_roles.py -v`. Expected: FAIL on the group-role tests.
+- [x] **Step 3:** Implement with a recursive walk carrying the stack of declared group types. Bump `JATS_MARKDOWN_CONVERTER_VERSION` so cached renders are re-made.
+- [x] **Step 4:** Run `pytest tests/ -q -k jats`. Expected: PASS.
+- [x] **Step 5:** Port the same tests to Kotlin. Run `./gradlew test --tests '*JATSAuthorRole*'` (FAIL), implement, run again (PASS). Regenerate and read the corpus digests as the Global Constraints require.
+- [x] **Step 6:** Commit: `fix(jats): an author role declared on the group (bmlib#111)`.
 
 ---
 
