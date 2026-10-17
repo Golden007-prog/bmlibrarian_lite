@@ -158,7 +158,7 @@ Use the existing accessor names on `RecordFetch` in `data_models.py:224`. Add on
 
 ### Task 2: A PMID is canonical ASCII digits, or it is not sent
 
-bmlib#470, #472, #478. Python passes PMIDs unchecked into `europepmc.py:693` (`ext_id:{pmid} src:med`), the ID Converter URL (`pdf_discovery.py:1418`), efetch (`fetch_article`), and through the MCP tool (`mcp_server.py:639`). Swift validates only `.pubmed` kinds (`ArticleIdentifierKind.swift:206`). Android: `FullTextService.kt:~1005`.
+bmlib#470, bmlib#472, bmlib#478. Python passes PMIDs unchecked into `europepmc.py:693` (`ext_id:{pmid} src:med`), the ID Converter URL (`pdf_discovery.py:1418`), efetch (`fetch_article`), and through the MCP tool (`mcp_server.py:639`). Swift validates only `.pubmed` kinds (`ArticleIdentifierKind.swift:206`). Android: `FullTextService.kt:~1005`.
 
 **Files:**
 - Create: `doc/cross_platform/fulltext_parity/pmid_canonical.json`
@@ -169,7 +169,7 @@ bmlib#470, #472, #478. Python passes PMIDs unchecked into `europepmc.py:693` (`e
 - Test: `tests/test_identifiers.py`, `Packages/BioMedLit/Tests/BioMedLitTests/PMIDCanonicalTests.swift`, `android/.../data/remote/fulltext/PmidCanonicalTest.kt`
 
 **Interfaces:**
-- Produces: the contract `pmid_canonical.json`: `{"schema": 1, "source": "bmlib#470/#472/#478 at f4b7c52", "cases": [{"input": str, "pmid": str|null, "pmc_id": str|null, "refused": bool}]}`. It must contain at least these cases:
+- Produces: the contract `pmid_canonical.json`: `{"schema": 1, "source": "bmlib#470/bmlib#472/bmlib#478 at f4b7c52", "cases": [{"input": str, "pmid": str|null, "pmc_id": str|null, "refused": bool}]}`. It must contain at least these cases:
   - `"33301246"`: kept as is.
   - `" 33301246 "` and `"0033301246"`: both become `"33301246"`.
   - `""`: no PMID, not refused.
@@ -185,7 +185,7 @@ bmlib#470, #472, #478. Python passes PMIDs unchecked into `europepmc.py:693` (`e
 - [ ] **Step 4:** Run `pytest tests/ -q`. Expected: PASS.
 - [ ] **Step 5:** In Swift, write `PMIDCanonicalTests.swift` reading the same JSON from `doc/cross_platform/fulltext_parity/`, the way the existing fulltext-parity tests locate it. Run `swift test --filter PMIDCanonical` and expect FAIL. Implement it, use it wherever a `.unknown`-kind identifier reaches a URL, and expect PASS.
 - [ ] **Step 6:** Do the same on Android: `PmidCanonicalTest.kt`, then `./gradlew test --tests '*PmidCanonical*'`.
-- [ ] **Step 7:** Mutation-sweep `identifiers.py`. Commit: `fix(identifiers): send a PMID canonical or not at all, on all three platforms (bmlib#470, #472, #478)`.
+- [ ] **Step 7:** Mutation-sweep `identifiers.py`. Commit: `fix(identifiers): send a PMID canonical or not at all, on all three platforms (bmlib#470, bmlib#472, bmlib#478)`.
 
 ### Task 3: One rule for reading a relevance score, on all three platforms
 
@@ -222,7 +222,7 @@ Android invents a score of 3 for any unreadable reply (`util/ResponseParser.kt:1
 
 ### Task 4: The desktop quality tiers narrow every value a model sends
 
-bmlib#295, #320. In `quality/quality_agent.py:195-262` and `quality/study_classifier.py:405-660`:
+bmlib#295, bmlib#320. In `quality/quality_agent.py:195-262` and `quality/study_classifier.py:405-660`:
 - a `null` `study_design`, `design_characteristics` or `bias_risk` raises, and the assessment becomes UNCLASSIFIED;
 - `int(True)` is n=1, and `int(inf)` raises an `OverflowError` that nothing catches;
 - `max(0, min(1, nan))` is **1.0**;
@@ -262,7 +262,7 @@ bmlib#295, #320. In `quality/quality_agent.py:195-262` and `quality/study_classi
 - [ ] **Step 2:** Run `pytest tests/test_quality_narrowing.py -v`. Expected: FAIL.
 - [ ] **Step 3:** Implement `json_fields.py` and route both parsers through it. In `quality_manager`, return the metadata result when Tier 3 yields `UNCLASSIFIED`.
 - [ ] **Step 4:** Run `pytest tests/ -q -k quality`. Expected: PASS, including the existing benchmark tests.
-- [ ] **Step 5:** Mutation-sweep `json_fields.py`. Commit: `fix(quality): narrow every value a model sends (bmlib#295, #320)`.
+- [ ] **Step 5:** Mutation-sweep `json_fields.py`. Commit: `fix(quality): narrow every value a model sends (bmlib#295, bmlib#320)`.
 
 ### Task 5: Europe PMC's free-PDF allow-list, as a contract
 
@@ -348,7 +348,7 @@ Each becomes its own plan. All of them bump the analyser versions on all three p
 - **WP-3.2 PubMed `efetch` on mobile** (alignment doc §2.1). Read `CoiStatement` and `GrantList` in Swift (`parsePubMedGrants` exists and only tests call it) and on Android (which never calls PubMed on the transparency path). Build on Task 1's own-record rule.
 - **WP-3.3 Android transparency reads no full text.** `analyzableFullText` always returns null, so COI and data availability are never assessed. Wire the full-text result through, as iOS does.
 - **WP-3.4 Posted results with mixed answers** (bmlib#206): one "no results" trial plus one unreachable trial is charged −10 on all three platforms. Make it provisional.
-- **WP-3.5 A wrong-typed `hasResults`** (bmlib#209, #226) silently becomes MISSING and −10 on all three. Refuse it and add a caveat.
+- **WP-3.5 A wrong-typed `hasResults`** (bmlib#209, bmlib#226) silently becomes MISSING and −10 on all three. Refuse it and add a caveat.
 - **WP-3.6 Desktop resolves DOI → PMID after the PubMed step** (`study_transparency_analyzer.py:~3208`), so a DOI-only paper never gets its `CoiStatement` or grants. Move the resolution first.
 - **WP-3.7 CrossRef `funder` entries read with unguarded `.get()`** (bmlib#199, Python only).
 - **WP-3.8 Decisions to record, not code:**
@@ -381,7 +381,7 @@ If WP-2 says "consume Rust", the mobile rows below become one adapter task per p
   - `elocation-id` (#265, lite #272);
   - unnumbered exhibits (#162, lite #174); a table deposited as a graphic (#127, lite #172);
   - cell text (#243); definitions (#228).
-- **WP-4.4 Front-matter funding and COI statements reach the mobile analysers** (bmlib#230, #234, #257; lite #423). This moves transparency scores.
+- **WP-4.4 Front-matter funding and COI statements reach the mobile analysers** (bmlib#230, bmlib#234, bmlib#257; lite #423). This moves transparency scores.
 - **WP-4.5 Android catch-up:**
   - everything Swift has that Android lacks: caption and section routing (lite #401, #165), unsectioned body and back matter (#224), container headings (#231), sub-articles (#110, #119), identifiers by declared type, the end-of-parse audit (#134);
   - errors no longer swallowed (lite #121);
@@ -391,7 +391,7 @@ If WP-2 says "consume Rust", the mobile rows below become one adapter task per p
 
 ## Phase 5 — Full-text retrieval (work packages)
 
-- **WP-5.1 Closed-access Europe PMC 500 on mobile** (lite #450, bmlib#457/#462): skip on `isOpenAccess: N`, as Python does. The PMC9391270 exception is accepted and recorded.
+- **WP-5.1 Closed-access Europe PMC 500 on mobile** (lite #450, bmlib#457/bmlib#462): skip on `isOpenAccess: N`, as Python does. The PMC9391270 exception is accepted and recorded.
 - **WP-5.2 A malformed or stale caller PMC ID gives way to the search hit's** (bmlib#304), on all three platforms. Feed the ID Converter's PMC ID back into the XML and bucket tiers (Python).
 - **WP-5.3 Swift PDF text gets paragraph structure:** port bmlib's `fulltext/segmenter.py` section segmentation so the `(?=\n\n|\z)` COI and data regexes stop over-capturing (`TransparencyAnalysisService.swift:496-523`, `PDFTextExtractor.swift:244`).
 - **WP-5.4 PubMed parsers:**

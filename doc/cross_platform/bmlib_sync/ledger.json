@@ -787,7 +787,7 @@
     },
     {
       "id": "bmlib#135",
-      "title": "The table side of #117's ranking is counted, and answered",
+      "title": "The table side of bmlib#117's ranking is counted, and answered",
       "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
@@ -837,7 +837,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Article metadata read only where deposited; WP 4.1 / 4.3 with #254, #259."
+      "note": "Article metadata read only where deposited; WP 4.1 / 4.3 with bmlib#254, bmlib#259."
     },
     {
       "id": "bmlib#158",
@@ -895,7 +895,7 @@
     },
     {
       "id": "bmlib#181",
-      "title": "#117's thumbnail share is reported over its own population",
+      "title": "bmlib#117's thumbnail share is reported over its own population",
       "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
@@ -999,7 +999,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Partly-answered posted results, once per claim; WP 3.4 with #206."
+      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206."
     },
     {
       "id": "bmlib#200",
@@ -1017,7 +1017,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Partly-answered posted results, once per claim; WP 3.4 with #206."
+      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206."
     },
     {
       "id": "bmlib#203",
@@ -1026,7 +1026,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Partly-answered posted results, once per claim; WP 3.4 with #206."
+      "note": "Partly-answered posted results, once per claim; WP 3.4 with bmlib#206."
     },
     {
       "id": "bmlib#204",
@@ -1170,7 +1170,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with #270; unaudited at seeding."
+      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with bmlib#270; unaudited at seeding."
     },
     {
       "id": "bmlib#255",
@@ -1188,7 +1188,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with #270; unaudited at seeding."
+      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with bmlib#270; unaudited at seeding."
     },
     {
       "id": "bmlib#266",
@@ -1197,7 +1197,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with #270; unaudited at seeding."
+      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with bmlib#270; unaudited at seeding."
     },
     {
       "id": "bmlib#267",
@@ -1206,7 +1206,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with #270; unaudited at seeding."
+      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with bmlib#270; unaudited at seeding."
     },
     {
       "id": "bmlib#268",
@@ -1224,7 +1224,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with #270; unaudited at seeding."
+      "note": "Another work's parts not read as this work's; WP 4.2 / 4.3 with bmlib#270; unaudited at seeding."
     },
     {
       "id": "bmlib#292",
@@ -1278,7 +1278,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "llm/agents defect from the Rust port audit; Python only, like #302 and #308."
+      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308."
     },
     {
       "id": "bmlib#301",
@@ -1287,7 +1287,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "llm/agents defect from the Rust port audit; Python only, like #302 and #308."
+      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308."
     },
     {
       "id": "bmlib#303",
@@ -1296,7 +1296,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "llm/agents defect from the Rust port audit; Python only, like #302 and #308."
+      "note": "llm/agents defect from the Rust port audit; Python only, like bmlib#302 and bmlib#308."
     },
     {
       "id": "bmlib#305",
@@ -1341,7 +1341,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with #295, #320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
     },
     {
       "id": "bmlib#312",
@@ -1350,7 +1350,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with #295, #320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
     },
     {
       "id": "bmlib#317",
@@ -1359,7 +1359,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with #295, #320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
     },
     {
       "id": "bmlib#318",
@@ -1368,7 +1368,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with #295, #320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
     },
     {
       "id": "bmlib#319",
@@ -1377,7 +1377,7 @@
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with #295, #320."
+      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320."
     },
     {
       "id": "bmlib#323",
