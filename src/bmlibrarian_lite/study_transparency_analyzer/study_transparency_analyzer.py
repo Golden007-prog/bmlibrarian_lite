@@ -37,6 +37,7 @@ import requests
 
 from urllib3.util.retry import Retry
 
+from ..identifiers import read_caller_ids
 from ..polite_session import mount_politely
 from ..analysis_failures import (
     COI_DISCLOSURE_SOUGHT,
@@ -2893,6 +2894,13 @@ class StudyTransparencyAnalyzer:
             TransparencyReport with analysis results
         """
         report = TransparencyReport()
+
+        # A PMID reaches efetch, which reads every run of digits as a PMID of
+        # its own, and Europe PMC's query; it is read once here, before any
+        # request (bmlib#470, #472, #478). A refused one is logged and the
+        # analysis goes on without it. A PMC ID given as the PMID is read as a
+        # PMC ID and not used: this entry has no PMC ID argument to fill.
+        pmid, _ = read_caller_ids(pmid)
 
         if not doi and not pmid:
             report.errors.append("Must provide either DOI or PMID")
