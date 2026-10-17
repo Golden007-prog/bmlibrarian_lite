@@ -19,6 +19,7 @@
 package com.bmlibrarian.factchecker.domain.workflow
 
 import com.bmlibrarian.factchecker.data.remote.llm.LLMService
+import com.bmlibrarian.factchecker.domain.model.LLMError
 import com.bmlibrarian.factchecker.domain.model.LLMProvider
 import com.bmlibrarian.factchecker.domain.model.ModelInfo
 import com.bmlibrarian.factchecker.util.Constants
@@ -74,7 +75,7 @@ class ParallelScoringService @Inject constructor(
 ) {
     companion object {
         /** Maximum parse retries per document before giving up. */
-        const val MAX_PARSE_RETRIES = 3
+        internal const val MAX_PARSE_RETRIES = 3
 
         /** Base delay for parse retry backoff (milliseconds). */
         private const val PARSE_RETRY_BASE_DELAY_MS = 500L
@@ -91,10 +92,14 @@ class ParallelScoringService @Inject constructor(
         /**
          * Check if an error is a parse error (response parsing failed).
          *
+         * An [LLMError.ParseError] (a reply with no score on the scale) is one by
+         * its type; any other error is judged by its message.
+         *
          * @param error The error to check.
          * @return true if this is a parse-related error.
          */
         fun isParseError(error: Throwable): Boolean {
+            if (error is LLMError.ParseError) return true
             val message = error.message?.lowercase() ?: return false
             return message.contains("parse") ||
                     message.contains("json") ||
@@ -310,6 +315,7 @@ class ParallelScoringService @Inject constructor(
         modelInfo: ModelInfo?
     ): ScoringResult {
         var lastParseError = ""
+        var lastRawResponse = ""
         var accumulatedInputTokens = 0
         var accumulatedOutputTokens = 0
         var accumulatedCost = 0.0
@@ -351,6 +357,7 @@ class ParallelScoringService @Inject constructor(
 
                     if (isParseError(error)) {
                         lastParseError = errorMessage
+                        lastRawResponse = (error as? LLMError.ParseError)?.rawResponse.orEmpty()
 
                         // Retry with exponential backoff and jitter
                         if (attempt < MAX_PARSE_RETRIES - 1) {
@@ -376,7 +383,7 @@ class ParallelScoringService @Inject constructor(
         return ScoringResult.parseFailure(
             documentId = input.documentId,
             pmid = input.pmid,
-            rawResponse = "",
+            rawResponse = lastRawResponse,
             parseError = lastParseError,
             inputTokens = accumulatedInputTokens,
             outputTokens = accumulatedOutputTokens,

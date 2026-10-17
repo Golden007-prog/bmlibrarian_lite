@@ -115,6 +115,89 @@ class ResponseParserTest {
         assertEquals("Well formatted", result.rationale)
     }
 
+    @Test
+    fun `a null explanation is skipped, never the word null`() {
+        val result = ResponseParser.parseScoreResponse(
+            """{"score": 4, "explanation": null, "rationale": "On topic"}"""
+        )
+
+        assertEquals(4, result.score)
+        assertEquals("On topic", result.rationale)
+    }
+
+    @Test
+    fun `an explanation that is not a string is skipped`() {
+        val result = ResponseParser.parseScoreResponse(
+            """{"score": 4, "explanation": {"a": 1}, "reason": "Because"}"""
+        )
+
+        assertEquals("Because", result.rationale)
+    }
+
+    @Test
+    fun `a scored reply with no explanation does not say it was unparsed`() {
+        val result = ResponseParser.parseScoreResponse("""{"score": 4}""")
+
+        assertEquals(4, result.score)
+        assertEquals(ResponseParser.NO_RATIONALE, result.rationale)
+    }
+
+    @Test
+    fun `a bare value that is not a JSON number is no score`() {
+        // The lenient parser keeps these as literals, and Java reads them as doubles
+        for (reply in listOf("""{"score": 4f}""", """{"score": 4d}""", """{"score": 0x4p0}""")) {
+            val result = ResponseParser.parseScoreResponse(reply)
+            assertNull(reply, result.score)
+            assertTrue(reply, result.parseFailed)
+        }
+    }
+
+    @Test
+    fun `a trailing comma still gives the whole-number score`() {
+        // iOS repairs {"score": 3,} and reads 3 too
+        val result = ResponseParser.parseScoreResponse("""Note: {"score": 3, "explanation": "partly",}""")
+
+        assertEquals(3, result.score)
+        assertEquals("partly", result.rationale)
+        assertTrue(!result.parseFailed)
+    }
+
+    @Test
+    fun `a trailing comma after a fraction is no score`() {
+        val result = ResponseParser.parseScoreResponse("""Note: {"score": 4.5,}""")
+
+        assertNull(result.score)
+        assertTrue(result.parseFailed)
+    }
+
+    @Test
+    fun `the regex fallback reads a whole number from a reply cut short`() {
+        // No balanced object, so no JSON parse: only the regex reads this
+        val result = ResponseParser.parseScoreResponse("""{"score": 3, "explanation": "partly", "more": "cut sh""")
+
+        assertEquals(3, result.score)
+        assertEquals("partly", result.rationale)
+    }
+
+    @Test
+    fun `the regex fallback refuses a fraction or an off-scale number`() {
+        for (reply in listOf("""{"score": 4.5, "explanation": "cut sh""", """{"score": 9, "explanation": "cut sh""")) {
+            val result = ResponseParser.parseScoreResponse(reply)
+            assertNull(reply, result.score)
+            assertTrue(reply, result.parseFailed)
+        }
+    }
+
+    @Test
+    fun `firstJsonObject treats a brace in a string as text`() {
+        assertEquals(
+            """{"a": "}{", "b": {"c": "\"}"}}""",
+            ResponseParser.firstJsonObject("""x {"a": "}{", "b": {"c": "\"}"}} y {"z": 1}""")
+        )
+        assertNull(ResponseParser.firstJsonObject("""{"a": 1"""))
+        assertNull(ResponseParser.firstJsonObject("no object"))
+    }
+
     // ==================== Citation Response Tests ====================
 
     @Test

@@ -70,6 +70,10 @@ Respond in JSON format:
 def _first_json_object(response: str) -> str | None:
     """The first balanced ``{...}`` in a response, nested objects included.
 
+    A brace inside a JSON string -- an explanation that quotes "}" -- is
+    text, not structure, as in the apps' extractors (contract:
+    ``doc/cross_platform/llm_parity/score_values.json``).
+
     Args:
         response: LLM response text.
 
@@ -80,8 +84,18 @@ def _first_json_object(response: str) -> str | None:
     if start_idx == -1:
         return None
     depth = 0
+    in_string = False
+    escaped = False
     for i, char in enumerate(response[start_idx:], start_idx):
-        if char == "{":
+        if escaped:
+            escaped = False
+        elif in_string and char == "\\":
+            escaped = True
+        elif char == '"':
+            in_string = not in_string
+        elif in_string:
+            continue
+        elif char == "{":
             depth += 1
         elif char == "}":
             depth -= 1
@@ -96,8 +110,24 @@ def _first_json_object(response: str) -> str | None:
 _PROSE_SCORE = re.compile(
     r"\bscore\b[:\s]+(?P<value>\d+)(?!\d)"
     r"(?:\s*(?:/|out\s+of)\s*(?P<scale>\d+)|(?P<range>\s*[-–]\s*\d))?",
-    re.IGNORECASE,
+    # ASCII: "٤" is a digit to \d, and no platform reads it as a score
+    re.IGNORECASE | re.ASCII,
 )
+
+
+def _is_ascii_digits(text: str) -> bool:
+    """Whether a text is one or more of the digits 0-9 and nothing else.
+
+    ``str.isdigit`` also takes "٤" and "４", which the apps refuse, and
+    "²", which ``int`` then refuses with a ValueError.
+
+    Args:
+        text: The text to test.
+
+    Returns:
+        True for a non-empty run of ASCII digits.
+    """
+    return text.isascii() and text.isdigit()
 
 
 def _score_on_scale(raw: object) -> int | None:
@@ -117,7 +147,7 @@ def _score_on_scale(raw: object) -> int | None:
         value = raw
     elif isinstance(raw, float) and raw.is_integer():
         value = int(raw)
-    elif isinstance(raw, str) and raw.strip().isdigit():
+    elif isinstance(raw, str) and _is_ascii_digits(raw.strip()):
         value = int(raw.strip())
     else:
         return None

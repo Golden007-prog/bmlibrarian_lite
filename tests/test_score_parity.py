@@ -26,6 +26,17 @@ def test_contract_covers_the_required_shapes() -> None:
     assert any(case["score"] is not None for case in CASES)
 
 
+@pytest.mark.parametrize("reply", ["Score: ٤", "Score: ４/5"])
+def test_a_prose_score_is_ascii_digits_only(reply: str) -> None:
+    """The desktop-only prose fallback reads the same digits the object does."""
+    assert parse_score_response(reply) is None
+
+
+def test_a_prose_score_in_ascii_digits_is_read() -> None:
+    """Control: the prose fallback still reads an ASCII score."""
+    assert parse_score_response("Score: 4/5") == (4, "Score: 4/5")
+
+
 @pytest.mark.parametrize("case", CASES, ids=[case["name"] for case in CASES])
 def test_each_case(case: dict) -> None:
     """A reply gives the contract's score, or no score at all."""

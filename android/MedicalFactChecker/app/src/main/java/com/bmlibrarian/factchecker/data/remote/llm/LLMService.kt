@@ -18,6 +18,7 @@
 
 package com.bmlibrarian.factchecker.data.remote.llm
 
+import android.util.Log
 import com.bmlibrarian.factchecker.domain.model.LLMError
 import com.bmlibrarian.factchecker.domain.model.LLMProvider
 import com.bmlibrarian.factchecker.domain.model.StructuredQuery
@@ -247,7 +248,11 @@ class LLMService @Inject constructor(
      * @param claim The medical claim being evaluated
      * @param title Document title
      * @param abstractText Document abstract (may be null)
-     * @return Result containing score (1-5) and rationale
+     * @return Result containing score (1-5) and rationale. A reply that holds no
+     *   score on the scale is a failure with [LLMError.ParseError], carrying the
+     *   whole reply as `rawResponse` (and logged), never a default score: the
+     *   scorer retries a failure because it is a `ParseError`, and records the
+     *   reply when its retries are spent. A failed call is the provider's error.
      */
     suspend fun scoreDocument(
         provider: LLMProvider,
@@ -289,8 +294,12 @@ class LLMService @Inject constructor(
             val parsed = ResponseParser.parseScoreResponse(result.content)
             val score = parsed.score
             if (parsed.parseFailed || score == null) {
-                // "parse" makes the scorer retry it; an unreadable reply is never a score
-                return Result.failure(IllegalStateException(parsed.rationale))
+                // An unreadable reply is never a score: the scorer retries a
+                // ParseError and keeps the reply for the error queue
+                Log.w(TAG, "${parsed.rationale}: ${result.content}")
+                return Result.failure(
+                    LLMError.ParseError(message = parsed.rationale, rawResponse = result.content)
+                )
             }
             Pair(score, parsed.rationale)
         }
@@ -512,6 +521,9 @@ class LLMService @Inject constructor(
     }
 
     companion object {
+        /** Log tag for this service. */
+        private const val TAG = "LLMService"
+
         /**
          * Chain-of-thought setting to send for a provider, if it has one.
          *

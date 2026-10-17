@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "What an unreadable relevance score is, on every platform (the apps' port of bmlib's rule): a model's reply either carries a whole-number score from 1 to 5 or it carries none, and a reply with none is a parse failure that the caller retries or records, never a score. Read by tests/test_score_parity.py, Packages/BioMedLit ScoreParityTests and Android ResponseParserTest. A case gives the raw model reply and the score read from it, or null. The rules: an integer, an integral float (4.0) or a string of digits (\" 4 \") on the scale is that score; anything else is null and is never clamped, defaulted or rounded: off the scale (0, 6, -3, 42), a boolean, a fractional number (2.5), a word, null, a missing key, a float too large for an integer (1e300), a reply with no JSON object. Desktop-only divergence: the desktop also reads a score stated in prose ('Score: 4/5') when the reply is not a JSON object; the apps do not, so no case here carries a score in prose.",
+  "description": "What an unreadable relevance score is, on every platform (the apps' port of bmlib's rule): a model's reply either carries a whole-number score from 1 to 5 or it carries none, and a reply with none is a parse failure that the caller retries or records, never a score. Read by tests/test_score_parity.py, Packages/BioMedLit ScoreParityTests and Android ResponseParserTest. A case gives the raw model reply and the score read from it, or null. The rules: an integer, an integral float (4.0) or a string of the ASCII digits 0-9 (\" 4 \") on the scale is that score, read from the first balanced {...} in the reply (prose or a markdown fence around it is allowed, and a brace inside a JSON string is text); anything else is null and is never clamped, defaulted or rounded: off the scale (0, 6, -3, 42), a boolean, a fractional number (2.5), a word, null, a missing key, a float too large for an integer (1e300), a reply with no JSON object, a digit outside ASCII (Arabic-Indic, full-width, superscript). Desktop-only divergence: the desktop also reads a score stated in prose ('Score: 4/5') when the reply is not a JSON object; the apps do not, so no case here carries a score in prose.",
   "cases": [
     {"name": "an integer", "reply": "{\"score\": 4, \"explanation\": \"on topic\"}", "score": 4},
     {"name": "the lowest score", "reply": "{\"score\": 1, \"explanation\": \"off topic\"}", "score": 1},
@@ -19,6 +19,16 @@
     {"name": "a null score", "reply": "{\"score\": null, \"explanation\": \"none\"}", "score": null},
     {"name": "a missing score", "reply": "{\"explanation\": \"I decline to score this.\"}", "score": null},
     {"name": "a huge float", "reply": "{\"score\": 1e300, \"explanation\": \"absurd\"}", "score": null},
-    {"name": "a reply that is not JSON", "reply": "I cannot assess this document.", "score": null}
+    {"name": "a reply that is not JSON", "reply": "I cannot assess this document.", "score": null},
+    {"name": "an Arabic-Indic digit is not a score", "reply": "{\"score\": \"٤\", \"explanation\": \"on topic\"}", "score": null},
+    {"name": "a full-width digit is not a score", "reply": "{\"score\": \"４\", \"explanation\": \"on topic\"}", "score": null},
+    {"name": "a superscript digit is not a score", "reply": "{\"score\": \"²\", \"explanation\": \"on topic\"}", "score": null},
+    {"name": "prose then an object with an integral float", "reply": "Here is my assessment: {\"score\": 4.0, \"rationale\": \"on topic\"}", "score": 4},
+    {"name": "prose then an object with a number in a string", "reply": "Here is my assessment: {\"score\": \"4\", \"rationale\": \"on topic\"}", "score": 4},
+    {"name": "prose then an object with an explanation", "reply": "Note: {\"score\": 4, \"explanation\": \"on topic\"}", "score": 4},
+    {"name": "prose then an object with a fractional score", "reply": "Note: {\"score\": 4.5}", "score": null},
+    {"name": "prose then an object whose explanation holds a brace", "reply": "Note: {\"score\": 4, \"explanation\": \"a } in the text\"}", "score": 4},
+    {"name": "prose then an object whose explanation quotes a brace", "reply": "Note: {\"score\": 3, \"explanation\": \"it said \\\"}\\\" here\"}", "score": 3},
+    {"name": "prose, a fenced object and prose", "reply": "Here it is:\n```json\n{\"score\": 2, \"explanation\": \"tangential\"}\n```\nHope that helps.", "score": 2}
   ]
 }
