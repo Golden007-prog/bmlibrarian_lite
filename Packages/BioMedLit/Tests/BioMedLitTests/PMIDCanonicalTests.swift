@@ -111,9 +111,25 @@ final class PMIDCanonicalTests: XCTestCase {
         XCTAssertNil(ArticleIdentifierKind.pubmedID(in: "0000", declared: .pubmed))
     }
 
-    func testTheCanonicalCheck() {
-        XCTAssertTrue(PMID.isCanonical("33301246"))
-        XCTAssertFalse(PMID.isCanonical("0033301246"))
-        XCTAssertFalse(PMID.isCanonical(""))
+    /// A newline in a refused value cannot start a log line of its own.
+    func testLogQuotedEscapesAsPythonReprDoes() {
+        XCTAssertEqual(PMID.logQuoted("1\nFAKE LOG LINE"), "'1\\nFAKE LOG LINE'")
+        XCTAssertEqual(PMID.logQuoted("a\u{2028}b\u{0}\t"), "'a\\u2028b\\x00\\t'")
+        XCTAssertEqual(PMID.logQuoted("it's \\"), "'it\\'s \\\\'")
+        // Printable non-ASCII is kept, as repr keeps it
+        XCTAssertEqual(PMID.logQuoted("\u{663}\u{663} x"), "'\u{663}\u{663} x'")
+        XCTAssertFalse(PMID.logQuoted("1\r\n2").contains("\n"))
+    }
+
+    /// Bare digits of unstated kind are still asked of `src:med`, canonical.
+    func testUnstatedDigitsAreStillAskedAsAPMID() {
+        for kind: ArticleIdentifierKind? in [nil, .unknown] {
+            XCTAssertEqual(
+                FullTextService.identifierQueries(
+                    pmid: "0033301246", pmcId: nil, doi: nil, primaryKind: kind
+                ).map(\.query),
+                ["ext_id:33301246 src:med"]
+            )
+        }
     }
 }

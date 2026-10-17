@@ -407,9 +407,49 @@ public enum PMID {
         !value.isEmpty && value.unicodeScalars.allSatisfy { ("0"..."9").contains($0) }
     }
 
-    /// Whether `value` is already a canonical PMID, as the Europe PMC lookup and
-    /// the PubMed URL require of what they are given.
-    public static func isCanonical(_ value: String) -> Bool {
-        canonical(value).pmid == value
+    /// `raw` for a log line: in single quotes, with control, format and
+    /// separator scalars escaped as Python's `%r` escapes them, so a newline
+    /// in a caller's value cannot start a log line of its own. Printable
+    /// non-ASCII is kept, as `%r` keeps it.
+    ///
+    /// - Parameter raw: The caller's value.
+    /// - Returns: The quoted, escaped value.
+    public static func logQuoted(_ raw: String) -> String {
+        var out = "'"
+        for scalar in raw.unicodeScalars {
+            switch scalar {
+            case "\\": out += "\\\\"
+            case "'": out += "\\'"
+            case "\n": out += "\\n"
+            case "\r": out += "\\r"
+            case "\t": out += "\\t"
+            default:
+                if scalar != " ", isUnprintable(scalar) {
+                    out += escaped(scalar)
+                } else {
+                    out.unicodeScalars.append(scalar)
+                }
+            }
+        }
+        return out + "'"
+    }
+
+    /// Whether Python's `str.isprintable()` refuses `scalar`, so `%r` escapes it.
+    private static func isUnprintable(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.properties.generalCategory {
+        case .control, .format, .surrogate, .privateUse, .unassigned,
+             .lineSeparator, .paragraphSeparator, .spaceSeparator:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Python's `\xhh`, `\uhhhh` or `\Uhhhhhhhh` for `scalar`.
+    private static func escaped(_ scalar: Unicode.Scalar) -> String {
+        let hex = String(scalar.value, radix: 16)
+        let (marker, width) = scalar.value <= 0xFF ? ("x", 2)
+            : scalar.value <= 0xFFFF ? ("u", 4) : ("U", 8)
+        return "\\" + marker + String(repeating: "0", count: width - hex.count) + hex
     }
 }
