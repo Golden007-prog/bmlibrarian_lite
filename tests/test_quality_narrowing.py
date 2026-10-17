@@ -20,8 +20,12 @@ import pytest
 
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.constants import CONFIDENCE_PARSE_FAILURE_DEFAULT
+from bmlibrarian_lite.exceptions import JSONParseError
 from bmlibrarian_lite.quality.data_models import (
+    CLASSIFIER_ASSESSMENT_TIER,
+    DETAILED_ASSESSMENT_TIER,
     FAILED_ASSESSMENT_TIER,
+    METADATA_ASSESSMENT_TIER,
     BiasRisk,
     QualityAssessment,
     QualityFilter,
@@ -196,28 +200,77 @@ class TestTierThreeSurvivesANull:
         assert result.bias_risk == BiasRisk()
         assert result.study_design is StudyDesign.RCT
 
-    def test_a_null_study_design(self) -> None:
-        """A null study design."""
-        result = _tier3(study_design=None)
+    def test_a_null_study_design_is_a_parse_failure(self) -> None:
+        """A null study design is no verdict: it is retried, not recorded.
 
-        assert result.study_design is StudyDesign.UNKNOWN
-        assert result.assessment_tier == 3
-        assert result.confidence == 0.9
+        Read as UNKNOWN at tier 3, it replaced a confident Tier 1 RCT.
+        """
+        with pytest.raises(JSONParseError):
+            _tier3(study_design=None)
 
     def test_a_null_quality_score_takes_the_default(self) -> None:
         """A null quality score takes the default."""
         assert _tier3(quality_score=None).quality_score == 0.0
 
     def test_a_null_confidence_takes_the_default(self) -> None:
-        """A null confidence takes the default."""
-        assert _tier3(confidence=None).confidence == 0.5
+        """A null confidence takes Tier 2's default, not an asserted 0.5."""
+        assert _tier3(confidence=None).confidence == CONFIDENCE_PARSE_FAILURE_DEFAULT
 
     def test_a_non_object_reply_is_a_parse_failure_not_an_attribute_error(self) -> None:
         """A non object reply is a parse failure not an attribute error."""
-        from bmlibrarian_lite.exceptions import JSONParseError
-
         with pytest.raises(JSONParseError):
             _tier3_text("[1, 2]")
+
+
+class TestTierThreeNeedsADesign:
+    """A Tier 3 reply naming no recognised design is a parse failure.
+
+    The prompt offers no "unknown" -- its choices end at "other" -- so a
+    missing, null, wrong-typed or unrecognised design is a reply off the
+    schema. Read as UNKNOWN at tier 3 it was a "verdict" that replaced a
+    confident Tier 1 classification.
+    """
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            "{}",
+            '{"confidence": 0.95}',
+            '{"study_design": null, "confidence": 0.95}',
+            '{"study_design": 5, "confidence": 0.95}',
+            '{"study_design": ["rct"], "confidence": 0.95}',
+            '{"study_design": "banana", "confidence": 0.95}',
+            '{"study_design": "unknown", "confidence": 0.95}',
+            '{"study_design": " Unknown ", "confidence": 0.95}',
+        ],
+        ids=["empty", "missing", "null", "number", "array", "unrecognised",
+             "unknown", "unknown-padded"],
+    )
+    def test_a_reply_naming_no_design_is_a_parse_failure(self, reply: str) -> None:
+        """Each is raised as JSONParseError, which llm_retry retries."""
+        with pytest.raises(JSONParseError):
+            _tier3_text(reply)
+
+    @pytest.mark.parametrize(
+        ("label", "design"),
+        [
+            ("rct", StudyDesign.RCT),
+            (" Randomized Controlled Trial ", StudyDesign.RCT),
+            ("other", StudyDesign.OTHER),
+            ("cohort_prospective", StudyDesign.COHORT_PROSPECTIVE),
+        ],
+    )
+    def test_a_recognised_design_is_read(self, label: str, design: StudyDesign) -> None:
+        """The control: a design the mapping knows is read, case folded."""
+        result = _tier3(study_design=label)
+
+        assert result.study_design is design
+        assert result.assessment_tier == DETAILED_ASSESSMENT_TIER
+
+    def test_an_integer_past_the_digit_limit_is_a_parse_failure(self) -> None:
+        """json.loads raises a plain ValueError for it, not JSONDecodeError."""
+        with pytest.raises(JSONParseError):
+            _tier3_text('{"study_design": "rct", "sample_size": 1' + "0" * 5000 + "}")
 
 
 class TestTierThreeNarrowsEveryValue:
@@ -232,6 +285,16 @@ class TestTierThreeNarrowsEveryValue:
         """A real sample size is kept."""
         assert _tier3(sample_size=120).sample_size == 120
         assert _tier3(sample_size="120").sample_size == 120
+        assert _tier3(sample_size=0).sample_size == 0
+
+    def test_a_negative_sample_size_is_unstated(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """As in Tier 2: a negative count is no count, and is warned of."""
+        with caplog.at_level(logging.WARNING, logger="bmlibrarian_lite.quality.quality_agent"):
+            assert _tier3(sample_size=-5).sample_size is None
+
+        assert any("Negative sample size" in m for m in caplog.messages)
 
     def test_an_infinite_sample_size_does_not_take_the_assessment_down(self) -> None:
         """An infinite sample size is unstated.
@@ -305,7 +368,7 @@ class TestTierThreeNarrowsEveryValue:
 
         ``float(True)`` is 1.0, the most confident answer there is.
         """
-        assert _tier3(confidence=True).confidence == 0.5
+        assert _tier3(confidence=True).confidence == CONFIDENCE_PARSE_FAILURE_DEFAULT
 
     def test_a_nan_confidence_takes_the_default(self) -> None:
         """A NaN confidence takes the default, never 1.0.
@@ -317,7 +380,7 @@ class TestTierThreeNarrowsEveryValue:
             '{"study_design": "rct", "quality_score": NaN, "confidence": NaN}'
         )
 
-        assert result.confidence == 0.5
+        assert result.confidence == CONFIDENCE_PARSE_FAILURE_DEFAULT
         assert result.quality_score == 0.0
         assert result.study_design is StudyDesign.RCT
 
@@ -325,7 +388,18 @@ class TestTierThreeNarrowsEveryValue:
         """An infinite confidence takes the default."""
         result = _tier3_text('{"study_design": "rct", "confidence": Infinity}')
 
-        assert result.confidence == 0.5
+        assert result.confidence == CONFIDENCE_PARSE_FAILURE_DEFAULT
+
+    def test_a_refused_confidence_is_warned_of_and_a_null_is_not(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """As in Tier 2: an unreadable value is named; an unstated one is not."""
+        with caplog.at_level(logging.WARNING, logger="bmlibrarian_lite.quality.quality_agent"):
+            _tier3(confidence=None)
+            assert caplog.messages == []
+            _tier3(confidence="very")
+
+        assert any("confidence" in m for m in caplog.messages)
 
     def test_an_out_of_range_but_finite_value_is_still_clamped(self) -> None:
         """An out of range but finite value is still clamped."""
@@ -395,6 +469,13 @@ class TestTierTwoNarrowsEveryValue:
         """A non string blinding is unstated."""
         assert _tier2(is_blinded=2).is_blinded is None
 
+    def test_an_integer_past_the_digit_limit_is_a_parse_failure(self) -> None:
+        """json.loads raises a plain ValueError, which propagated."""
+        result = _tier2_text('{"study_design": "rct", "sample_size": 1' + "0" * 5000 + "}")
+
+        assert result.study_design is StudyDesign.UNKNOWN
+        assert result.confidence == 0.0
+
     def test_a_well_formed_reply_is_unchanged(self) -> None:
         """A well formed reply is unchanged."""
         result = _tier2(sample_size=40, is_blinded="double", is_randomized=True)
@@ -447,7 +528,13 @@ class TestAFailedDetailedAssessmentKeepsAConfidentTierOne:
     def test_the_failure_sentinel_is_the_named_tier(self) -> None:
         """unclassified() carries FAILED_ASSESSMENT_TIER, no real tier."""
         assert QualityAssessment.unclassified().assessment_tier == FAILED_ASSESSMENT_TIER
-        assert FAILED_ASSESSMENT_TIER not in (1, 2, 3)
+        assert QualityAssessment.unclassified().is_failed
+        assert FAILED_ASSESSMENT_TIER not in (
+            METADATA_ASSESSMENT_TIER,
+            CLASSIFIER_ASSESSMENT_TIER,
+            DETAILED_ASSESSMENT_TIER,
+        )
+        assert not _tier3().is_failed
 
     def test_any_assessment_with_the_sentinel_tier_keeps_tier_1(self) -> None:
         """The manager tests the tier, not the object identity of unclassified()."""
@@ -463,23 +550,65 @@ class TestAFailedDetailedAssessmentKeepsAConfidentTierOne:
         )
         assert result.assessment_tier == 1
 
-    def test_a_genuine_tier_3_unknown_verdict_stands(
-        self, caplog: pytest.LogCaptureFixture
+    def _manager_with_agent_replying(
+        self, reply: str, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[QualityManager, list[int]]:
+        """A manager whose real Tier 3 agent gets *reply* from every call."""
+        monkeypatch.setattr("tenacity.nap.time.sleep", lambda _seconds: None)
+        manager = self._manager(QualityAssessment.unclassified())
+        agent = _agent()
+        calls: list[int] = []
+
+        def chat(**_kwargs: Any) -> str:
+            """Count the call and answer with the scripted reply."""
+            calls.append(1)
+            return reply
+
+        monkeypatch.setattr(agent, "_chat", chat)
+        manager.quality_agent = agent
+        return manager, calls
+
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            '{"study_design": null, "confidence": 0.95}',
+            '{"study_design": "unknown", "confidence": 0.95}',
+            "{}",
+        ],
+        ids=["null", "unknown", "empty"],
+    )
+    def test_a_tier_3_naming_no_design_keeps_a_confident_tier_1(
+        self, reply: str, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A real Tier 3 reply of "unknown" is an answer, not a failure."""
-        manager = self._manager(
-            _tier3_text('{"study_design": "unknown", "confidence": 0.7}')
+        """The reviewer's probe: a PubMed-tagged RCT at 0.95 stays an RCT.
+
+        It came back UNKNOWN / UNCLASSIFIED at tier 3 and confidence 0.95,
+        and a minimum tier above UNCLASSIFIED filtered it out of the review.
+        """
+        manager, calls = self._manager_with_agent_replying(reply, monkeypatch)
+        document = MagicMock(title="A trial", abstract="We randomised 40 patients.")
+
+        result = manager.assess_document(document, QualityFilter(use_detailed_assessment=True))
+
+        assert result.assessment_tier == METADATA_ASSESSMENT_TIER
+        assert result.study_design is StudyDesign.RCT
+        assert result.quality_tier is QualityTier.TIER_4_EXPERIMENTAL
+        assert len(calls) == 4  # retried as malformed JSON is
+
+    def test_a_recognised_tier_3_design_replaces_tier_1_end_to_end(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The control: through the real agent, a named design is an answer."""
+        manager, calls = self._manager_with_agent_replying(
+            '{"study_design": "cohort_prospective", "confidence": 0.8}', monkeypatch
         )
+        document = MagicMock(title="A cohort", abstract="We followed 400 adults.")
 
-        with caplog.at_level(logging.WARNING, logger="bmlibrarian_lite.quality.quality_manager"):
-            result = manager.assess_document(
-                MagicMock(), QualityFilter(use_detailed_assessment=True)
-            )
+        result = manager.assess_document(document, QualityFilter(use_detailed_assessment=True))
 
-        assert result.assessment_tier == 3
-        assert result.quality_tier is QualityTier.UNCLASSIFIED
-        assert result.confidence == 0.7
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert result.assessment_tier == DETAILED_ASSESSMENT_TIER
+        assert result.study_design is StudyDesign.COHORT_PROSPECTIVE
+        assert len(calls) == 1
 
     def test_a_successful_tier_3_still_replaces_tier_1(self) -> None:
         """The control: the detailed answer is used when it is an answer."""
@@ -494,5 +623,50 @@ class TestAFailedDetailedAssessmentKeepsAConfidentTierOne:
         manager = self._manager(detailed)
 
         result = manager.assess_document(MagicMock(), QualityFilter(use_detailed_assessment=True))
+
+        assert result is detailed
+
+
+class TestAFailedDetailedAssessmentKeepsTierTwo:
+    """After a low-confidence Tier 1, a failed Tier 3 keeps Tier 2's answer.
+
+    It returned unclassified(), throwing away the classification just paid
+    for.
+    """
+
+    def _manager(self, detailed: QualityAssessment) -> QualityManager:
+        manager = QualityManager(LiteConfig())
+        manager.metadata_filter = MagicMock()
+        manager.metadata_filter.assess.return_value = QualityAssessment.unclassified()
+        manager.study_classifier = MagicMock()
+        manager.study_classifier.TASK_ID = LiteStudyClassifier.TASK_ID
+        manager.study_classifier.classify.return_value = StudyClassification(
+            study_design=StudyDesign.COHORT_RETROSPECTIVE, confidence=0.8
+        )
+        manager.quality_agent = MagicMock()
+        manager.quality_agent.assess_quality.return_value = detailed
+        return manager
+
+    def test_a_failed_tier_3_keeps_tier_2(self, caplog: pytest.LogCaptureFixture) -> None:
+        """The Tier 2 classification is returned, with a WARNING."""
+        manager = self._manager(QualityAssessment.unclassified())
+
+        with caplog.at_level(logging.WARNING, logger="bmlibrarian_lite.quality.quality_manager"):
+            result = manager.assess_document(
+                MagicMock(), QualityFilter(use_detailed_assessment=True)
+            )
+
+        assert result.assessment_tier == CLASSIFIER_ASSESSMENT_TIER
+        assert result.study_design is StudyDesign.COHORT_RETROSPECTIVE
+        assert result.confidence == 0.8
+        assert any("kept the Tier 2" in m for m in caplog.messages)
+
+    def test_a_successful_tier_3_still_replaces_tier_2(self) -> None:
+        """The control: Tier 3's answer is used when it is an answer."""
+        detailed = _tier3(study_design="case_control", confidence=0.7)
+
+        result = self._manager(detailed).assess_document(
+            MagicMock(), QualityFilter(use_detailed_assessment=True)
+        )
 
         assert result is detailed

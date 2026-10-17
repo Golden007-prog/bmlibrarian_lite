@@ -422,9 +422,15 @@ def llm_extraction_method(model_string: str) -> str:
     return f"llm:{model_string}"
 
 
-# ``assessment_tier`` of the failure sentinel, QualityAssessment.unclassified():
-# no tier produced the assessment (real tiers are 1 metadata, 2 Haiku, 3
-# Sonnet). A Tier 3 verdict of "unknown" keeps tier 3 and is an answer.
+# ``assessment_tier`` values: which tier produced an assessment.
+METADATA_ASSESSMENT_TIER = 1
+CLASSIFIER_ASSESSMENT_TIER = 2
+DETAILED_ASSESSMENT_TIER = 3
+# The failure sentinel's, QualityAssessment.unclassified(): no tier produced
+# the assessment. Tier 3 never returns an "unknown" design at tier 3 -- a
+# reply naming no recognised design is a parse failure, retried and then
+# reported as this sentinel -- so a confident Tier 1 is never replaced by a
+# design nobody named.
 FAILED_ASSESSMENT_TIER = 0
 
 
@@ -438,7 +444,8 @@ class QualityAssessment:
     the primary output of the quality filtering system.
 
     Attributes:
-        assessment_tier: Source tier (1=metadata, 2=Haiku, 3=Sonnet), or
+        assessment_tier: Source tier (METADATA_ASSESSMENT_TIER,
+            CLASSIFIER_ASSESSMENT_TIER, DETAILED_ASSESSMENT_TIER), or
             FAILED_ASSESSMENT_TIER for the failure sentinel
         extraction_method: Method used ("metadata", or "llm:<provider:model>"
             from :func:`llm_extraction_method`)
@@ -484,6 +491,15 @@ class QualityAssessment:
     transparency_result: Optional["TransparencyResult"] = None
     original_quality_tier: Optional[QualityTier] = None  # Before transparency adjustment
     transparency_adjusted: bool = False
+
+    @property
+    def is_failed(self) -> bool:
+        """True for the failure sentinel: no tier produced this assessment.
+
+        Returns:
+            Whether ``assessment_tier`` is FAILED_ASSESSMENT_TIER.
+        """
+        return self.assessment_tier == FAILED_ASSESSMENT_TIER
 
     def passes_filter(self, filter_settings: QualityFilter) -> bool:
         """
@@ -611,7 +627,7 @@ class QualityAssessment:
             QualityAssessment from metadata
         """
         return cls(
-            assessment_tier=1,
+            assessment_tier=METADATA_ASSESSMENT_TIER,
             extraction_method="metadata",
             study_design=study_design,
             quality_tier=DESIGN_TO_TIER.get(study_design, QualityTier.UNCLASSIFIED),
@@ -645,7 +661,7 @@ class QualityAssessment:
             extraction_method = "llm"
             detail = "Fast classification via LLM"
         return cls(
-            assessment_tier=2,
+            assessment_tier=CLASSIFIER_ASSESSMENT_TIER,
             extraction_method=extraction_method,
             study_design=classification.study_design,
             quality_tier=DESIGN_TO_TIER.get(

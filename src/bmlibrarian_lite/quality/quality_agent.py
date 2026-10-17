@@ -34,6 +34,7 @@ from ..agents.base import LiteBaseAgent
 from ..data_models import LiteDocument
 from ..config import LiteConfig
 from ..constants import (
+    CONFIDENCE_PARSE_FAILURE_DEFAULT,
     QUALITY_ASSESSOR_MODEL,
     QUALITY_LLM_TEMPERATURE,
     QUALITY_ASSESSOR_MAX_TOKENS,
@@ -41,7 +42,7 @@ from ..constants import (
 from ..exceptions import JSONParseError, RetryExhaustedError
 from ..utils import llm_retry, classify_llm_exception
 from .data_models import (
-    StudyDesign,
+    DETAILED_ASSESSMENT_TIER,
     QualityTier,
     QualityAssessment,
     BiasRisk,
@@ -56,9 +57,8 @@ from .json_fields import (
     as_int,
     as_str_list,
     as_text,
-    text_or,
 )
-from .study_classifier import STUDY_DESIGN_MAPPING
+from .study_classifier import stated_study_design
 
 logger = logging.getLogger(__name__)
 
@@ -212,78 +212,91 @@ Focus on THIS study's methodology, not studies it references."""
             Parsed QualityAssessment
 
         Raises:
-            JSONParseError: If response cannot be parsed as valid JSON
+            JSONParseError: If response cannot be parsed as valid JSON, is
+                not an object, or names no study design the mapping
+                recognises
         """
-        try:
-            # Clean response
-            cleaned = self._clean_json_response(response)
-            if not cleaned:
-                raise JSONParseError(
-                    "Empty response after cleaning",
-                    raw_response=response,
-                )
-
-            data = json.loads(cleaned)
-            if not isinstance(data, dict):
-                raise JSONParseError(
-                    f"Response is not a JSON object: {type(data).__name__}",
-                    raw_response=response,
-                )
-
-            # Every value is narrowed to its annotated type (bmlib#295,
-            # bmlib#320): a null or wrong-typed answer reads as unstated.
-            design_str = text_or(
-                data.get("study_design"), "unknown", "study_design"
-            ).lower().strip()
-            study_design = self._parse_study_design(design_str)
-
-            # Parse design characteristics
-            chars = as_dict(data.get("design_characteristics"), "design_characteristics")
-
-            # Parse bias risk
-            bias_risk = self._parse_bias_risk(as_dict(data.get("bias_risk"), "bias_risk"))
-
-            # Parse sample size
-            sample_size = self._parse_sample_size(data.get("sample_size"))
-
-            # Parse blinding
-            is_blinded = self._parse_blinding(chars.get("blinded"))
-
-            # Parse quality score (1-10 scale)
-            quality_score = self._parse_quality_score(data.get("quality_score"))
-
-            # Parse confidence
-            confidence = self._parse_confidence(data.get("confidence"))
-
-            # The model is recorded so the benchmark reuses this answer as
-            # that model's, and no other's
-            model = self._get_model()
-            return QualityAssessment(
-                assessment_tier=3,
-                extraction_method=llm_extraction_method(model),
-                study_design=study_design,
-                quality_tier=DESIGN_TO_TIER.get(study_design, QualityTier.UNCLASSIFIED),
-                quality_score=quality_score,
-                evidence_level=as_text(data.get("evidence_level"), "evidence_level"),
-                is_randomized=as_bool(chars.get("randomized"), "randomized"),
-                is_controlled=as_bool(chars.get("controlled"), "controlled"),
-                is_blinded=is_blinded,
-                is_prospective=as_bool(chars.get("prospective"), "prospective"),
-                is_multicenter=as_bool(chars.get("multicenter"), "multicenter"),
-                sample_size=sample_size,
-                confidence=confidence,
-                bias_risk=bias_risk,
-                strengths=as_str_list(data.get("strengths"), "strengths") or [],
-                limitations=as_str_list(data.get("limitations"), "limitations") or [],
-                extraction_details=[f"Detailed assessment via {model}"],
+        # Clean response
+        cleaned = self._clean_json_response(response)
+        if not cleaned:
+            raise JSONParseError(
+                "Empty response after cleaning",
+                raw_response=response,
             )
 
-        except json.JSONDecodeError as e:
+        try:
+            data = json.loads(cleaned)
+        except ValueError as e:
+            # A JSONDecodeError, or the plain ValueError json.loads raises
+            # for an integer longer than sys.get_int_max_str_digits()
             logger.warning(f"Failed to parse JSON response: {e}")
             raise JSONParseError(
                 f"Failed to parse JSON response: {e}",
                 raw_response=response,
             ) from e
+        if not isinstance(data, dict):
+            raise JSONParseError(
+                f"Response is not a JSON object: {type(data).__name__}",
+                raw_response=response,
+            )
+
+        # The design is the one answer this tier cannot do without. The
+        # prompt offers no "unknown" (its choices end at "other"), so a
+        # missing, null, wrong-typed or unrecognised design -- "unknown"
+        # included -- is a reply off the schema, not a verdict. Read as
+        # UNKNOWN at tier 3 it replaced a confident Tier 1 classification
+        # in QualityManager; as a parse failure it is retried, and then
+        # reported as the failure sentinel, which the manager does not let
+        # replace anything.
+        study_design = stated_study_design(data.get("study_design"), "study_design")
+        if study_design is None:
+            logger.warning("Detailed assessment reply names no recognised study design")
+            raise JSONParseError(
+                "Response names no recognised study design",
+                raw_response=response,
+            )
+
+        # Every other value is narrowed to its annotated type (bmlib#295,
+        # bmlib#320): a null or wrong-typed answer reads as unstated.
+        chars = as_dict(data.get("design_characteristics"), "design_characteristics")
+
+        # Parse bias risk
+        bias_risk = self._parse_bias_risk(as_dict(data.get("bias_risk"), "bias_risk"))
+
+        # Parse sample size
+        sample_size = self._parse_sample_size(data.get("sample_size"))
+
+        # Parse blinding
+        is_blinded = self._parse_blinding(chars.get("blinded"))
+
+        # Parse quality score (1-10 scale)
+        quality_score = self._parse_quality_score(data.get("quality_score"))
+
+        # Parse confidence
+        confidence = self._parse_confidence(data.get("confidence"))
+
+        # The model is recorded so the benchmark reuses this answer as
+        # that model's, and no other's
+        model = self._get_model()
+        return QualityAssessment(
+            assessment_tier=DETAILED_ASSESSMENT_TIER,
+            extraction_method=llm_extraction_method(model),
+            study_design=study_design,
+            quality_tier=DESIGN_TO_TIER.get(study_design, QualityTier.UNCLASSIFIED),
+            quality_score=quality_score,
+            evidence_level=as_text(data.get("evidence_level"), "evidence_level"),
+            is_randomized=as_bool(chars.get("randomized"), "randomized"),
+            is_controlled=as_bool(chars.get("controlled"), "controlled"),
+            is_blinded=is_blinded,
+            is_prospective=as_bool(chars.get("prospective"), "prospective"),
+            is_multicenter=as_bool(chars.get("multicenter"), "multicenter"),
+            sample_size=sample_size,
+            confidence=confidence,
+            bias_risk=bias_risk,
+            strengths=as_str_list(data.get("strengths"), "strengths") or [],
+            limitations=as_str_list(data.get("limitations"), "limitations") or [],
+            extraction_details=[f"Detailed assessment via {model}"],
+        )
 
     def _clean_json_response(self, response: str) -> str:
         """
@@ -304,18 +317,6 @@ Focus on THIS study's methodology, not studies it references."""
                     cleaned = cleaned[4:]
         cleaned = cleaned.strip()
         return cleaned
-
-    def _parse_study_design(self, design_str: str) -> StudyDesign:
-        """
-        Parse study design string to enum.
-
-        Args:
-            design_str: Study design as lowercase string
-
-        Returns:
-            StudyDesign enum value
-        """
-        return STUDY_DESIGN_MAPPING.get(design_str, StudyDesign.UNKNOWN)
 
     def _parse_bias_risk(self, bias_data: dict) -> BiasRisk:
         """
@@ -369,9 +370,14 @@ Focus on THIS study's methodology, not studies it references."""
             value: Raw sample size value
 
         Returns:
-            Integer sample size or None
+            Integer sample size, or None when unstated, unreadable or
+            negative (as Tier 2 reads it)
         """
-        return as_int(value, "sample_size")
+        result = as_int(value, "sample_size")
+        if result is not None and result < 0:
+            logger.warning(f"Negative sample size {result}, treating as None")
+            return None
+        return result
 
     def _parse_quality_score(self, value: object) -> float:
         """
@@ -395,10 +401,21 @@ Focus on THIS study's methodology, not studies it references."""
         Args:
             value: Raw confidence value
 
+        A missing or ``null`` confidence, and one that is no finite number,
+        read as CONFIDENCE_PARSE_FAILURE_DEFAULT, as in Tier 2: an
+        uncertainty the model did not state is not asserted for it. (bmlib
+        reads it as 0.5.)
+
         Returns:
-            Confidence clamped to 0.0-1.0 range
+            Confidence clamped to 0.0-1.0 range, or
+            CONFIDENCE_PARSE_FAILURE_DEFAULT when unstated or unreadable
         """
         conf = as_float(value, "confidence")
         if conf is None:
-            return 0.5
+            if value is not None:
+                logger.warning(
+                    f"Failed to parse confidence value {value!r}; using "
+                    f"{CONFIDENCE_PARSE_FAILURE_DEFAULT} to indicate uncertainty"
+                )
+            return CONFIDENCE_PARSE_FAILURE_DEFAULT
         return max(0.0, min(1.0, conf))

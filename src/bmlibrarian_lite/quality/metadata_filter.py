@@ -34,6 +34,7 @@ from ..constants import (
     METADATA_NO_TYPE_CONFIDENCE,
 )
 from .data_models import (
+    METADATA_ASSESSMENT_TIER,
     StudyDesign,
     QualityTier,
     QualityAssessment,
@@ -183,7 +184,7 @@ class MetadataFilter:
         if study_design == StudyDesign.UNKNOWN:
             # Has types but none matched our known list
             return QualityAssessment(
-                assessment_tier=1,
+                assessment_tier=METADATA_ASSESSMENT_TIER,
                 extraction_method="metadata",
                 study_design=StudyDesign.UNKNOWN,
                 quality_tier=QualityTier.UNCLASSIFIED,
