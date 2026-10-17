@@ -35,6 +35,7 @@ from typing import Optional, Callable
 from ..data_models import LiteDocument
 from ..config import LiteConfig
 from .data_models import (
+    FAILED_ASSESSMENT_TIER,
     QualityTier,
     QualityFilter,
     QualityAssessment,
@@ -132,16 +133,17 @@ class QualityManager:
             if filter_settings.use_detailed_assessment:
                 logger.debug("Tier 3: Detailed assessment requested despite confident metadata")
                 detailed = self.quality_agent.assess_quality(document)
-                if detailed.assessment_tier == 0:
-                    # Only the failure sentinel (QualityAssessment.unclassified(),
-                    # assessment_tier 0) is kept out: a genuine Tier 3 verdict of
-                    # "unknown" (assessment_tier 3) stands.  A failed detailed
+                if detailed.assessment_tier == FAILED_ASSESSMENT_TIER:
+                    # Only the failure sentinel (QualityAssessment.unclassified())
+                    # is kept out: a genuine Tier 3 verdict of "unknown"
+                    # (assessment_tier 3) stands.  A failed detailed
                     # assessment must not replace a confident classification
                     # (bmlib#295).
                     logger.warning(
                         "Detailed assessment failed; kept the metadata "
-                        f"classification ({metadata_result.study_design.value}, "
-                        f"confidence {metadata_result.confidence:.2f})"
+                        "classification (%s, confidence %.2f)",
+                        metadata_result.study_design.value,
+                        metadata_result.confidence,
                     )
                     return metadata_result
                 return detailed

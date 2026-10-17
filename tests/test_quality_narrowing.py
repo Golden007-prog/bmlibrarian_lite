@@ -21,6 +21,7 @@ import pytest
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.constants import CONFIDENCE_PARSE_FAILURE_DEFAULT
 from bmlibrarian_lite.quality.data_models import (
+    FAILED_ASSESSMENT_TIER,
     BiasRisk,
     QualityAssessment,
     QualityFilter,
@@ -434,10 +435,33 @@ class TestAFailedDetailedAssessmentKeepsAConfidentTierOne:
 
         assert result.assessment_tier == 1
         assert result.study_design is StudyDesign.RCT
-        assert any(
-            r.levelno == logging.WARNING and "Detailed assessment failed" in r.getMessage()
-            for r in caplog.records
+        warned = [
+            r for r in caplog.records
+            if r.levelno == logging.WARNING and "Detailed assessment failed" in r.getMessage()
+        ]
+        assert len(warned) == 1
+        # %-style, so the values are arguments and not formatted when unlogged
+        assert warned[0].args == ("rct", 0.95)
+        assert "rct" not in warned[0].msg
+
+    def test_the_failure_sentinel_is_the_named_tier(self) -> None:
+        """unclassified() carries FAILED_ASSESSMENT_TIER, no real tier."""
+        assert QualityAssessment.unclassified().assessment_tier == FAILED_ASSESSMENT_TIER
+        assert FAILED_ASSESSMENT_TIER not in (1, 2, 3)
+
+    def test_any_assessment_with_the_sentinel_tier_keeps_tier_1(self) -> None:
+        """The manager tests the tier, not the object identity of unclassified()."""
+        failed = QualityAssessment(
+            assessment_tier=FAILED_ASSESSMENT_TIER,
+            extraction_method="none",
+            study_design=StudyDesign.UNKNOWN,
+            quality_tier=QualityTier.UNCLASSIFIED,
+            quality_score=0.0,
         )
+        result = self._manager(failed).assess_document(
+            MagicMock(), QualityFilter(use_detailed_assessment=True)
+        )
+        assert result.assessment_tier == 1
 
     def test_a_genuine_tier_3_unknown_verdict_stands(
         self, caplog: pytest.LogCaptureFixture
