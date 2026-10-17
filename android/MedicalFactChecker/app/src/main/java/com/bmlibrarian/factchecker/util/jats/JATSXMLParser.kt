@@ -621,7 +621,9 @@ class JATSXMLParser(
                 if (inRefCitation) {
                     when {
                         text.startsWith("10.") -> currentReference?.doi = text
-                        text.all { it.isDigit() } && text.length >= Constants.JATS_MIN_PMID_LENGTH -> {
+                        // ASCII digits only: isDigit() admits Arabic-Indic and
+                        // other digits, which no PMID is (bmlib#470)
+                        isAsciiDigits(text) && text.length >= Constants.JATS_MIN_PMID_LENGTH -> {
                             currentReference?.pmid = text
                         }
                     }
@@ -1255,11 +1257,21 @@ class JATSXMLParser(
         when {
             text.startsWith("10.") -> doi = text
             text.startsWith("PMC") -> pmcId = text
-            text.all { it.isDigit() } && text.length >= Constants.JATS_MIN_PMID_LENGTH -> {
+            isAsciiDigits(text) && text.length >= Constants.JATS_MIN_PMID_LENGTH -> {
                 if (pmid.isEmpty()) pmid = text
             }
         }
     }
+
+    /**
+     * Whether [text] is non-empty and every character is `0`-`9`.
+     *
+     * Not `isDigit()`, which admits Arabic-Indic and other digits: a value
+     * classified as a PMID is pasted into the PubMed URL (bmlib#470), as
+     * Swift's `isASCII && isNumber` refuses.
+     */
+    private fun isAsciiDigits(text: String): Boolean =
+        text.isNotEmpty() && text.all { it in '0'..'9' }
 }
 
 // MARK: - Internal Builder Types

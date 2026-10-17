@@ -707,6 +707,14 @@ def transparency_failure_text(failure: TransparencyAnalysisFailure) -> str:
     return f"{caveat} {source_failure_advice(cause)}"
 
 
+#: Why PubMed's record was not read when the caller's PMID could not be sent
+#: (a refused value, or a PMC ID given as the PMID; bmlib#470): neither
+#: "could not be read" nor "holds no record" is true of it (#356).
+PUBMED_NOT_ASKED_FOR_PMID_CLAUSE = (
+    "PubMed was not asked, because the PMID given is not a PubMed ID"
+)
+
+
 #: What the COI caveats say was not established, as the reader is told it.
 #: One place, because every COI reason is completed by it -- the two below
 #: and the unparsed-end-matter one in the analyzer -- and they must not drift.

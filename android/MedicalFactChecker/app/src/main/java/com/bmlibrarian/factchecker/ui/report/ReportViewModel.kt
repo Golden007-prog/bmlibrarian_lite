@@ -24,6 +24,7 @@ import androidx.lifecycle.viewModelScope
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.local.entity.ReportEntity
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
+import com.bmlibrarian.factchecker.data.remote.fulltext.Pmid
 import com.bmlibrarian.factchecker.data.remote.fulltext.recordingFullTextFetch
 import com.bmlibrarian.factchecker.data.repository.DocumentRepository
 import com.bmlibrarian.factchecker.data.repository.ReportRepository
@@ -345,8 +346,10 @@ class ReportViewModel @Inject constructor(
      * @param pmid The PubMed ID to open
      */
     fun openInPubMed(pmid: String) {
+        // Canonical, as every PubMed link is (bmlib#470); a value that is not
+        // a PMID opens nothing rather than a page naming no article
+        val url = Pmid.pubmedUrl(pmid) ?: return
         viewModelScope.launch {
-            val url = "${Constants.PUBMED_URL_PREFIX}$pmid/"
             _events.send(ReportUiEvent.OpenUrl(url))
         }
     }

@@ -55,6 +55,7 @@ from ..data_models import (
 )
 from .. import elsevier_api
 from ..elsevier_api import ElsevierCredentials
+from ..identifiers import no_usable_identifier_text
 from ..pdf_discovery import PDFDiscoverer, DiscoveryResult
 from ..pdf_library_check import set_aside_download_note
 from ..pdf_utils import generate_pdf_path
@@ -314,6 +315,11 @@ class PDFDiscoveryWorker(SingleOutcome, QThread):
                     "Please enter an identifier manually.",
                 )
                 return
+            # A refused PMID alone is named, not reported as "no PDF sources
+            # found" after a lookup that had nothing to ask by (bmlib#470)
+            if refused := no_usable_identifier_text(doi, pmid, pmcid):
+                self._end(self.error, refused)
+                return
 
             # Generate output path
             output_path = generate_pdf_path(self.doc_dict, self.output_dir)
@@ -501,6 +507,11 @@ class FulltextDiscoveryWorker(SingleOutcome, QThread):
                     "No identifiers available (DOI, PMID, or PMCID required).\n"
                     "Please enter an identifier manually.",
                 )
+                return
+            # A refused PMID alone is named, not reported as "not available"
+            # after a lookup that had nothing to ask by (bmlib#470)
+            if refused := no_usable_identifier_text(doi, pmid, pmcid):
+                self._end(self.error, refused)
                 return
 
             # Create discoverer with progress callback

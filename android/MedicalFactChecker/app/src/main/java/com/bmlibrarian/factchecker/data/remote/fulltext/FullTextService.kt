@@ -82,6 +82,26 @@ class FullTextService @Inject constructor(
 ) {
     companion object {
         private const val TAG = "FullTextService"
+
+        /**
+         * The Europe PMC queries that name an article by the primary slot and DOI.
+         *
+         * A PMID is sent canonical or not at all (bmlib#470, bmlib#472, bmlib#478): padded
+         * digits lose their zeros, a refused value is not queried, and a PMC ID
+         * given as the PMID is asked for as one.
+         *
+         * @param pmid The primary identifier slot, if any.
+         * @param doi The DOI, if any.
+         * @return The queries, in the order they are asked.
+         */
+        internal fun pmidQueries(pmid: String?, doi: String?): List<String> {
+            val reading = pmid?.let { Pmid.canonical(it) }
+            return listOfNotNull(
+                reading?.pmid?.let { "ext_id:$it src:med" },
+                reading?.pmcId?.let { "PMCID:$it" },
+                doi?.takeIf { it.isNotBlank() }?.let { "DOI:\"$it\"" }
+            )
+        }
         private const val PDF_CACHE_DIR = Constants.FULLTEXT_PDF_CACHE_DIR
 
         /** Appended to a PDF's cache name while its download is in progress. */
@@ -1001,10 +1021,17 @@ class FullTextService @Inject constructor(
      * @return What every attempted search learned, merged.
      */
     private suspend fun resolvePmcIdAndPdfUrl(pmid: String?, doi: String?): PmcResolution {
-        val queries = listOfNotNull(
-            pmid?.takeIf { it.isNotBlank() }?.let { "ext_id:$it src:med" },
-            doi?.takeIf { it.isNotBlank() }?.let { "DOI:\"$it\"" }
-        )
+        val queries = pmidQueries(pmid, doi)
+        // The caller's value, escaped as Python's %r escapes it, so a newline in
+        // it cannot start a log line of its own (bmlib#470, bmlib#472, bmlib#478)
+        val reading = pmid?.let { Pmid.canonical(it) }
+        if (pmid != null && reading?.refused == true) {
+            Log.w(TAG, "Not a usable PMID, so Europe PMC was not asked about it: ${Pmid.logQuoted(pmid)}")
+        }
+        if (pmid != null && reading?.pmcId != null) {
+            // As Python's read_caller_ids logs it
+            Log.w(TAG, "The PMID ${Pmid.logQuoted(pmid)} is a PMC ID, so it is read as one")
+        }
         var accumulated = PmcResolution()
         for (query in queries) {
             accumulated = accumulated.merging(searchForPmcIdAndPdfUrl(query))

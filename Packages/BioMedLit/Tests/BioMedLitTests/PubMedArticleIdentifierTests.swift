@@ -116,4 +116,52 @@ final class PubMedArticleIdentifierTests: XCTestCase {
         XCTAssertNil(articles[1].doi)
         XCTAssertNil(articles[1].pmcId)
     }
+
+    // MARK: - The shared fixture
+
+    /// PMID 33301246 as efetch returned it (trimmed), the one file the Python
+    /// and Android suites read too (lite #404). Read from disk via #filePath,
+    /// like the contract files, never from a bundle.
+    private static let sharedFixture: URL? = {
+        let relative = "tests/fixtures/pubmed_efetch_33301246.xml"
+        var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while directory.path != "/" {
+            let candidate = directory.appendingPathComponent(relative)
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent(".git").path) { return nil }
+            directory = directory.deletingLastPathComponent()
+        }
+        return nil
+    }()
+
+    private func sharedBody() throws -> String {
+        let file = try XCTUnwrap(Self.sharedFixture, "pubmed_efetch_33301246.xml not found")
+        return try String(contentsOf: file, encoding: .utf8)
+    }
+
+    /// The record's own ids, not those of the two papers in its ReferenceList.
+    func testTheSharedFixturesOwnIdsAreRead() throws {
+        let article = try XCTUnwrap(parse(sharedBody()).first)
+        XCTAssertEqual(article.pmcId, "PMC7745181")
+        XCTAssertEqual(article.doi, "10.1056/NEJMoa2034577")
+    }
+
+    /// With the record's own DOI gone from both places, a cited paper's
+    /// (10.1056/NEJMoa2027906) must not stand in for it.
+    func testTheSharedFixturesReferenceDOIIsNotTaken() throws {
+        let body = try sharedBody()
+        let withoutOwnDOI = body
+            .replacingOccurrences(
+                of: #"<ArticleId IdType="doi">10.1056/NEJMoa2034577</ArticleId></ArticleIdList><ReferenceList>"#,
+                with: "</ArticleIdList><ReferenceList>"
+            )
+            .replacingOccurrences(
+                of: #"<ELocationID EIdType="doi" ValidYN="Y">10.1056/NEJMoa2034577</ELocationID>"#,
+                with: ""
+            )
+        XCTAssertLessThan(withoutOwnDOI.count, body.count - 80)
+        let article = try XCTUnwrap(parse(withoutOwnDOI).first)
+        XCTAssertNil(article.doi)
+        XCTAssertEqual(article.pmcId, "PMC7745181")
+    }
 }

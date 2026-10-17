@@ -51,6 +51,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
+import com.bmlibrarian.factchecker.data.remote.fulltext.Pmid
 import com.bmlibrarian.factchecker.ui.common.MarkdownText
 import com.bmlibrarian.factchecker.ui.fulltext.components.LinkOnlyFullTextSection
 import com.bmlibrarian.factchecker.ui.fulltext.components.OpenAccessShortfallNotice
@@ -134,7 +135,8 @@ fun DocumentDetailSheet(
         Row(
             horizontalArrangement = Arrangement.spacedBy(Constants.UI_SECTION_SPACING.dp)
         ) {
-            document.pmid?.let { pmid ->
+            // Only a PMID a PubMed link may carry, as Swift's PMID lines (bmlib#470)
+            document.pmid?.let { Pmid.canonical(it).pmid }?.let { pmid ->
                 Text(
                     text = "PMID: $pmid",
                     style = MaterialTheme.typography.labelMedium,
@@ -251,7 +253,8 @@ fun DocumentDetailSheet(
                 Text("Close")
             }
 
-            document.pmid?.let { pmid ->
+            // Only a PMID a PubMed link may carry, as Swift's PMID lines (bmlib#470)
+            document.pmid?.let { Pmid.canonical(it).pmid }?.let { pmid ->
                 Button(
                     onClick = { onOpenInPubMed(pmid) },
                     modifier = Modifier.weight(1f)

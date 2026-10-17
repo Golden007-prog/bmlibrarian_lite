@@ -63,7 +63,11 @@ from .constants import (
     ENV_NCBI_EMAIL,
     ENV_NCBI_API_KEY,
     EMAIL_VALIDATION_PATTERN,
+    EFETCH_ARTICLE_SET_ROOT_TAG,
+    EFETCH_ERROR_ROOT_TAG,
+    PUBMED_RECORD_PMID_PATH,
 )
+from .record_ids import own_article_ids
 from .data_types import (
     ArticleFetchResult,
     PubMedQuery,
@@ -81,11 +85,6 @@ from ..polite_session import mount_politely
 from ..search_failures import request_failure_from_exception
 
 logger = logging.getLogger(__name__)
-
-# Root elements of an efetch answer: the articles, or the document E-utilities
-# sends instead when the fetch failed (with HTTP 400, or with HTTP 200 (#255)).
-EFETCH_ARTICLE_SET_ROOT_TAG = "PubmedArticleSet"
-EFETCH_ERROR_ROOT_TAG = "eFetchResult"
 
 # Marks an answer body that did not decode as JSON (JSON null is a value).
 _NOT_JSON = object()
@@ -852,8 +851,9 @@ class PubMedSearchClient:
             ArticleMetadata or None if parsing failed
         """
         try:
-            # Extract PMID
-            pmid_elem = article_elem.find(".//PMID")
+            # The record's own PMID: a deep search would take a
+            # CommentsCorrections PMID when MedlineCitation/PMID is missing
+            pmid_elem = article_elem.find(PUBMED_RECORD_PMID_PATH)
             if pmid_elem is None or not pmid_elem.text:
                 return None
             pmid = pmid_elem.text
@@ -889,19 +889,10 @@ class PubMedSearchClient:
             journal_elem = article_elem.find(".//Journal/Title")
             journal = self._get_element_text(journal_elem) if journal_elem is not None else "PubMed"
 
-            # Extract DOI
-            doi = None
-            for article_id in article_elem.findall(".//ArticleId"):
-                if article_id.get("IdType") == "doi":
-                    doi = article_id.text
-                    break
-
-            # Extract PMC ID
-            pmc_id = None
-            for article_id in article_elem.findall(".//ArticleId"):
-                if article_id.get("IdType") == "pmc":
-                    pmc_id = article_id.text
-                    break
+            # The record's own DOI and PMC ID, never a cited paper's (bmlib#474)
+            own_ids = own_article_ids(article_elem)
+            doi = own_ids.get("doi")
+            pmc_id = own_ids.get("pmc")
 
             # Extract MeSH terms
             mesh_terms = []
