@@ -17,146 +17,140 @@
 import XCTest
 @testable import BioMedLit
 
+/// Loads the shared Europe PMC free-PDF contract (bmlib#79).
+enum EuropePMCFreePDFContract {
+    private static let contractFile: URL? = {
+        var directory = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        while true {
+            let candidate = directory.appendingPathComponent(
+                "doc/cross_platform/fulltext_parity/europepmc_free_pdf.json")
+            if FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+            if FileManager.default.fileExists(atPath: directory.appendingPathComponent(".git").path) {
+                return nil
+            }
+            let parent = directory.deletingLastPathComponent()
+            if parent == directory { return nil }
+            directory = parent
+        }
+    }()
+
+    static func load() throws -> [String: Any] {
+        let url = try XCTUnwrap(contractFile, "europepmc_free_pdf.json not found")
+        return try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+    }
+}
+
 /// Tests for the Europe PMC free-PDF availability allow-list.
 ///
 /// Mirrors bmlib issue #79: `availability == "Free"` alone rejects the
-/// `Open access` / `OA` entries that are 95.7% of the free PDFs Europe PMC
-/// offers, both of which are the same `?pdf=render` URL on the same host.
-final class EuropePMCFreePDFTests: XCTestCase {
+/// `Open access` / `OA` entries that are 95.7% of Europe PMC's own free PDFs.
+/// Only Europe PMC's own entries (`site == "Europe_PMC"`) are this tier's: the
+/// list also carries free PDFs from Unpaywall and PubMedCentral, on publishers'
+/// and NCBI's hosts, and lists them first.
+///
+/// The cases are the shared contract
+/// `doc/cross_platform/fulltext_parity/europepmc_free_pdf.json`, which Python
+/// and Android read too: add a row there, not a test here. The logging tests
+/// pin which rejections are a warning, as Python's and Android's do.
+final class EuropePMCFreePDFTests: RecordingLoggerTestCase {
 
-    // MARK: - Helpers
-
-    /// Decode a `fullTextUrlList` payload the way the search response does.
-    private func decodeResult(fullTextUrlJSON: String) throws -> EuropePMCResult {
-        let json = """
-        {"id": "1", "pmid": "1", "fullTextUrlList": {"fullTextUrl": \(fullTextUrlJSON)}}
-        """
-        return try JSONDecoder().decode(EuropePMCResult.self, from: Data(json.utf8))
+    func testEveryContractKeyIsReadHere() throws {
+        XCTAssertEqual(
+            Set(try EuropePMCFreePDFContract.load().keys),
+            ["schema_version", "description", "source", "own_site", "free_codes", "free_labels",
+             "known_unavailable_codes", "cases"]
+        )
     }
 
-    private static let renderURL = "https://europepmc.org/articles/PMC1234567?pdf=render"
-
-    // MARK: - Availability code allow-list
-
-    func testOpenAccessPDFIsAccepted() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Open access",
-          "availabilityCode": "OA", "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertEqual(EuropePMCService.extractFreePDFURL(from: result), Self.renderURL)
+    /// The result one search would carry for these entries.
+    private func result(_ entries: [[String: Any]]) throws -> EuropePMCResult {
+        let object: [String: Any] = ["id": "1", "pmid": "1", "fullTextUrlList": ["fullTextUrl": entries]]
+        return try JSONDecoder().decode(
+            EuropePMCResult.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    func testFreePDFIsAccepted() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Free",
-          "availabilityCode": "F", "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertEqual(EuropePMCService.extractFreePDFURL(from: result), Self.renderURL)
+    /// One PDF entry from `site`, with the given code and label.
+    private func entry(code: String?, label: String?, site: String = "Europe_PMC") -> [String: Any] {
+        var entry: [String: Any] = ["documentStyle": "pdf", "site": site, "url": "https://example.org/x.pdf"]
+        if let code { entry["availabilityCode"] = code }
+        if let label { entry["availability"] = label }
+        return entry
     }
 
-    func testSubscriptionRequiredPDFIsRejected() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "PubMedCentral", "availability": "Subscription required",
-          "availabilityCode": "S", "url": "https://example.org/paywalled.pdf"}]
-        """)
-
-        XCTAssertNil(EuropePMCService.extractFreePDFURL(from: result))
+    private var warnings: [String] {
+        logger.recorded.filter { $0.hasPrefix("WARNING: ") }
     }
 
-    /// An unrecognised code must under-credit rather than defer to the label:
-    /// a future access code must not be admitted on the strength of a display
-    /// string that happens to read "Free".
-    func testUnrecognisedCodeIsRejectedWithoutConsultingLabel() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Free",
-          "availabilityCode": "Z", "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertNil(EuropePMCService.extractFreePDFURL(from: result))
+    func testAnUnrecognisedCodeIsLoggedAtWarningWithItsLabel() throws {
+        XCTAssertNil(EuropePMCService.extractFreePDFURL(from: try result([entry(code: "Z", label: "Free")])))
+        XCTAssertEqual(warnings.count, 1, "\(logger.recorded)")
+        XCTAssertTrue(warnings.first?.contains("'Z'") == true, "\(warnings)")
+        XCTAssertTrue(warnings.first?.contains("Free") == true, "\(warnings)")
     }
 
-    // MARK: - Label fallback for a code-less entry
-
-    func testMissingCodeFallsBackToOpenAccessLabel() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Open access",
-          "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertEqual(EuropePMCService.extractFreePDFURL(from: result), Self.renderURL)
+    func testARoutineRejectionIsNotAWarning() throws {
+        for rejected in [
+            entry(code: "S", label: "Subscription required"),
+            entry(code: nil, label: "Subscription required"),
+            entry(code: "", label: nil),
+        ] {
+            XCTAssertNil(EuropePMCService.extractFreePDFURL(from: try result([rejected])))
+        }
+        XCTAssertEqual(warnings, [])
+        // Each was still seen and logged, at debug
+        XCTAssertEqual(logger.recorded.filter { $0.hasPrefix("DEBUG: ") }.count, 3, "\(logger.recorded)")
     }
 
-    func testMissingCodeFallsBackToRejectingSubscriptionLabel() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "PubMedCentral", "availability": "Subscription required",
-          "url": "https://example.org/paywalled.pdf"}]
-        """)
-
-        XCTAssertNil(EuropePMCService.extractFreePDFURL(from: result))
+    func testAnotherSitesEntryWithAnUnrecognisedCodeIsNotAWarning() throws {
+        XCTAssertNil(EuropePMCService.extractFreePDFURL(
+            from: try result([entry(code: "Z", label: "Free", site: "Unpaywall")])))
+        XCTAssertEqual(warnings, [])
     }
 
-    func testEmptyCodeFallsBackToLabel() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Open access",
-          "availabilityCode": "", "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertEqual(EuropePMCService.extractFreePDFURL(from: result), Self.renderURL)
+    func testAnAcceptedEntryIsNotAWarning() throws {
+        XCTAssertEqual(
+            EuropePMCService.extractFreePDFURL(from: try result([entry(code: "OA", label: "Open access")])),
+            "https://example.org/x.pdf")
+        XCTAssertEqual(warnings, [])
     }
 
-    func testEntryWithNeitherCodeNorLabelIsRejected() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "Europe_PMC", "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertNil(EuropePMCService.extractFreePDFURL(from: result))
+    func testTheConstantsAreTheContracts() throws {
+        let contract = try EuropePMCFreePDFContract.load()
+        XCTAssertEqual(
+            BioMedLitConstants.europePMCFreePDFAvailabilityCodes,
+            Set(try XCTUnwrap(contract["free_codes"] as? [String])))
+        XCTAssertEqual(
+            BioMedLitConstants.europePMCFreePDFAvailabilityLabels,
+            Set(try XCTUnwrap(contract["free_labels"] as? [String])))
+        XCTAssertEqual(
+            BioMedLitConstants.europePMCKnownUnavailablePDFCodes,
+            Set(try XCTUnwrap(contract["known_unavailable_codes"] as? [String])))
+        XCTAssertEqual(
+            BioMedLitConstants.europePMCOwnPDFSite,
+            try XCTUnwrap(contract["own_site"] as? String))
     }
 
-    // MARK: - Document style
+    /// Each case builds the result the search response would carry: no
+    /// `fullTextUrlList` at all when the case's `fullTextUrl` is null.
+    func testEachContractCase() throws {
+        let cases = try XCTUnwrap(EuropePMCFreePDFContract.load()["cases"] as? [[String: Any]])
+        // An emptied table would pass the loop vacuously.
+        XCTAssertGreaterThanOrEqual(cases.count, 12)
+        for entry in cases {
+            let name = entry["name"] as? String ?? "?"
+            var object: [String: Any] = ["id": "1", "pmid": "1"]
+            if !(entry["fullTextUrl"] is NSNull), let entries = entry["fullTextUrl"] {
+                object["fullTextUrlList"] = ["fullTextUrl": entries]
+            }
+            let data = try JSONSerialization.data(withJSONObject: object)
+            let result = try JSONDecoder().decode(EuropePMCResult.self, from: data)
 
-    func testNonPDFDocumentStyleIsIgnored() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "html", "site": "Europe_PMC", "availability": "Open access",
-          "availabilityCode": "OA", "url": "https://europepmc.org/article/MED/1"}]
-        """)
-
-        XCTAssertNil(EuropePMCService.extractFreePDFURL(from: result))
-    }
-
-    /// The realistic payload shape: an HTML entry, a paywalled PDF and the
-    /// open-access render URL, in that order.
-    func testPicksFirstFreePDFAmongMixedEntries() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "html", "site": "Europe_PMC", "availability": "Open access",
-          "availabilityCode": "OA", "url": "https://europepmc.org/article/MED/1"},
-         {"documentStyle": "pdf", "site": "Publisher", "availability": "Subscription required",
-          "availabilityCode": "S", "url": "https://example.org/paywalled.pdf"},
-         {"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Open access",
-          "availabilityCode": "OA", "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertEqual(EuropePMCService.extractFreePDFURL(from: result), Self.renderURL)
-    }
-
-    // MARK: - Degenerate payloads
-
-    func testMissingFullTextUrlListYieldsNil() throws {
-        let json = #"{"id": "1", "pmid": "1"}"#
-        let result = try JSONDecoder().decode(EuropePMCResult.self, from: Data(json.utf8))
-
-        XCTAssertNil(EuropePMCService.extractFreePDFURL(from: result))
-    }
-
-    func testEntryWithoutURLIsSkipped() throws {
-        let result = try decodeResult(fullTextUrlJSON: """
-        [{"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Open access",
-          "availabilityCode": "OA"},
-         {"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Free",
-          "availabilityCode": "F", "url": "\(Self.renderURL)"}]
-        """)
-
-        XCTAssertEqual(EuropePMCService.extractFreePDFURL(from: result), Self.renderURL)
+            XCTAssertEqual(
+                EuropePMCService.extractFreePDFURL(from: result),
+                entry["expected_url"] as? String,
+                name
+            )
+        }
     }
 }

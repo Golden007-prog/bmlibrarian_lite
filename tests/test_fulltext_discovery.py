@@ -713,7 +713,8 @@ _HELD_NOT_OPEN_ACCESS_WITH_PDF = {
     **_HELD_NOT_OPEN_ACCESS,
     "hasPDF": "Y",
     "fullTextUrlList": {"fullTextUrl": [
-        {"documentStyle": "pdf", "availability": "Free", "url": _RENDER_URL},
+        {"documentStyle": "pdf", "site": "Europe_PMC", "availability": "Free",
+         "url": _RENDER_URL},
     ]},
 }
 

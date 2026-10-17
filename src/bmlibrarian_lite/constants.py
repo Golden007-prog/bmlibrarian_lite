@@ -594,6 +594,33 @@ EUROPEPMC_SORT_ORDER = ""
 # Result type for Europe PMC search (core = full metadata)
 EUROPEPMC_RESULT_TYPE = "core"
 
+# Europe PMC ``availabilityCode`` values that mark a downloadable PDF entry
+# (bmlib#79). ``OA`` ("Open access") is about 96% of Europe PMC's own free
+# PDFs, ``F`` ("Free") the rest. Pinned by
+# doc/cross_platform/fulltext_parity/europepmc_free_pdf.json.
+EUROPE_PMC_FREE_PDF_CODES = frozenset({"OA", "F"})
+
+# The ``site`` of the ``fullTextUrl`` entries that are Europe PMC's own copy
+# (a ``?pdf=render`` URL, or for a preprint an ``api/fulltextRepo`` URL). The
+# same list also carries free PDFs Europe PMC took from Unpaywall or
+# PubMedCentral, on publishers' and NCBI's hosts, and lists them first; those
+# are left to the Unpaywall and DOI tiers, which recognise bot walls. An entry
+# with no site is not taken.
+EUROPE_PMC_OWN_PDF_SITE = "Europe_PMC"
+
+# ``availability`` display strings accepted for an entry with no code. Never
+# consulted for a code that is present, so a future code is not admitted on
+# the strength of a label.
+EUROPE_PMC_FREE_PDF_LABELS = frozenset({"Open access", "Free"})
+
+# Codes known to mean "not downloadable". Not consulted when deciding: the
+# allow-list alone admits an entry. Only so a rejection is reported at the
+# right level (debug for these, WARNING for a code in neither set).
+EUROPE_PMC_UNAVAILABLE_PDF_CODES = frozenset({"S"})
+
+# Europe PMC ``documentStyle`` marking a PDF entry
+EUROPE_PMC_PDF_DOCUMENT_STYLE = "pdf"
+
 # Europe PMC source codes
 EUROPEPMC_SOURCE_MEDLINE = "MED"      # PubMed/MEDLINE
 EUROPEPMC_SOURCE_PMC = "PMC"          # PubMed Central

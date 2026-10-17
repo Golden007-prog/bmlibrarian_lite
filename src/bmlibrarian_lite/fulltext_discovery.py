@@ -956,8 +956,11 @@ class FulltextDiscoverer:
     ) -> FulltextResult:
         """Try to download PDF from Europe PMC render URL.
 
-        Used when JATS XML is unavailable but a free PDF exists via the
-        Europe PMC ``?pdf=render`` endpoint.
+        Used when JATS XML is unavailable but Europe PMC serves its own free
+        PDF (a ``?pdf=render`` URL, or for a preprint an ``api/fulltextRepo``
+        URL). Only Europe PMC's own copy reaches here: the free PDFs it lists
+        from Unpaywall or PubMedCentral are left to the Unpaywall and DOI
+        tiers, which recognise bot walls (``_extract_free_pdf_url``).
 
         Args:
             doc_dict: Document dictionary for path generation

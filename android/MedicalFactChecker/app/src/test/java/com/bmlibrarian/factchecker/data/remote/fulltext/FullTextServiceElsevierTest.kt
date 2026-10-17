@@ -335,7 +335,12 @@ class FullTextServiceElsevierTest {
             EuropePMCArticle(
                 id = "1", source = "MED", pmid = "1", title = "t",
                 fullTextUrlList = FullTextUrlList(
-                    listOf(FullTextUrlEntry(availability = "Free", documentStyle = "pdf", url = "https://europepmc.org/a.pdf"))
+                    listOf(
+                        FullTextUrlEntry(
+                            availability = "Free", documentStyle = "pdf", site = "Europe_PMC",
+                            url = "https://europepmc.org/a.pdf"
+                        )
+                    )
                 )
             )
         )

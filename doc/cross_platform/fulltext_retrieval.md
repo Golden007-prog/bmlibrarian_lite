@@ -1819,6 +1819,8 @@ article by identifier, and **Europe PMC answers only when the identifier is
 asked for in its own terms**. A query that names the wrong source matches
 nothing, which is indistinguishable from the article not existing.
 
+Which `fullTextUrl` entry of the answer is Europe PMC's own free PDF is pinned by `fulltext_parity/europepmc_free_pdf.json` (bmlib#79), which all three suites read: only an entry whose `site` is `Europe_PMC` (a `?pdf=render` URL, or for a preprint an `api/fulltextRepo` URL), free by its `availabilityCode`, else its `availability` label, with a URL that is not blank. The same list carries free PDFs Europe PMC took from Unpaywall or PubMedCentral, on publishers' and NCBI's hosts, and lists them first; those are left to the Unpaywall and DOI tiers, which recognise bot walls.
+
 ```pseudocode
 # Most specific first, in the same order the cache key ladder climbs.
 function identifier_queries(pmid, pmc_id, doi, stated_kind) -> [Query]:

@@ -380,14 +380,21 @@ public actor EuropePMCService {
 
     // MARK: - Free PDF Selection
 
-    /// Extract a free PDF URL from a result's ``fullTextUrlList``.
+    /// Extract Europe PMC's own free PDF URL from a result's ``fullTextUrlList``.
     ///
-    /// The search API includes `fullTextUrlList` with `?pdf=render` entries for
-    /// PDFs Europe PMC serves itself, even when JATS XML is unavailable — which
-    /// is exactly when the PDF tier needs one.
+    /// The search API includes `fullTextUrlList` entries for PDFs Europe PMC
+    /// serves itself (a `?pdf=render` URL, or for a preprint an
+    /// `api/fulltextRepo` URL), even when JATS XML is unavailable — which is
+    /// exactly when the PDF tier needs one. Only those are taken: the free PDFs
+    /// the same list carries from Unpaywall or PubMedCentral, listed first, are
+    /// on publishers' and NCBI's hosts and are left to the Unpaywall and DOI
+    /// tiers (``BioMedLitConstants/europePMCOwnPDFSite``). The rule is the shared
+    /// contract `doc/cross_platform/fulltext_parity/europepmc_free_pdf.json`.
     ///
     /// Entries that are PDFs but not downloadable are logged rather than dropped
     /// silently, so "a PDF entry was seen and not taken" is visible in a trace.
+    /// An entry whose URL is empty or blank is skipped, so it cannot stand in for
+    /// a later entry's real one.
     ///
     /// - Parameter result: One Europe PMC search result.
     /// - Returns: The first downloadable PDF URL, or `nil` if the result offers none.
@@ -398,11 +405,22 @@ public actor EuropePMCService {
 
         for entry in entries
         where entry.documentStyle == BioMedLitConstants.europePMCPDFDocumentStyle {
+            guard entry.site == BioMedLitConstants.europePMCOwnPDFSite else {
+                BioMedLitLib.logger?.debug(
+                    "Leaving a Europe PMC PDF entry from site=\(entry.site ?? "nil") to the other tiers: \(entry.url ?? "nil")",
+                    category: .fullText
+                )
+                continue
+            }
             guard entry.isFreeToDownload else {
                 reportRejectedPDFEntry(entry)
                 continue
             }
-            if let url = entry.url { return url }
+            // Blank as Python's `str.strip` and Kotlin's `isBlank` read it; the
+            // contract's blank case is plain spaces, which all three agree on
+            if let url = entry.url, !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return url
+            }
         }
         return nil
     }

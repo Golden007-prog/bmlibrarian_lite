@@ -56,7 +56,12 @@ bmlib's issue **#79** (0.9.1) measured this over 600 recent MEDLINE records
 | Free | `F` | 14 | 4.3% |
 | Subscription required | `S` | 0 | — |
 
-Both accepted labels are the identical `…?pdf=render` URL on the identical host.
+(Corrected by the PR #569 review: the accepted entries are *not* all the
+identical `…?pdf=render` URL on one host. In a live probe of 800 results, 280
+of the 1,042 accepted PDF entries were `site: "Unpaywall"` (publishers' hosts)
+or `"PubMedCentral"` (NCBI's) entries, listed before Europe PMC's own, and a preprint's own copy is an
+`api/fulltextRepo` URL. The tier now takes only `site == "Europe_PMC"`; see
+`fulltext_parity/europepmc_free_pdf.json`.)
 So the iOS PDF tier is discarding about **95% of the free PDFs it exists to find**,
 and there is no log line for "a PDF entry was seen and not taken" — the article
 simply falls through to Unpaywall or to a bare DOI link.
