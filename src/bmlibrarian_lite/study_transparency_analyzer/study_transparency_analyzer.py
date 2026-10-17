@@ -37,10 +37,11 @@ import requests
 
 from urllib3.util.retry import Retry
 
-from ..identifiers import read_caller_ids
+from ..identifiers import canonical_pmid, read_caller_ids
 from ..polite_session import mount_politely
 from ..analysis_failures import (
     COI_DISCLOSURE_SOUGHT,
+    PUBMED_NOT_ASKED_FOR_PMID_CLAUSE,
     coi_not_assessed_caveat,
     configuration_nudge,
     not_saved_note,
@@ -326,6 +327,12 @@ class TransparencyReport:
     # it holds no such article. Only the first is our silence (#346, #356).
     pubmed_record_unreachable: bool = False
 
+    # Whether the caller gave a PMID that PubMed could not be asked by: a
+    # refused value, or a PMC ID given as the PMID (bmlib#470). PubMed was
+    # owed a question about this study and never got one, so its silence is
+    # ours, and funding may not be answered "NO" without it (#356).
+    pubmed_identifier_unusable: bool = False
+
     # Whether CrossRef *served a record* for this study. The funder list and
     # the sponsor tier are built from it, so its silence and an article that
     # declares no funding are opposite answers (#356).
@@ -409,7 +416,10 @@ def funding_was_assessed(report: TransparencyReport) -> bool:
 
     A source is only required where we held the identifier it is asked by:
     CrossRef cannot be read for an article with no DOI, and demanding it
-    would mark every PMID-only record unassessed.
+    would mark every PMID-only record unassessed. A PMID the caller gave
+    that PubMed could not be asked by (``pubmed_identifier_unusable``) still
+    owes PubMed its question: the caller named a PubMed record and we did
+    not read it.
 
     Args:
         report: The report to judge.
@@ -418,9 +428,10 @@ def funding_was_assessed(report: TransparencyReport) -> bool:
         True when each of CrossRef and PubMed either served a record or
         could not be asked for want of an identifier.
     """
+    pubmed_owed = bool(report.pmid) or report.pubmed_identifier_unusable
     return not (
         (bool(report.doi) and not report.crossref_record_read)
-        or (bool(report.pmid) and not report.pubmed_record_read)
+        or (pubmed_owed and not report.pubmed_record_read)
     )
 
 
@@ -2902,11 +2913,17 @@ class StudyTransparencyAnalyzer:
         # PMC ID and kept as the report's, for full-text discovery; it is the
         # caller's, so PubMed's own PMC ID never replaces it.
         given_pmid = pmid
+        given_reading = canonical_pmid(given_pmid)
         pmid, caller_pmcid = read_caller_ids(pmid)
+        # A PMC ID or a refused value named a PubMed record we will not ask
+        # PubMed for, so funding must not answer "NO" without it (#356)
+        report.pubmed_identifier_unusable = (
+            given_reading.refused or given_reading.pmc_id is not None
+        )
 
         if not doi and not pmid and not caller_pmcid:
             message = "Must provide either DOI or PMID"
-            if given_pmid not in (None, ""):
+            if given_reading.refused:
                 message += f" (the PMID {given_pmid!r} is not a usable PubMed ID)"
             report.errors.append(message)
             return report
@@ -3167,8 +3184,10 @@ class StudyTransparencyAnalyzer:
                 if not report.doi and pubmed_data.get('doi'):
                     report.doi = pubmed_data['doi']
 
-                # Get PMCID
-                # (the caller's own, given as the PMID, wins)
+                # Get PMCID, keeping one already on the report. analyze()
+                # sets one only from a PMC ID given as the PMID, and then has
+                # no PMID to ask PubMed with, so through analyze() this guard
+                # never decides; it keeps a direct caller's PMC ID theirs.
                 if pubmed_data.get('pmcid') and not report.pmcid:
                     report.pmcid = pubmed_data['pmcid']
 
@@ -3272,6 +3291,12 @@ class StudyTransparencyAnalyzer:
             if could_ask and not was_read and not was_unreachable
         ]
         clause = unread_records_clause(unreachable, absent)
+        if report.pubmed_identifier_unusable and not report.pubmed_record_read:
+            # The caller named a PubMed record by a value PubMed cannot be
+            # asked by: neither unreachable nor absent, but unasked (#356)
+            clause = " and ".join(
+                part for part in (clause, PUBMED_NOT_ASKED_FOR_PMID_CLAUSE) if part
+            )
         if clause:
             report.warnings.append(
                 unassessed_caveat(clause, "this study's funding in full")
