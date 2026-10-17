@@ -70,6 +70,27 @@ jobs:
         # just that the package imports. QtWebEngine included.
         run: python .github/scripts/qt_preflight.py
 
+      - name: Resolve the ledger's bmlib commit
+        # hherb/bmlib is public, so no token beyond the job's own is needed.
+        # The commit is read from the ledger so that bumping it there is how a
+        # sync starts; actions/checkout wants a full SHA, the ledger may hold
+        # an abbreviated one, and the API resolves it.
+        id: bmlib_commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          short=$(python -c "import json; print(json.load(open('doc/cross_platform/bmlib_sync/ledger.json'))['bmlib_commit'])")
+          echo "sha=$(gh api "repos/hherb/bmlib/commits/${short}" --jq .sha)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          repository: hherb/bmlib
+          ref: ${{ steps.bmlib_commit.outputs.sha }}
+          path: bmlib-checkout
+
+      - name: Every bmlib change has a ledger entry
+        run: python scripts/check_bmlib_ledger.py --bmlib bmlib-checkout
+
       - name: Run tests
         # Integration tests are deselected: they call Europe PMC and PubMed over
         # the network, so on CI they measure those services' availability rather
