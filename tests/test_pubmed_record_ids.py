@@ -10,16 +10,23 @@ The fixture is a trimmed real efetch body for that PMID.
 import logging
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from typing import Any
 
-from bmlibrarian_lite.data_models import RequestFailureKind
+import pytest
+
+from bmlibrarian_lite.data_models import RecordFetch, RequestFailureKind
+from bmlibrarian_lite.pubmed.constants import MAX_SERVED_PMIDS_LOGGED
 from bmlibrarian_lite.pubmed.record_ids import (
     own_article_ids,
     record_for_pmid,
     served_pmids,
+    served_records_summary,
 )
 from bmlibrarian_lite.pubmed.search_client import PubMedSearchClient
 from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer import (  # noqa: E501
     PubMedClient,
+    StudyTransparencyAnalyzer,
+    TransparencyReport,
 )
 
 BODY = (
@@ -117,7 +124,9 @@ def test_the_matching_record_is_read_not_the_first() -> None:
     assert fetch.record["pmcid"] == OWN_PMC
 
 
-def test_a_record_for_another_pmid_is_not_this_paper(caplog) -> None:
+def test_a_record_for_another_pmid_is_not_this_paper(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     """A record for another pmid is not this paper."""
     with caplog.at_level(logging.WARNING):
         fetch = PubMedClient("t@example.com")._parse_pubmed_xml(BODY, "1")
@@ -256,3 +265,162 @@ def test_the_search_client_takes_no_reference_id_for_a_missing_own_one() -> None
     articles, _ = PubMedSearchClient()._parse_articles_xml(body.encode("utf-8"))
     assert articles[0].doi is None
     assert articles[0].pmc_id == OWN_PMC
+
+
+def test_the_search_client_reads_the_records_own_pmid_only() -> None:
+    """A CommentsCorrections PMID never stands in for the record's own.
+
+    ``.//PMID`` found the cited paper's PMID when ``MedlineCitation/PMID``
+    was missing, and the record was stored under another paper's PMID.
+    """
+    body = (
+        "<PubmedArticleSet><PubmedArticle><MedlineCitation>"
+        "<Article><ArticleTitle>T</ArticleTitle></Article>"
+        "<CommentsCorrectionsList><CommentsCorrections RefType='Cites'>"
+        "<PMID>7</PMID></CommentsCorrections></CommentsCorrectionsList>"
+        "</MedlineCitation></PubmedArticle></PubmedArticleSet>"
+    )
+    articles, unreadable = PubMedSearchClient()._parse_articles_xml(
+        body.encode("utf-8")
+    )
+    assert articles == []
+    assert unreadable == 1
+
+
+def test_the_search_client_still_reads_a_record_that_cites_another() -> None:
+    """The control: with its own PMID present, the record is read as its own."""
+    body = (
+        "<PubmedArticleSet><PubmedArticle><MedlineCitation><PMID>3</PMID>"
+        "<Article><ArticleTitle>T</ArticleTitle></Article>"
+        "<CommentsCorrectionsList><CommentsCorrections RefType='Cites'>"
+        "<PMID>7</PMID></CommentsCorrections></CommentsCorrectionsList>"
+        "</MedlineCitation></PubmedArticle></PubmedArticleSet>"
+    )
+    articles, unreadable = PubMedSearchClient()._parse_articles_xml(
+        body.encode("utf-8")
+    )
+    assert unreadable == 0
+    assert [a.pmid for a in articles] == ["3"]
+
+
+def test_an_efetch_error_document_is_not_an_absence() -> None:
+    """An ``eFetchResult`` is E-utilities failing, not PubMed holding nothing.
+
+    Unparsed is not absent: the search client and Android already read it
+    as a failure; the transparency analyser read it as ``absent()``.
+    """
+    fetch = PubMedClient("t@example.com")._parse_pubmed_xml(
+        "<eFetchResult><ERROR>Something went wrong</ERROR></eFetchResult>", PMID
+    )
+    assert fetch.is_unreachable
+    assert fetch.failure is not None
+    assert fetch.failure.kind is RequestFailureKind.SERVICE_ERROR
+
+
+def test_an_unexpected_root_is_not_an_absence() -> None:
+    """A body with another root has not said PubMed holds no such record."""
+    fetch = PubMedClient("t@example.com")._parse_pubmed_xml("<html/>", PMID)
+    assert fetch.is_unreachable
+    assert fetch.failure is not None
+    assert fetch.failure.kind is RequestFailureKind.MALFORMED_RESPONSE
+
+
+def test_the_warning_bounds_what_it_repeats_of_the_server(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A count, at most a few PMIDs, and only digits."""
+    others = "".join(_other_record(str(n)) for n in range(2, 12))
+    # Shorter than the length cap, so only the digits-only rule keeps it out
+    hostile = _other_record("1 FORGED")
+    body = f"<PubmedArticleSet>{hostile}{others}</PubmedArticleSet>"
+    with caplog.at_level(logging.WARNING):
+        fetch = PubMedClient("t@example.com")._parse_pubmed_xml(body, PMID)
+    assert fetch.is_unreachable
+    assert "11 records" in caplog.text
+    assert "FORGED" not in caplog.text
+    shown = [str(n) for n in range(2, 2 + MAX_SERVED_PMIDS_LOGGED)]
+    assert f"PMIDs {', '.join(shown)} (" in caplog.text
+
+
+def test_served_records_summary_skips_overlong_digit_runs() -> None:
+    """A run of digits longer than any PMID is counted, not shown."""
+    root = ET.fromstring(
+        f"<PubmedArticleSet>{_other_record('9' * 40)}{_other_record('5')}"
+        "</PubmedArticleSet>"
+    )
+    assert served_records_summary(root) == "2 records, PMID 5 (1 not shown)"
+
+
+def test_served_records_summary_of_one_record() -> None:
+    """Singular words, nothing hidden."""
+    root = ET.fromstring(
+        f"<PubmedArticleSet>{_other_record('5')}</PubmedArticleSet>"
+    )
+    assert served_records_summary(root) == "1 record, PMID 5"
+
+
+def _metadata_with(
+    record: dict[str, Any], doi: str | None
+) -> tuple[TransparencyReport, list[str]]:
+    """Collect metadata for PMID with ``record`` served and ``doi`` passed in.
+
+    Returns:
+        The report, and the DOIs CrossRef was asked about.
+    """
+    analyzer = StudyTransparencyAnalyzer(
+        email="test@example.com", auto_discover_fulltext=False
+    )
+    asked: list[str] = []
+    analyzer.pubmed.fetch_article = lambda pmid: RecordFetch.served(record)
+    analyzer.pubmed.convert_ids = lambda *a, **k: {}
+
+    def get_work(asked_doi: str) -> RecordFetch:
+        asked.append(asked_doi)
+        return RecordFetch.absent()
+
+    analyzer.crossref.get_work = get_work
+    report = TransparencyReport(pmid=PMID, doi=doi)
+    analyzer._fetch_basic_metadata(report)
+    return report, asked
+
+
+def test_a_stored_doi_another_record_carries_gives_way(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A DOI stored before bmlib#474 can be a cited paper's; the record's wins.
+
+    The desktop passes the document's stored DOI into ``analyze()``; the old
+    search client could have stored a reference's. CrossRef must be asked
+    about this PMID's article.
+    """
+    with caplog.at_level(logging.WARNING):
+        report, asked = _metadata_with(
+            {"title": "T", "doi": OWN_DOI}, "10.1056/NEJMoa2027906"
+        )
+    assert report.doi == OWN_DOI
+    assert asked == [OWN_DOI]
+    assert "differs" in caplog.text
+
+
+def test_a_stored_doi_that_agrees_is_kept_as_given(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The control: the same DOI in another case or with a resolver prefix."""
+    given = f"https://doi.org/{OWN_DOI.lower()}"
+    with caplog.at_level(logging.WARNING):
+        report, _ = _metadata_with({"title": "T", "doi": OWN_DOI}, given)
+    assert report.doi == given
+    assert "differs" not in caplog.text
+
+
+def test_a_stored_doi_stands_when_the_record_carries_none() -> None:
+    """The control: a record without a DOI of its own overrides nothing."""
+    report, asked = _metadata_with({"title": "T"}, "10.1/stored")
+    assert report.doi == "10.1/stored"
+    assert asked == ["10.1/stored"]
+
+
+def test_the_records_doi_fills_a_missing_one() -> None:
+    """Unchanged: no DOI passed in, the record's is taken."""
+    report, _ = _metadata_with({"title": "T", "doi": OWN_DOI}, None)
+    assert report.doi == OWN_DOI

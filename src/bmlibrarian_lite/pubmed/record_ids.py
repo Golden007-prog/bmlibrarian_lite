@@ -19,6 +19,8 @@ These are pure functions over :mod:`xml.etree.ElementTree` elements.
 import xml.etree.ElementTree as ET
 
 from .constants import (
+    MAX_LOGGED_PMID_DIGITS,
+    MAX_SERVED_PMIDS_LOGGED,
     PUBMED_ARTICLE_ID_PATH,
     PUBMED_ARTICLE_TAG,
     PUBMED_RECORD_PMID_PATH,
@@ -67,6 +69,36 @@ def served_pmids(root: ET.Element) -> list[str]:
         if text:
             pmids.append(text)
     return pmids
+
+
+def served_records_summary(
+    root: ET.Element, limit: int = MAX_SERVED_PMIDS_LOGGED
+) -> str:
+    """What an efetch body was served for, in words fit for a log line.
+
+    The PMIDs are the server's text, so the line is bounded: it gives the
+    number of records, and shows at most ``limit`` of their PMIDs, only
+    those that are all ASCII digits and of a PMID's length.
+
+    Args:
+        root: The parsed efetch body.
+        limit: How many PMIDs to show at most.
+
+    Returns:
+        For example ``"7 records, PMIDs 1, 2, 3, 4, 5 (2 not shown)"``.
+    """
+    records = sum(1 for _ in root.iter(PUBMED_ARTICLE_TAG))
+    shown = [
+        pmid
+        for pmid in served_pmids(root)
+        if pmid.isascii() and pmid.isdigit() and len(pmid) <= MAX_LOGGED_PMID_DIGITS
+    ][:limit]
+    text = f"{records} record{'' if records == 1 else 's'}"
+    if shown:
+        text += f", PMID{'' if len(shown) == 1 else 's'} {', '.join(shown)}"
+    if records > len(shown):
+        text += f" ({records - len(shown)} not shown)"
+    return text
 
 
 def _comparable_pmid(pmid: str) -> str:

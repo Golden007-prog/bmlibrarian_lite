@@ -121,3 +121,15 @@ ENV_NCBI_API_KEY = "NCBI_API_KEY"
 PUBMED_ARTICLE_TAG = "PubmedArticle"
 PUBMED_ARTICLE_ID_PATH = "PubmedData/ArticleIdList/ArticleId"
 PUBMED_RECORD_PMID_PATH = "MedlineCitation/PMID"
+
+# Root elements of an efetch answer: the articles, or the document E-utilities
+# sends instead when the fetch failed (with HTTP 400, or with HTTP 200 (#255)).
+EFETCH_ARTICLE_SET_ROOT_TAG = "PubmedArticleSet"
+EFETCH_ERROR_ROOT_TAG = "eFetchResult"
+
+# How many of the PMIDs an efetch body was served for a log line names when
+# none of them is the PMID asked about; the line also gives their count.
+MAX_SERVED_PMIDS_LOGGED = 5
+# A served PMID longer than this is counted in that line but not shown: real
+# PMIDs have at most nine digits, and the text is the server's, not ours.
+MAX_LOGGED_PMID_DIGITS = 12

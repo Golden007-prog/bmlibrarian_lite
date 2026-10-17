@@ -63,6 +63,9 @@ from .constants import (
     ENV_NCBI_EMAIL,
     ENV_NCBI_API_KEY,
     EMAIL_VALIDATION_PATTERN,
+    EFETCH_ARTICLE_SET_ROOT_TAG,
+    EFETCH_ERROR_ROOT_TAG,
+    PUBMED_RECORD_PMID_PATH,
 )
 from .record_ids import own_article_ids
 from .data_types import (
@@ -82,11 +85,6 @@ from ..polite_session import mount_politely
 from ..search_failures import request_failure_from_exception
 
 logger = logging.getLogger(__name__)
-
-# Root elements of an efetch answer: the articles, or the document E-utilities
-# sends instead when the fetch failed (with HTTP 400, or with HTTP 200 (#255)).
-EFETCH_ARTICLE_SET_ROOT_TAG = "PubmedArticleSet"
-EFETCH_ERROR_ROOT_TAG = "eFetchResult"
 
 # Marks an answer body that did not decode as JSON (JSON null is a value).
 _NOT_JSON = object()
@@ -853,8 +851,9 @@ class PubMedSearchClient:
             ArticleMetadata or None if parsing failed
         """
         try:
-            # Extract PMID
-            pmid_elem = article_elem.find(".//PMID")
+            # The record's own PMID: a deep search would take a
+            # CommentsCorrections PMID when MedlineCitation/PMID is missing
+            pmid_elem = article_elem.find(PUBMED_RECORD_PMID_PATH)
             if pmid_elem is None or not pmid_elem.text:
                 return None
             pmid = pmid_elem.text
