@@ -17,11 +17,13 @@
  */
 package com.bmlibrarian.factchecker.data.remote.fulltext
 
+import com.bmlibrarian.factchecker.util.Constants
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -48,6 +50,31 @@ class PmidCanonicalTest {
     }
 
     @Test
+    fun everyContractKeyIsReadHere() {
+        assertEquals(
+            setOf("schema_version", "description", "source", "stripped_whitespace", "cases"),
+            contract.keys
+        )
+    }
+
+    @Test
+    fun everyCaseHasEveryKey() {
+        // "note" is prose for the contract's reader, read by no suite.
+        val required = setOf("name", "input", "pmid", "pmc_id", "refused")
+        for (element in contract.getValue("cases").jsonArray) {
+            val row = element.jsonObject
+            assertEquals(row["name"].toString(), required, row.keys - "note")
+        }
+    }
+
+    @Test
+    fun theStrippedWhitespaceIsTheContracts() {
+        val listed = contract.getValue("stripped_whitespace").jsonArray.map { it.jsonPrimitive.int }
+        assertEquals(listed.size, listed.toSet().size)
+        assertEquals(listed.toSet(), Constants.PMID_STRIPPED_WHITESPACE)
+    }
+
+    @Test
     fun eachContractCase() {
         val cases = contract.getValue("cases").jsonArray
         assertTrue(cases.size >= 11)
@@ -59,7 +86,8 @@ class PmidCanonicalTest {
                 pmcId = row["pmc_id"]?.takeIf { it !is JsonNull }?.jsonPrimitive?.contentOrNull,
                 refused = row.getValue("refused").jsonPrimitive.boolean
             )
-            assertEquals("input '$input'", expected, Pmid.canonical(input))
+            val name = row.getValue("name").jsonPrimitive.content
+            assertEquals("$name: input '$input'", expected, Pmid.canonical(input))
         }
     }
 

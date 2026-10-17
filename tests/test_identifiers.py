@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -20,7 +21,40 @@ CONTRACT = (
     Path(__file__).resolve().parent.parent
     / "doc" / "cross_platform" / "fulltext_parity" / "pmid_canonical.json"
 )
-CASES = json.loads(CONTRACT.read_text(encoding="utf-8"))["cases"]
+DOCUMENT = json.loads(CONTRACT.read_text(encoding="utf-8"))
+CASES = DOCUMENT["cases"]
+CASE_KEYS = {"name", "input", "pmid", "pmc_id", "refused"}
+# Prose for the reader of the contract, read by no suite.
+OPTIONAL_CASE_KEYS = {"note"}
+
+
+def test_every_contract_key_is_read_here() -> None:
+    """The contract holds exactly the keys this file reads."""
+    assert set(DOCUMENT) == {
+        "schema_version", "description", "source", "stripped_whitespace", "cases",
+    }
+
+
+@pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
+def test_every_case_has_every_key(case: dict) -> None:
+    """Each case carries exactly the keys a suite reads, and perhaps a note."""
+    assert set(case) - OPTIONAL_CASE_KEYS == CASE_KEYS
+
+
+def test_case_names_are_unique() -> None:
+    """Each case is named once."""
+    names = [c["name"] for c in CASES]
+    assert len(names) == len(set(names))
+
+
+def test_stripped_whitespace_is_what_str_strip_removes() -> None:
+    """The apps' trim set is exactly the code points Python's strip() removes.
+
+    Foundation's whitespace set also strips U+200B and keeps U+001C-U+001F;
+    Kotlin's trim() keeps U+0085. The apps trim this list instead.
+    """
+    removed = [c for c in range(sys.maxunicode + 1) if not chr(c).strip()]
+    assert DOCUMENT["stripped_whitespace"] == removed
 
 
 def test_the_contract_has_the_required_cases() -> None:
@@ -28,12 +62,13 @@ def test_the_contract_has_the_required_cases() -> None:
     inputs = {c["input"] for c in CASES}
     for required in (
         "33301246", " 33301246 ", "0033301246", "", "0000", "PMID:33301246",
-        "33301246abc", "1 OR 2", "1١٢", "-5", "PMC7745181",
+        "33301246abc", "1 OR 2", "1\u0661\u0662", "-5", "PMC7745181",
+        "33301246\u200b", "PMC0",
     ):
         assert required in inputs
 
 
-@pytest.mark.parametrize("case", CASES, ids=[repr(c["input"]) for c in CASES])
+@pytest.mark.parametrize("case", CASES, ids=[c["name"] for c in CASES])
 def test_contract_case(case: dict) -> None:
     """Contract case."""
     reading = canonical_pmid(case["input"])

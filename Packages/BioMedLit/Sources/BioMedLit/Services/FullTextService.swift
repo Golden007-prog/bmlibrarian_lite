@@ -2168,7 +2168,8 @@ public actor FullTextService {
         primaryKind: ArticleIdentifierKind? = nil
     ) -> [PMCQuery] {
         var queries: [PMCQuery] = []
-        if let identifier = trimmed(pmid),
+        // Stripped as the PMID contract strips: a trailing U+200B is kept, and refused
+        if let identifier = pmid.map(PMID.stripped), !identifier.isEmpty,
            let query = primaryIdentifierQuery(for: identifier, kind: primaryKind) {
             queries.append(query)
         }

@@ -17,6 +17,8 @@
  */
 package com.bmlibrarian.factchecker.data.remote.fulltext
 
+import com.bmlibrarian.factchecker.util.Constants
+
 /**
  * What a caller's PMID value turned out to be (bmlib#470, #472, #478).
  *
@@ -47,7 +49,7 @@ object Pmid {
     /**
      * Read a caller's PMID.
      *
-     * Surrounding whitespace is stripped and a blank is no PMID. ASCII digits
+     * Surrounding whitespace ([stripped]) is stripped and a blank is no PMID. ASCII digits
      * that are not all zeros are the PMID without their leading zeros; `PMC`
      * then ASCII digits is a PMC ID given as a PMID. Anything else is refused.
      * The digits are matched as `[0-9]`, never `\d` or `isDigit()`, which admit
@@ -57,7 +59,7 @@ object Pmid {
      * @return The reading; it never throws.
      */
     fun canonical(raw: String): PmidReading {
-        val text = raw.trim()
+        val text = stripped(raw)
         if (text.isEmpty()) return PmidReading()
         if (PMID_REGEX.matches(text)) {
             val stripped = text.trimStart('0')
@@ -68,6 +70,16 @@ object Pmid {
         }
         return PmidReading(refused = true)
     }
+
+    /**
+     * [raw] without the whitespace around it, as Python's `str.strip()` reads
+     * whitespace: [Constants.PMID_STRIPPED_WHITESPACE], not `trim()`'s set, so
+     * U+0085 is stripped and U+200B is not.
+     *
+     * @param raw The caller's value.
+     * @return The value with surrounding whitespace removed.
+     */
+    fun stripped(raw: String): String = raw.trim { it.code in Constants.PMID_STRIPPED_WHITESPACE }
 
     /** Whether [value] is already a canonical PMID, as the Europe PMC lookup requires. */
     fun isCanonical(value: String): Boolean = canonical(value).pmid == value

@@ -301,7 +301,8 @@ public enum ArticleIdentifierKind: Equatable, Hashable, Sendable {
         in identifier: String?,
         declared: ArticleIdentifierKind?
     ) -> String? {
-        guard let value = identifier?.trimmingCharacters(in: .whitespacesAndNewlines),
+        // Stripped as the PMID contract strips, so U+200B is not trimmed away
+        guard let value = identifier.map(PMID.stripped),
               !value.isEmpty,
               resolved(declared: declared, accession: value) == .pubmed,
               isAllASCIIDigits(value) else { return nil }
@@ -358,8 +359,9 @@ public struct PMIDReading: Equatable, Sendable {
 public enum PMID {
     /// Read a caller's PMID.
     ///
-    /// Surrounding whitespace is stripped and a blank is no PMID. ASCII digits
-    /// that are not all zeros are the PMID without their leading zeros; `PMC`
+    /// Surrounding whitespace (``stripped(_:)``) is stripped and a blank is no
+    /// PMID. ASCII digits that are not all zeros are the PMID without their
+    /// leading zeros; `PMC`
     /// then ASCII digits is a PMC ID given as a PMID. Anything else is refused.
     /// ASCII is checked by scalar, not by `isNumber`, which admits `١٢٣` and
     /// `½`.
@@ -367,7 +369,7 @@ public enum PMID {
     /// - Parameter raw: What the caller passed as the PMID.
     /// - Returns: The reading; it never throws.
     public static func canonical(_ raw: String) -> PMIDReading {
-        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = stripped(raw)
         guard !text.isEmpty else { return PMIDReading() }
         if isASCIIDigits(text) {
             let stripped = String(text.drop { $0 == "0" })
@@ -378,6 +380,26 @@ public enum PMID {
             return PMIDReading(pmcId: text)
         }
         return PMIDReading(refused: true)
+    }
+
+    /// `raw` without the whitespace around it, as Python's `str.strip()` reads
+    /// whitespace.
+    ///
+    /// The set is ``BioMedLitConstants/pmidStrippedWhitespace``, not Foundation's
+    /// `whitespacesAndNewlines`, which strips U+200B (so `33301246` followed by a
+    /// zero-width space was accepted here and refused by Python and Kotlin) and
+    /// keeps U+001C-U+001F.
+    ///
+    /// - Parameter raw: The caller's value.
+    /// - Returns: The value with surrounding whitespace removed.
+    public static func stripped(_ raw: String) -> String {
+        let scalars = raw.unicodeScalars
+        let isText = { (scalar: Unicode.Scalar) in
+            !BioMedLitConstants.pmidStrippedWhitespace.contains(scalar.value)
+        }
+        guard let first = scalars.firstIndex(where: isText),
+              let last = scalars.lastIndex(where: isText) else { return "" }
+        return String(scalars[first...last])
     }
 
     /// Whether `value` is non-empty and every scalar is `0`-`9`.

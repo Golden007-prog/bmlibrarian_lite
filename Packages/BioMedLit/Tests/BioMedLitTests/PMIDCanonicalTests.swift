@@ -21,23 +21,58 @@ final class PMIDCanonicalTests: XCTestCase {
         return nil
     }()
 
-    private func cases() throws -> [[String: Any]] {
+    private func contract() throws -> [String: Any] {
         let file = try XCTUnwrap(Self.contractFile, "pmid_canonical.json not found")
         let object = try JSONSerialization.jsonObject(with: Data(contentsOf: file))
-        let contract = try XCTUnwrap(object as? [String: Any])
-        return try XCTUnwrap(contract["cases"] as? [[String: Any]])
+        return try XCTUnwrap(object as? [String: Any])
+    }
+
+    private func cases() throws -> [[String: Any]] {
+        try XCTUnwrap(contract()["cases"] as? [[String: Any]])
+    }
+
+    func testEveryContractKeyIsReadHere() throws {
+        XCTAssertEqual(
+            Set(try contract().keys),
+            ["schema_version", "description", "source", "stripped_whitespace", "cases"]
+        )
+    }
+
+    func testEveryCaseHasEveryKey() throws {
+        // "note" is prose for the contract's reader, read by no suite.
+        let required: Set<String> = ["name", "input", "pmid", "pmc_id", "refused"]
+        for row in try cases() {
+            XCTAssertEqual(Set(row.keys).subtracting(["note"]), required, "\(row["name"] ?? "?")")
+        }
+    }
+
+    func testTheStrippedWhitespaceIsTheContracts() throws {
+        let listed = try XCTUnwrap(contract()["stripped_whitespace"] as? [Int])
+        XCTAssertEqual(listed.count, Set(listed).count)
+        XCTAssertEqual(Set(listed.map(UInt32.init)), BioMedLitConstants.pmidStrippedWhitespace)
     }
 
     func testEachCase() throws {
         let rows = try cases()
         XCTAssertGreaterThanOrEqual(rows.count, 11)
         for row in rows {
+            let name = try XCTUnwrap(row["name"] as? String)
             let input = try XCTUnwrap(row["input"] as? String)
             let reading = PMID.canonical(input)
-            XCTAssertEqual(reading.pmid, row["pmid"] as? String, input)
-            XCTAssertEqual(reading.pmcId, row["pmc_id"] as? String, input)
-            XCTAssertEqual(reading.refused, row["refused"] as? Bool, input)
+            XCTAssertEqual(reading.pmid, row["pmid"] as? String, name)
+            XCTAssertEqual(reading.pmcId, row["pmc_id"] as? String, name)
+            XCTAssertEqual(reading.refused, row["refused"] as? Bool, name)
         }
+    }
+
+    func testAZeroWidthSpaceAfterAPMIDIsNotQueriedOrLinked() {
+        let raw = "33301246\u{200B}"
+        XCTAssertEqual(
+            FullTextService.identifierQueries(pmid: raw, pmcId: nil, doi: "10.1/x", primaryKind: .pubmed)
+                .map(\.query),
+            ["DOI:\"10.1/x\""]
+        )
+        XCTAssertNil(ArticleIdentifierKind.pubmedID(in: raw, declared: .pubmed))
     }
 
     func testAPaddedPMIDIsQueriedCanonical() {
