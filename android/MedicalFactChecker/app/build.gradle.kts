@@ -27,6 +27,13 @@ android {
         // Custom test runner for Hilt dependency injection in instrumented tests
         testInstrumentationRunner = "com.bmlibrarian.factchecker.HiltTestRunner"
 
+        // 64-bit only: the ABIs cargo-ndk builds bmlib's Rust library for
+        // (maintainer decision 2026-10-17, doc/cross_platform/bmlib_sync/uniffi_spike.md).
+        // A 32-bit APK would ship without the library and crash at its first call.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+
         vectorDrawables {
             useSupportLibrary = true
         }

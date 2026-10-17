@@ -279,14 +279,20 @@ under criterion 4.
 8. **The `sqlite`/`http-ureq` defaults are a bmlib API change** (additive, default-on). They
    need a bmlib CHANGELOG entry and bmlib's CI matrix extended with `--no-default-features`.
 
-## What the maintainer must decide
+## Maintainer decisions (2026-10-17)
 
-1. **Accept the size:** about +0.8 MB per iOS app (+1.6 MB universal macOS) and about
-   +1.0 MB per Android ABI including JNA.
-2. **Packaging:** the committed dynamic xcframework (recommended, tested), or a
-   `ci_post_clone.sh` Rust build (untested; rustup on Xcode Cloud unverified).
-3. **Table bodies:** markdown in the adapter, in bmlib, or HTML in the apps.
-4. **Android ABIs:** build `armeabi-v7a` and `x86` too, or filter the app to 64-bit.
+All four were decided as recommended:
+
+1. **Size: accepted.** About +0.8 MB per iOS app (+1.6 MB universal macOS) and about
+   +1.0 MB per Android ABI, JNA included.
+2. **Packaging: the committed dynamic xcframework.** It is the route the fresh-clone
+   archive tested. A `ci_post_clone.sh` Rust build is not pursued.
+3. **Table bodies: a renderer in bmlib.** The desktop and both apps then share one table
+   rendering, rather than each app's adapter writing its own. This is bmlib work (the bmlib
+   plan's WP-B9 FFI surface).
+4. **Android ABIs: 64-bit only.** `defaultConfig.ndk.abiFilters` is `arm64-v8a` and `x86_64`,
+   the two ABIs cargo-ndk builds, so no APK ships an ABI without the library. Google Play
+   requires 64-bit anyway.
 
 Separately, the release build's existing R8 failure should be fixed before any JNA code
 ships.
