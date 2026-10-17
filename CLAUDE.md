@@ -38,7 +38,7 @@ gui/                  # PySide6: SystematicReview, ResearchQuestions, AuditTrail
                       #   rescue_attempt / browser_rescue_service (the hidden and shown browser visits), web_engine (QtWebEngine start-up)
                       #   review_queue_dialog (walled PDFs' review queue), rescue_queue_indicator, rescue_view (the only runtime QtWebEngineWidgets import)
 llm/                  # LLMClient (Anthropic/Ollama providers), token_tracker
-pubmed/               # PubMedSearchClient
+pubmed/               # PubMedSearchClient; record_ids (a record's own ids, the record for a PMID)
 quality/              # QualityManager, study classification, evidence_summary, metadata_filter
 transparency/         # TransparencyManager, transparency_models, transparency_settings, assessment (shared analysis body)
 study_transparency_analyzer/  # Full LLM-based transparency analysis (funding, COI, data availability, trial registration)

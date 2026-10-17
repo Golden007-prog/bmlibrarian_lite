@@ -39,6 +39,13 @@ from urllib3.util.retry import Retry
 
 from ..identifiers import canonical_pmid, read_caller_ids
 from ..polite_session import mount_politely
+from ..core_api import normalise_doi
+from ..pubmed.constants import EFETCH_ARTICLE_SET_ROOT_TAG, EFETCH_ERROR_ROOT_TAG
+from ..pubmed.record_ids import (
+    own_article_ids,
+    record_for_pmid,
+    served_records_summary,
+)
 from ..analysis_failures import (
     COI_DISCLOSURE_SOUGHT,
     PUBMED_NOT_ASKED_FOR_PMID_CLAUSE,
@@ -1464,7 +1471,7 @@ class PubMedClient:
                 failure.describe(),
             )
             return RecordFetch.unreachable(failure)
-        return self._parse_pubmed_xml(response.text)
+        return self._parse_pubmed_xml(response.text, pmid)
 
     def convert_ids(self, ids: List[str], from_type: str, to_type: str) -> Dict[str, str]:
         """Convert between ID types (pmid, pmcid, doi)."""
@@ -1486,7 +1493,7 @@ class PubMedClient:
                 result[source_id] = target_id
         return result
 
-    def _parse_pubmed_xml(self, xml_text: str) -> RecordFetch:
+    def _parse_pubmed_xml(self, xml_text: str, pmid: str) -> RecordFetch:
         """Parse PubMed XML response into structured data.
 
         Two failures used to share one ``None``. An efetch carrying no
@@ -1501,8 +1508,21 @@ class PubMedClient:
         ``MedlineCitation`` used to raise straight out of ``analyze()`` and
         cost the study every other dimension of its transparency.
 
+        The record read is the one whose own ``MedlineCitation/PMID`` is
+        ``pmid``, not the first in the body, and its PMC ID and DOI are the
+        ones in its own ``PubmedData/ArticleIdList``, not the last
+        ``ArticleId`` anywhere in it, which is a cited paper's (bmlib#474).
+        A body that holds records, none of them for ``pmid``, is the
+        second kind of failure: it is not PubMed's answer that it holds no
+        such article, and another paper's record is never this one's.
+
+        Only a ``PubmedArticleSet`` can say PubMed holds no such article.
+        efetch's ``eFetchResult`` error document, or any other root, is the
+        second kind too, as the search client and Android already read it.
+
         Args:
             xml_text: The body PubMed answered with.
+            pmid: The PMID that was asked about.
 
         Returns:
             The record, PubMed's answer that it holds none, or why its
@@ -1512,12 +1532,42 @@ class PubMedClient:
 
         try:
             root = ET.fromstring(xml_text)
-            article = root.find('.//PubmedArticle')
-            if article is None:
+            if root.tag == EFETCH_ERROR_ROOT_TAG:
+                # Its text is not logged: it can repeat the request.
+                logger.warning(
+                    "PubMed answered with an error document instead of a "
+                    "record, so what its record holds is not assessed."
+                )
+                return RecordFetch.unreachable(
+                    RequestFailure(RequestFailureKind.SERVICE_ERROR)
+                )
+            if root.tag != EFETCH_ARTICLE_SET_ROOT_TAG:
+                # Nor is the tag: a namespaced one holds the server's text.
+                logger.warning(
+                    "PubMed's answer has an unexpected root element, so what "
+                    "its record holds is not assessed."
+                )
+                return RecordFetch.unreachable(
+                    RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
+                )
+            if root.find('.//PubmedArticle') is None:
                 logger.info("PubMed returned no article for this request.")
                 return RecordFetch.absent()
+            article = record_for_pmid(root, pmid)
+            if article is None:
+                logger.warning(
+                    "PubMed answered with %s, none of them PMID %s, so what "
+                    "its record holds is not assessed.",
+                    served_records_summary(root),
+                    pmid,
+                )
+                return RecordFetch.unreachable(
+                    RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)
+                )
 
-            # Either may be None; the AttributeError that follows is caught below
+            # record_for_pmid found its MedlineCitation/PMID, so medline is
+            # never None; its Article can be missing, and the AttributeError
+            # that follows is caught below.
             medline: Any = article.find('MedlineCitation')
             article_elem: Any = medline.find('Article')
 
@@ -1535,19 +1585,18 @@ class PubMedClient:
                 'mesh_terms': self._extract_mesh_terms(medline),
             }
 
-            # Try to get PMC ID and DOI from article IDs
-            for id_elem in article.findall('.//ArticleId'):
-                id_type = id_elem.get('IdType')
-                if id_type == 'pmc':
-                    result['pmcid'] = id_elem.text
-                elif id_type == 'doi':
-                    result['doi'] = id_elem.text
+            # The record's own PMC ID and DOI, never a cited paper's
+            own_ids = own_article_ids(article)
+            if 'pmc' in own_ids:
+                result['pmcid'] = own_ids['pmc']
+            if 'doi' in own_ids:
+                result['doi'] = own_ids['doi']
 
             return RecordFetch.served(result)
 
         except (ET.ParseError, AttributeError, ValueError) as e:
-            # AttributeError: a PubmedArticle carrying no MedlineCitation, or
-            # no Article within it, which ``.find()`` answers with None.
+            # AttributeError: the record for this PMID carrying no Article
+            # within its MedlineCitation, which ``.find()`` answers with None.
             # ValueError: RecordFetch refusing an empty record. Both mean the
             # same thing as a parse error -- the answer arrived and we could
             # not read it -- and none of the three is the article's fault.
@@ -2896,7 +2945,9 @@ class StudyTransparencyAnalyzer:
         5. PDF download via Unpaywall/PMC/publisher
 
         Args:
-            doi: Digital Object Identifier
+            doi: Digital Object Identifier. When ``pmid`` is given too and
+                its PubMed record carries a different DOI of its own, the
+                record's is used (bmlib#474).
             pmid: PubMed ID
             fulltext: Optional full-text content (plain text or markdown).
                 When provided, automatic discovery is skipped.
@@ -3180,9 +3231,22 @@ class StudyTransparencyAnalyzer:
                     except ValueError:
                         pass
 
-                # Get DOI if not provided
-                if not report.doi and pubmed_data.get('doi'):
-                    report.doi = pubmed_data['doi']
+                # The record's own DOI, if it carries one, wins over the one
+                # the caller passed: a document stored by the search client
+                # before bmlib#474 can carry a cited paper's DOI, and CrossRef
+                # and full-text discovery must ask about this PMID's article.
+                record_doi = pubmed_data.get('doi')
+                if record_doi and report.doi and (
+                    normalise_doi(record_doi) != normalise_doi(report.doi)
+                ):
+                    logger.warning(
+                        "PMID %s: the DOI passed in differs from the one its "
+                        "PubMed record carries; the record's is used.",
+                        report.pmid,
+                    )
+                    report.doi = record_doi
+                elif record_doi and not report.doi:
+                    report.doi = record_doi
 
                 # Get PMCID, keeping one already on the report. analyze()
                 # sets one only from a PMC ID given as the PMID, and then has

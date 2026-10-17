@@ -1207,7 +1207,7 @@ class TestTheGapsTheMutationSweepFound:
             PubMedClient,
         )
 
-        fetch = PubMedClient("test@example.com")._parse_pubmed_xml("<not xml")
+        fetch = PubMedClient("test@example.com")._parse_pubmed_xml("<not xml", "1")
 
         assert fetch.is_unreachable
 
@@ -1218,7 +1218,7 @@ class TestTheGapsTheMutationSweepFound:
         )
 
         fetch = PubMedClient("test@example.com")._parse_pubmed_xml(
-            "<PubmedArticleSet/>"
+            "<PubmedArticleSet/>", "1"
         )
 
         assert not fetch.is_unreachable
@@ -1817,13 +1817,33 @@ class TestTheGapsTheReviewFound:
     # ---- I4/I5: the narrowed catches ------------------------------------
 
     def test_a_pubmed_record_of_an_unknown_shape_is_unreachable(self) -> None:
-        """It raised out of ``analyze()`` and cost every other dimension."""
+        """It raised out of ``analyze()`` and cost every other dimension.
+
+        The record is the one asked about -- its own PMID matches -- so the
+        parse goes past ``record_for_pmid`` and meets the missing
+        ``Article``: only the ``AttributeError`` catch stands between it and
+        ``analyze()``.
+        """
         from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer import (  # noqa: E501
             PubMedClient,
         )
 
         fetch = PubMedClient("t@example.com")._parse_pubmed_xml(
-            "<PubmedArticleSet><PubmedArticle/></PubmedArticleSet>"
+            "<PubmedArticleSet><PubmedArticle><MedlineCitation>"
+            "<PMID>1</PMID></MedlineCitation></PubmedArticle></PubmedArticleSet>",
+            "1",
+        )
+
+        assert fetch.is_unreachable
+
+    def test_a_pubmed_record_with_no_pmid_of_its_own_is_unreachable(self) -> None:
+        """A record served for no readable PMID is not this one (bmlib#474)."""
+        from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer import (  # noqa: E501
+            PubMedClient,
+        )
+
+        fetch = PubMedClient("t@example.com")._parse_pubmed_xml(
+            "<PubmedArticleSet><PubmedArticle/></PubmedArticleSet>", "1"
         )
 
         assert fetch.is_unreachable
@@ -1837,7 +1857,8 @@ class TestTheGapsTheReviewFound:
         fetch = PubMedClient("t@example.com")._parse_pubmed_xml(
             "<PubmedArticleSet><PubmedArticle><MedlineCitation>"
             "<PMID>1</PMID><Article><ArticleTitle>T</ArticleTitle></Article>"
-            "</MedlineCitation></PubmedArticle></PubmedArticleSet>"
+            "</MedlineCitation></PubmedArticle></PubmedArticleSet>",
+            "1",
         )
 
         assert fetch.record is not None

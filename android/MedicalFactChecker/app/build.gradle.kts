@@ -90,6 +90,11 @@ val requestFailureParityFixtures: File =
 val fulltextParityFixtures: File =
     rootProject.file("../../doc/cross_platform/fulltext_parity")
 
+// The PubMed efetch fixture (lite #404), one file the Python, Swift and Android
+// suites all read, declared for the same reason.
+val pubmedEfetchFixture: File =
+    rootProject.file("../../tests/fixtures/pubmed_efetch_33301246.xml")
+
 tasks.withType<Test>().configureEach {
     // Absent in a partial checkout of android/ alone; the test itself fails with
     // a clear message in that case, so do not break configuration over it.
@@ -107,6 +112,11 @@ tasks.withType<Test>().configureEach {
         inputs.dir(fulltextParityFixtures)
             .withPathSensitivity(PathSensitivity.RELATIVE)
             .withPropertyName("fulltextParityFixtures")
+    }
+    if (pubmedEfetchFixture.isFile) {
+        inputs.file(pubmedEfetchFixture)
+            .withPathSensitivity(PathSensitivity.RELATIVE)
+            .withPropertyName("pubmedEfetchFixture")
     }
 }
 
