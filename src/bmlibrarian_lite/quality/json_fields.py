@@ -1,9 +1,10 @@
 """Read a JSON value as the type a field is annotated with, or not at all.
 
 Ported from bmlib's ``bmlib.quality._json_fields`` (bmlib#295, bmlib#320),
-with the same semantics.  Every reader of a model's JSON reply in the quality
-package -- the Tier 2 classifier and the Tier 3 assessor -- goes through
-these, so the rule is stated once.
+with the same semantics.  Every reader of a model's JSON quality reply -- the
+Tier 2 classifier, the Tier 3 assessor, and the quality benchmark's copies of
+both (``benchmarking/quality_runner.py``) -- goes through these, so the rule
+is stated once.
 
 The rule: **absent, ``null`` and wrong-typed are the same answer -- unstated.**
 ``data.get(k, default)`` returns its default only for an *absent* key, so a

@@ -24,7 +24,6 @@ both study classification (Tier 2) and detailed quality assessment (Tier 3).
 
 import json
 import logging
-import math
 import re
 import time
 from datetime import datetime
@@ -33,6 +32,7 @@ from typing import Any, Callable, Optional
 from ..config import LiteConfig
 from ..constants import (
     calculate_cost,
+    CONFIDENCE_PARSE_FAILURE_DEFAULT,
     QUALITY_LLM_TEMPERATURE,
     QUALITY_CLASSIFIER_MAX_TOKENS,
     QUALITY_ASSESSOR_MAX_TOKENS,
@@ -46,6 +46,9 @@ from ..data_models import (
 )
 from ..llm import LLMClient, LLMMessage
 from ..quality.data_models import (
+    BiasRisk,
+    CLASSIFIER_ASSESSMENT_TIER,
+    DETAILED_ASSESSMENT_TIER,
     QualityAssessment,
     StudyDesign,
     QualityTier,
@@ -53,7 +56,15 @@ from ..quality.data_models import (
     DESIGN_TO_SCORE,
     llm_extraction_method,
 )
-from ..quality.study_classifier import STUDY_DESIGN_MAPPING
+from ..quality.json_fields import (
+    as_bool,
+    as_dict,
+    as_float,
+    as_int,
+    as_str_list,
+    as_text,
+)
+from ..quality.study_classifier import stated_study_design
 from ..storage import LiteStorage
 from ..utils import classify_analysis_exception
 from .models import BenchmarkCancellation
@@ -74,8 +85,8 @@ logger = logging.getLogger(__name__)
 
 #: The assessment tier each benchmark task produces.
 TASK_ASSESSMENT_TIER: dict[str, int] = {
-    QUALITY_TASK_STUDY_CLASSIFICATION: 2,
-    QUALITY_TASK_QUALITY_ASSESSMENT: 3,
+    QUALITY_TASK_STUDY_CLASSIFICATION: CLASSIFIER_ASSESSMENT_TIER,
+    QUALITY_TASK_QUALITY_ASSESSMENT: DETAILED_ASSESSMENT_TIER,
 }
 
 
@@ -128,13 +139,7 @@ def parse_study_design(data: object) -> StudyDesign | None:
     """
     if not isinstance(data, dict):
         return None
-    design_str = data.get("study_design")
-    if not isinstance(design_str, str):
-        return None
-    design = STUDY_DESIGN_MAPPING.get(design_str.lower().strip())
-    if design is None or design is StudyDesign.UNKNOWN:
-        return None
-    return design
+    return stated_study_design(data.get("study_design"), "study_design")
 
 
 # System prompt for study classification (Tier 2 style)
@@ -786,7 +791,9 @@ Focus on THIS study's methodology, not studies it references."""
             return EvaluationErrorCode.JSON_PARSE_ERROR
         try:
             data = json.loads(cleaned)
-        except json.JSONDecodeError as e:
+        except ValueError as e:
+            # A JSONDecodeError, or the plain ValueError json.loads raises
+            # for an integer longer than sys.get_int_max_str_digits()
             logger.warning(f"Failed to parse benchmark answer as JSON: {e}")
             return EvaluationErrorCode.JSON_PARSE_ERROR
         study_design = parse_study_design(data)
@@ -810,32 +817,21 @@ Focus on THIS study's methodology, not studies it references."""
         if isinstance(answer, EvaluationErrorCode):
             return answer
         data, study_design = answer
-        try:
-            # Parse blinding
-            is_blinded = self._parse_blinding(data.get("is_blinded"))
-
-            # Parse sample size
-            sample_size = self._parse_sample_size(data.get("sample_size"))
-
-            # Parse confidence
-            confidence = self._parse_confidence(data.get("confidence", 0.5))
-
-            return QualityAssessment(
-                assessment_tier=2,
-                extraction_method="llm_benchmark",
-                study_design=study_design,
-                quality_tier=DESIGN_TO_TIER.get(study_design, QualityTier.UNCLASSIFIED),
-                quality_score=DESIGN_TO_SCORE.get(study_design, 0.0),
-                is_randomized=data.get("is_randomized"),
-                is_blinded=is_blinded,
-                sample_size=sample_size,
-                confidence=confidence,
-                extraction_details=["Benchmark classification"],
-            )
-
-        except (ValueError, TypeError, AttributeError, OverflowError) as e:
-            logger.warning(f"Failed to parse classification response: {e}")
-            return EvaluationErrorCode.INVALID_RESPONSE_FORMAT
+        # Every value is narrowed as the classifier narrows it (bmlib#295,
+        # bmlib#320): a null or wrong-typed answer reads as unstated, and a
+        # well-formed answer naming a design is never an unreadable one.
+        return QualityAssessment(
+            assessment_tier=CLASSIFIER_ASSESSMENT_TIER,
+            extraction_method="llm_benchmark",
+            study_design=study_design,
+            quality_tier=DESIGN_TO_TIER.get(study_design, QualityTier.UNCLASSIFIED),
+            quality_score=DESIGN_TO_SCORE.get(study_design, 0.0),
+            is_randomized=as_bool(data.get("is_randomized"), "is_randomized"),
+            is_blinded=self._parse_blinding(data.get("is_blinded")),
+            sample_size=self._parse_sample_size(data.get("sample_size")),
+            confidence=self._parse_confidence(data.get("confidence")),
+            extraction_details=["Benchmark classification"],
+        )
 
     def _parse_assessment_response(
         self, response: str
@@ -849,55 +845,35 @@ Focus on THIS study's methodology, not studies it references."""
         Returns:
             QualityAssessment (Tier 3 style), or why the answer holds none
         """
-        from ..quality.data_models import BiasRisk
-
         answer = self._read_answer(response)
         if isinstance(answer, EvaluationErrorCode):
             return answer
         data, study_design = answer
-        try:
-            # Parse design characteristics
-            chars = data.get("design_characteristics", {})
-
-            # Parse bias risk
-            bias_data = data.get("bias_risk", {})
-            bias_risk = BiasRisk.from_dict(bias_data) if bias_data else None
-
-            # Parse sample size
-            sample_size = self._parse_sample_size(data.get("sample_size"))
-
-            # Parse blinding
-            is_blinded = self._parse_blinding(chars.get("blinded"))
-
-            # Parse quality score
-            quality_score = self._parse_quality_score(data.get("quality_score", 0))
-
-            # Parse confidence
-            confidence = self._parse_confidence(data.get("confidence", 0.5))
-
-            return QualityAssessment(
-                assessment_tier=3,
-                extraction_method="llm_benchmark_detailed",
-                study_design=study_design,
-                quality_tier=DESIGN_TO_TIER.get(study_design, QualityTier.UNCLASSIFIED),
-                quality_score=quality_score,
-                evidence_level=data.get("evidence_level"),
-                is_randomized=chars.get("randomized"),
-                is_controlled=chars.get("controlled"),
-                is_blinded=is_blinded,
-                is_prospective=chars.get("prospective"),
-                is_multicenter=chars.get("multicenter"),
-                sample_size=sample_size,
-                confidence=confidence,
-                bias_risk=bias_risk,
-                strengths=data.get("strengths", []),
-                limitations=data.get("limitations", []),
-                extraction_details=["Benchmark detailed assessment"],
-            )
-
-        except (ValueError, TypeError, AttributeError, OverflowError) as e:
-            logger.warning(f"Failed to parse assessment response: {e}")
-            return EvaluationErrorCode.INVALID_RESPONSE_FORMAT
+        # Every value is narrowed as the Tier 3 assessor narrows it
+        # (bmlib#295, bmlib#320): a null design_characteristics raised
+        # AttributeError here, and a well-formed answer naming a design was
+        # scored as INVALID_RESPONSE_FORMAT.
+        chars = as_dict(data.get("design_characteristics"), "design_characteristics")
+        bias_data = as_dict(data.get("bias_risk"), "bias_risk")
+        return QualityAssessment(
+            assessment_tier=DETAILED_ASSESSMENT_TIER,
+            extraction_method="llm_benchmark_detailed",
+            study_design=study_design,
+            quality_tier=DESIGN_TO_TIER.get(study_design, QualityTier.UNCLASSIFIED),
+            quality_score=self._parse_quality_score(data.get("quality_score")),
+            evidence_level=as_text(data.get("evidence_level"), "evidence_level"),
+            is_randomized=as_bool(chars.get("randomized"), "randomized"),
+            is_controlled=as_bool(chars.get("controlled"), "controlled"),
+            is_blinded=self._parse_blinding(chars.get("blinded")),
+            is_prospective=as_bool(chars.get("prospective"), "prospective"),
+            is_multicenter=as_bool(chars.get("multicenter"), "multicenter"),
+            sample_size=self._parse_sample_size(data.get("sample_size")),
+            confidence=self._parse_confidence(data.get("confidence")),
+            bias_risk=BiasRisk.from_dict(bias_data) if bias_data else None,
+            strengths=as_str_list(data.get("strengths"), "strengths") or [],
+            limitations=as_str_list(data.get("limitations"), "limitations") or [],
+            extraction_details=["Benchmark detailed assessment"],
+        )
 
     def _clean_json_response(self, response: str) -> str:
         """
@@ -943,44 +919,47 @@ Focus on THIS study's methodology, not studies it references."""
 
         return ""
 
-    def _parse_blinding(self, value: Optional[str]) -> Optional[str]:
-        """Parse and validate blinding value."""
-        if value is None:
+    def _parse_blinding(self, value: object) -> Optional[str]:
+        """Parse and validate blinding value; a non-string is unstated."""
+        text = as_text(value, "blinded")
+        if text is None:
             return None
-        normalized = str(value).lower().strip()
+        normalized = text.lower().strip()
         valid_values = ("none", "single", "double", "triple")
         return normalized if normalized in valid_values else None
 
-    def _parse_sample_size(self, value: Optional[int | str]) -> Optional[int]:
-        """Parse sample size to integer."""
-        if value is None:
-            return None
-        try:
-            return int(value)
-        except (ValueError, TypeError, OverflowError):
-            # OverflowError: JSON reads 1e999 as infinity
-            return None
+    def _parse_sample_size(self, value: object) -> Optional[int]:
+        """Parse sample size to integer.
 
-    def _parse_quality_score(self, value: float | str) -> float:
-        """Parse and clamp quality score."""
-        try:
-            score = float(value)
-        except (ValueError, TypeError):
-            return 0.0
-        if not math.isfinite(score):
-            # NaN would clamp to the top of the scale
+        A bool is no count (``int(True)`` is 1), an infinity is no number,
+        and a negative count is none, as the quality tiers read them.
+        """
+        result = as_int(value, "sample_size")
+        if result is None or result < 0:
+            return None
+        return result
+
+    def _parse_quality_score(self, value: object) -> float:
+        """Parse and clamp quality score; unstated or non-finite is 0.0.
+
+        NaN would clamp to the top of the scale, and ``true`` read as 1.0.
+        """
+        score = as_float(value, "quality_score")
+        if score is None:
             return 0.0
         return max(0.0, min(10.0, score))
 
-    def _parse_confidence(self, value: float | str) -> float:
-        """Parse and clamp confidence value."""
-        try:
-            conf = float(value)
-        except (ValueError, TypeError):
-            return 0.5
-        if not math.isfinite(conf):
-            # NaN would clamp to full confidence
-            return 0.5
+    def _parse_confidence(self, value: object) -> float:
+        """Parse and clamp confidence value.
+
+        Unstated, a bool and anything non-finite read as
+        CONFIDENCE_PARSE_FAILURE_DEFAULT, as both quality tiers read them:
+        ``true`` was 1.0, the most confident answer there is, NaN clamped
+        to it, and the statistics averaged it.
+        """
+        conf = as_float(value, "confidence")
+        if conf is None:
+            return CONFIDENCE_PARSE_FAILURE_DEFAULT
         return max(0.0, min(1.0, conf))
 
     def _compute_results(
