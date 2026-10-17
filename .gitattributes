@@ -9,7 +9,11 @@ doc/cross_platform/jats_corpus/*.xml -text
 doc/cross_platform/jats_corpus/*.json -text
 
 # SPIKE (WP-2): the committed bmlib xcframework and its generated bindings.
-# Binary slices are never diffed or line-translated; the Swift is generated.
-Packages/BioMedLit/Frameworks/BmlibFFI.xcframework/** binary
+# Nothing in it is line-translated: its treeSha256 (BmlibFFI.pin.json) hashes
+# the bytes. Only the Mach-O slices (every file named BmlibFFI) are binary; the
+# header, modulemap and Info.plist files stay diffable text, so a rebuild's
+# change to them shows in review. The Swift and Kotlin are generated.
+Packages/BioMedLit/Frameworks/BmlibFFI.xcframework/** -text
+Packages/BioMedLit/Frameworks/BmlibFFI.xcframework/**/BmlibFFI binary
 Packages/BioMedLit/Sources/BmlibCore/bmlib_ffi.swift linguist-generated=true
 android/MedicalFactChecker/app/src/main/java/org/bmlib/ffi/bmlib_ffi.kt linguist-generated=true

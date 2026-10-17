@@ -1,5 +1,5 @@
 {
-  "comment": "SPIKE (WP-2). What built BmlibFFI.xcframework and Sources/BmlibCore/bmlib_ffi.swift. Both are regenerated together, from one bmlib commit, by bmlib's rust/bmlib-ffi/scripts/build-xcframework.sh; a binding generated from another commit fails UniFFI's checksum check at first call. treeSha256 is the SHA-256 of the sorted list of '<path> <sha256>' (and '<path> -> <target>' for symlinks) over every file in the xcframework.",
+  "comment": "SPIKE (WP-2). The one bmlib pin for both apps: the commit that built BmlibFFI.xcframework and Sources/BmlibCore/bmlib_ffi.swift (bmlib's rust/bmlib-ffi/scripts/build-xcframework.sh) and generated android/MedicalFactChecker/app/src/main/java/org/bmlib/ffi/bmlib_ffi.kt. All three are regenerated together, from one bmlib commit; a binding generated from another commit fails UniFFI's checksum check at first call. Android's Gradle cargo tasks read bmlibCommit from this file and refuse a bmlib checkout at any other commit (override: -Pbmlib.allowUnpinnedCommit=true). treeSha256 is defined and computed by treeSha256Script; run it with --check on this file.",
   "bmlibRepository": "https://github.com/hherb/bmlib",
   "bmlibCommit": "2b969a5cc05b6436f21fe13224a4ff3fc02fb26f",
   "bmlibBranch": "spike/uniffi-ffi",
@@ -17,5 +17,6 @@
     "iOS": "17.0",
     "macOS": "14.0"
   },
+  "treeSha256Script": ".github/scripts/xcframework_tree_sha256.py",
   "treeSha256": "004989a0323b99950827af0865b8676fa89e688fc919ef0be59d6dbfa1b086da"
 }
