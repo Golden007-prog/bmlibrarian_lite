@@ -81,7 +81,8 @@ logger = logging.getLogger(__name__)
 #: 3 was.
 #: 6: bmlib#111 -- an author role declared on the ``<contrib-group>``
 #: (``content-type="author"``) reaches its bare ``<contrib>`` children, and
-#: every group is read, not only the first.
+#: every group is read, not only the first; a bare contributor is inferred only
+#: from a group directly in ``<article-meta>`` (bmlib#266).
 JATS_MARKDOWN_CONVERTER_VERSION = 6
 
 #: The line that opens end matter: before the back matter and the
@@ -360,25 +361,40 @@ def _article_authors(article_meta: ET.Element) -> list[str]:
     non-empty ``content-type`` decides; where none declares, the contributor
     is an author. Comparison folds case. Every group is read.
 
+    The inference for a bare contributor starts only from a
+    ``<contrib-group>`` that is a direct child of ``article_meta``, and from
+    the groups nested inside one (bmlib#266). A group under ``<supplement>``,
+    ``<sec-meta>`` or any other element in ``<article-meta>`` lists other
+    people's roles, so its bare contributors are not the article's authors;
+    a contributor there with its own ``contrib-type="author"`` still is.
+
     A ``<contrib>`` is not entered, so the member roster of a ``<collab>``
     inside it is never listed as the article's authors.
 
     Args:
         article_meta: The article's ``<article-meta>`` (or any element holding
-            its contributor groups).
+            its contributor groups as direct children).
 
     Returns:
         The authors' names in document order, as "Given Surname".
     """
     authors: list[str] = []
 
-    def walk(element: ET.Element, declared: list[str]) -> None:
+    def walk(element: ET.Element, declared: list[str], anchored: bool) -> None:
+        # ``anchored``: inside a contrib-group that is a direct child of
+        # ``article_meta``, where a bare contributor's role may be inferred.
         for child in element:
             if child.tag == "contrib-group":
-                walk(child, declared + [(child.get("content-type") or "").strip()])
+                walk(
+                    child,
+                    declared + [(child.get("content-type") or "").strip()],
+                    anchored or element is article_meta,
+                )
             elif child.tag == "contrib":
                 role = (child.get("contrib-type") or "").strip()
                 if not role:
+                    if not anchored:
+                        continue
                     role = next((r for r in reversed(declared) if r), "")
                 if role and role.lower() != "author":
                     continue
@@ -390,9 +406,9 @@ def _article_authors(article_meta: ET.Element) -> list[str]:
                     given = name.findtext("given-names", "")
                     authors.append(f"{given} {surname}".strip())
             elif child.tag != "collab":
-                walk(child, declared)
+                walk(child, declared, anchored)
 
-    walk(article_meta, [])
+    walk(article_meta, [], False)
     return authors
 
 

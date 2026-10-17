@@ -147,4 +147,46 @@ class JATSAuthorRoleTest {
             </contrib-group>"""
         assertEquals(listOf("Smith"), authors(groups))
     }
+
+    // bmlib#266: the inference starts only at a contrib-group directly in article-meta.
+
+    @Test
+    fun `a bare contrib in a supplement group is not an author`() {
+        val groups = """<contrib-group content-type="author">${contrib("Smith")}</contrib-group>
+            <supplement><contrib-group>${contrib("SupEd")}</contrib-group></supplement>"""
+        assertEquals(listOf("Smith"), authors(groups))
+    }
+
+    @Test
+    fun `a supplement group declaring author still infers nothing`() {
+        val groups = """<supplement><contrib-group content-type="author">${contrib("SupAuthor")}</contrib-group></supplement>"""
+        assertEquals(emptyList<String>(), authors(groups))
+    }
+
+    @Test
+    fun `a bare contrib in a sec-meta group is not an author`() {
+        val groups = """<sec-meta><contrib-group>${contrib("SecAuthor")}</contrib-group></sec-meta>"""
+        assertEquals(emptyList<String>(), authors(groups))
+    }
+
+    @Test
+    fun `an own author role in a nested group is still read`() {
+        val groups = """<supplement><contrib-group>${contrib("Own", attrs = "contrib-type=\"author\"")}
+            ${contrib("Bare")}</contrib-group></supplement>"""
+        assertEquals(listOf("Own"), authors(groups))
+    }
+
+    @Test
+    fun `the direct child group still infers`() {
+        assertEquals(listOf("Smith"), authors("""<contrib-group>${contrib("Smith")}</contrib-group>"""))
+    }
+
+    @Test
+    fun `a roster nested in the article's group follows the stack rule`() {
+        val groups = """<contrib-group content-type="author">
+            <contrib-group>${contrib("Inner")}</contrib-group>
+            <contrib-group content-type="editor">${contrib("InnerEd")}</contrib-group>
+            </contrib-group>"""
+        assertEquals(listOf("Inner"), authors(groups))
+    }
 }

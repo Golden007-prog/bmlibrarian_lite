@@ -152,3 +152,71 @@ def test_a_sub_article_front_stub_adds_no_author() -> None:
     markdown = jats_to_markdown(xml)
     assert "**Authors:** A Smith" in markdown
     assert "Reviewer" not in markdown
+
+
+class TestBareContributorsAreInferredOnlyFromTheArticlesOwnGroups:
+    """The inference starts only at a contrib-group directly in article-meta.
+
+    bmlib#266's scope: a ``<contrib-group>`` inside ``<supplement>``,
+    ``<sec-meta>`` or another element nested in ``<article-meta>`` lists
+    someone else (a supplement's editors, a section's authors), so its bare
+    contributors are not the article's authors.
+    """
+
+    def test_a_bare_contrib_in_a_supplement_group_is_not_an_author(self) -> None:
+        """article-meta > supplement > contrib-group > bare contrib: no author."""
+        meta = _meta(
+            f'<contrib-group content-type="author">{_contrib("Smith")}</contrib-group>'
+            f"<supplement><contrib-group>{_contrib('SupEd')}</contrib-group></supplement>"
+        )
+        assert _article_authors(meta) == ["A Smith"]
+
+    def test_a_supplement_group_declaring_author_still_infers_nothing(self) -> None:
+        """A nested group's own content-type="author" does not anchor it."""
+        meta = _meta(
+            '<supplement><contrib-group content-type="author">'
+            f"{_contrib('SupAuthor')}</contrib-group></supplement>"
+        )
+        assert _article_authors(meta) == []
+
+    def test_a_bare_contrib_in_a_sec_meta_group_is_not_an_author(self) -> None:
+        """Any element between article-meta and the group ends the inference."""
+        meta = _meta(
+            f"<sec-meta><contrib-group>{_contrib('SecAuthor')}</contrib-group></sec-meta>"
+        )
+        assert _article_authors(meta) == []
+
+    def test_an_own_author_role_in_a_nested_group_is_still_read(self) -> None:
+        """A contributor's own contrib-type="author" is read where it was before."""
+        meta = _meta(
+            f"<supplement><contrib-group>{_contrib('Own', attrs=AUTHOR)}"
+            f"{_contrib('Bare')}</contrib-group></supplement>"
+        )
+        assert _article_authors(meta) == ["A Own"]
+
+    def test_the_direct_child_group_still_infers(self) -> None:
+        """Control: a bare contrib in a group directly in article-meta is an author."""
+        meta = _meta(f"<contrib-group>{_contrib('Smith')}</contrib-group>")
+        assert _article_authors(meta) == ["A Smith"]
+
+    def test_a_roster_nested_in_the_articles_group_follows_the_stack_rule(self) -> None:
+        """A group inside an anchored group still infers, by its innermost role."""
+        meta = _meta(
+            '<contrib-group content-type="author">'
+            f'<contrib-group>{_contrib("Inner")}</contrib-group>'
+            f'<contrib-group content-type="editor">{_contrib("InnerEd")}</contrib-group>'
+            "</contrib-group>"
+        )
+        assert _article_authors(meta) == ["A Inner"]
+
+    def test_the_markdown_omits_a_supplement_groups_contributors(self) -> None:
+        """End to end: the author line holds no supplement contributor."""
+        xml = (
+            "<article><front><article-meta>"
+            f'<contrib-group content-type="author">{_contrib("Smith")}</contrib-group>'
+            f"<supplement><contrib-group>{_contrib('SupEd')}</contrib-group></supplement>"
+            "</article-meta></front></article>"
+        )
+        markdown = jats_to_markdown(xml)
+        assert "**Authors:** A Smith" in markdown
+        assert "SupEd" not in markdown
