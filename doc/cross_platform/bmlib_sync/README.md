@@ -8,7 +8,7 @@ bmlib fix that is not ported by hand goes unnoticed.
 ## Shape
 
 ```json
-{"schema": 1, "bmlib_commit": "<sha>", "from_bmlib": [Entry], "to_bmlib": [Entry]}
+{"schema": 1, "bmlib_commit": "<full 40-character sha>", "from_bmlib": [Entry], "to_bmlib": [Entry]}
 ```
 
 - `from_bmlib` entries: `id`, `title`, `python`, `swift`, `android`, `issue`, `note`.
@@ -33,12 +33,16 @@ the title (pull requests, `PR #N`, and numbers in the body prose are not
 read). It exits 1 and lists every `bmlib#N` with no `from_bmlib` entry, then
 prints how much is still `owed` per platform.
 
-CI runs it in the `Python tests` workflow. It checks out the public
-`hherb/bmlib` repository at `bmlib_commit`, so no token or secret is needed.
+CI runs it in the `Python tests` workflow, after the tests and whether or not
+they passed. It checks out the public `hherb/bmlib` repository at
+`bmlib_commit`, so no token or secret is needed. `actions/checkout` takes a
+commit only as its full SHA, so the ledger holds all 40 characters, never an
+abbreviation (`tests/test_bmlib_ledger.py` fails on one).
 
 ## Starting a sync
 
-1. Bump `bmlib_commit` to the bmlib commit being synced against.
+1. Bump `bmlib_commit` to the full SHA of the bmlib commit being synced
+   against (`git -C ~/src/bmlib rev-parse <commit>`).
 2. Run the check. Every new id it lists must be triaged: add an entry, with
    `owed` for a change to behaviour the ports mirror (JATS, transparency,
    full text, quality, llm, citations), and `n/a` with a short note for

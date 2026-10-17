@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 from pathlib import Path
 from types import ModuleType
 
@@ -83,10 +84,12 @@ def test_the_committed_ledger_is_well_formed() -> None:
 
 
 def test_the_committed_ledger_has_a_commit_and_unique_ids() -> None:
-    """The ledger names its bmlib commit and has no duplicate ids."""
+    """The ledger names its bmlib commit in full and has no duplicate ids."""
     ledger = json.loads(LEDGER_PATH.read_text())
     assert ledger["schema"] == 1
-    assert ledger["bmlib_commit"] == "f4b7c52"
+    # actions/checkout takes the ledger's value as its ref, and a commit ref
+    # must be the full SHA there: an abbreviated one fails the checkout.
+    assert re.fullmatch(r"[0-9a-f]{40}", ledger["bmlib_commit"])
     for key in ("from_bmlib", "to_bmlib"):
         ids = [e["id"] for e in ledger[key]]
         assert len(ids) == len(set(ids)), key

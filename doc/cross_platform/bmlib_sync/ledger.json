@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "bmlib_commit": "f4b7c52",
+  "bmlib_commit": "f4b7c5291d55c5bf825939b14662da5785fa96af",
   "from_bmlib": [
     {
       "id": "lite:pubmed-articleid-reference-list",
