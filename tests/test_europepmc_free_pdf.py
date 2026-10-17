@@ -131,3 +131,34 @@ def test_an_accepted_entry_is_not_a_warning(caplog: pytest.LogCaptureFixture) ->
     with caplog.at_level(logging.DEBUG, logger="bmlibrarian_lite.europepmc"):
         assert _extract_free_pdf_url(_result([entry])) == _RENDER_URL
     assert _warnings(caplog) == []
+
+
+@pytest.mark.parametrize(
+    ("entry", "expected"),
+    [
+        ({"availabilityCode": ["OA"], "availability": "Open access"}, _RENDER_URL),
+        ({"availabilityCode": {"OA": 1}, "availability": "Free"}, _RENDER_URL),
+        ({"availabilityCode": ["OA"], "availability": "Subscription required"}, None),
+        ({"availabilityCode": 7, "availability": ["Free"]}, None),
+        ({"availability": {"Open access": True}}, None),
+    ],
+    ids=[
+        "list_code_falls_back_to_free_label",
+        "dict_code_falls_back_to_free_label",
+        "list_code_falls_back_to_paywall_label",
+        "non_string_code_and_label_is_rejected",
+        "dict_label_without_code_is_rejected",
+    ],
+)
+def test_a_non_string_code_or_label_counts_as_absent(
+    caplog: pytest.LogCaptureFixture, entry: dict[str, Any], expected: str | None
+) -> None:
+    """A non-string code or label is absent, never a TypeError or a WARNING.
+
+    Europe PMC's JSON is untrusted: ``["OA"] in frozenset(...)`` raises
+    TypeError (a list is unhashable), which took down the whole result.
+    """
+    entry = {"documentStyle": "pdf", "url": _RENDER_URL, **entry}
+    with caplog.at_level(logging.DEBUG, logger="bmlibrarian_lite.europepmc"):
+        assert _extract_free_pdf_url(_result([entry])) == expected
+    assert _warnings(caplog) == []

@@ -131,6 +131,26 @@ def _validated_search_page(data: object) -> dict[str, Any]:
     return data
 
 
+def _text_field(entry: dict[str, Any], key: str) -> str | None:
+    """Read a ``fullTextUrl`` entry's string field; anything else is absent.
+
+    Europe PMC's JSON is untrusted. A list or object where a string belongs
+    would raise TypeError on a set-membership test (it is unhashable) and
+    take the whole result down with it; a number would be logged as an
+    unrecognised code. Either way it is not a value this build can judge, so
+    it counts as missing.
+
+    Args:
+        entry: One ``fullTextUrl`` entry, untrusted.
+        key: The field to read.
+
+    Returns:
+        The field's value if it is a string, else None.
+    """
+    value = entry.get(key)
+    return value if isinstance(value, str) else None
+
+
 def _is_free_to_download(entry: dict[str, Any]) -> bool:
     """Whether a ``fullTextUrl`` entry is one the app may download (bmlib#79).
 
@@ -141,16 +161,19 @@ def _is_free_to_download(entry: dict[str, Any]) -> bool:
     build has never evaluated must not be admitted because its display
     string happens to read "Free".
 
+    A code or label that is not a string counts as absent
+    (:func:`_text_field`).
+
     Args:
         entry: One ``fullTextUrl`` entry, untrusted.
 
     Returns:
         True if the entry is a free download.
     """
-    code = entry.get("availabilityCode")
+    code = _text_field(entry, "availabilityCode")
     if code:
         return code in EUROPE_PMC_FREE_PDF_CODES
-    return entry.get("availability") in EUROPE_PMC_FREE_PDF_LABELS
+    return _text_field(entry, "availability") in EUROPE_PMC_FREE_PDF_LABELS
 
 
 def _report_rejected_pdf_entry(entry: dict[str, Any]) -> None:
@@ -165,7 +188,7 @@ def _report_rejected_pdf_entry(entry: dict[str, Any]) -> None:
     Args:
         entry: The rejected ``fullTextUrl`` entry.
     """
-    code = entry.get("availabilityCode")
+    code = _text_field(entry, "availabilityCode")
     label = entry.get("availability")
     if code and code not in EUROPE_PMC_UNAVAILABLE_PDF_CODES:
         logger.warning(
@@ -177,7 +200,9 @@ def _report_rejected_pdf_entry(entry: dict[str, Any]) -> None:
         )
         return
     logger.debug(
-        "Skipping Europe PMC PDF entry: availability=%r code=%r", label, code
+        "Skipping Europe PMC PDF entry: availability=%r code=%r",
+        label,
+        entry.get("availabilityCode"),
     )
 
 
