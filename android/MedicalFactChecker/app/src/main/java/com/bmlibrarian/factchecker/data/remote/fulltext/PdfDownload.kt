@@ -20,6 +20,7 @@ package com.bmlibrarian.factchecker.data.remote.fulltext
 
 import android.util.Log
 import com.bmlibrarian.factchecker.domain.model.RequestFailure
+import com.bmlibrarian.factchecker.domain.model.RequestFailureKind
 import com.bmlibrarian.factchecker.util.Constants
 import java.io.File
 import java.io.FileOutputStream
@@ -63,9 +64,69 @@ sealed class PdfDownload {
      */
     object NotSaved : PdfDownload()
 
-    /** The saved file's path, or null when nothing was saved. */
-    val savedPath: String?
-        get() = (this as? Saved)?.path
+    /**
+     * The source served another article's PDF: its first page with text does not
+     * carry the document's title (#546). Checked where the download waited, before
+     * it replaced the cached file (#561), and set aside beside that name unread. An
+     * open-access candidate's lets the walk go on; the render's ends the fetch
+     * (#556).
+     */
+    object WrongArticle : PdfDownload()
+}
+
+/**
+ * Check a download waiting in its partial file against [title], then move it into
+ * [cached] or set it aside (#546, #561): the half of
+ * [FullTextService.downloadPdf] after the body has arrived, as BioMedLit's
+ * `admit` is.
+ *
+ * A partial that is not a PDF now, though its body began as one, was not written
+ * as served: [PdfDownload.NotSaved]. Another article's is set aside beside [cached]
+ * and never takes it. A partial removed before it was cached (the system clears
+ * the cache directory under storage pressure) is `REQUEST_FAILED`, never a PDF not
+ * saved, whose link would offer a PDF the check may never have read, as
+ * BioMedLit's download gone before its check keeps none. The caller removes the
+ * partial on every outcome.
+ *
+ * @param partial Where the download waits
+ * @param cached Its cache name
+ * @param title The document's title; null checks nothing
+ * @param pdfUrl The address it came from, for the log
+ * @param check The title check; [PdfTitleChecker.check] but in a test
+ * @return Saved at [cached]; WrongArticle; NotSaved; or Failed `REQUEST_FAILED`
+ *   for a partial removed
+ */
+internal suspend fun admitDownload(
+    partial: File,
+    cached: File,
+    title: String?,
+    pdfUrl: String,
+    check: (File, String) -> PdfTitleCheck = PdfTitleChecker::check
+): PdfDownload {
+    if (!partial.isFile) return removedBeforeCached(pdfUrl)
+    if (!isCachedPdf(partial)) {
+        // The body began as a PDF, so a file that does not is the cache's fault
+        Log.e(TAG, "Could not cache the PDF at ${cached.absolutePath}")
+        return PdfDownload.NotSaved
+    }
+    // Set aside under the cache name's set-aside name when refused (logged by the check)
+    if (refusedAsAnotherArticle(partial.path, title, cacheName = cached, check = check)) {
+        return PdfDownload.WrongArticle
+    }
+    if (!partial.renameTo(cached)) {
+        // Gone, the check may have judged no file
+        if (!partial.exists()) return removedBeforeCached(pdfUrl)
+        Log.e(TAG, "Could not cache the PDF at ${cached.absolutePath}")
+        return PdfDownload.NotSaved
+    }
+    Log.d(TAG, "PDF downloaded to: ${cached.absolutePath}")
+    return PdfDownload.Saved(cached.absolutePath)
+}
+
+/** A download removed before it was cached: never judged, so no link to it is kept. */
+private fun removedBeforeCached(pdfUrl: String): PdfDownload {
+    Log.w(TAG, "The PDF downloaded from $pdfUrl was removed before it was cached")
+    return PdfDownload.Failed(RequestFailure(RequestFailureKind.REQUEST_FAILED))
 }
 
 /**
@@ -115,22 +176,27 @@ internal fun quarantineCachedFile(file: File, quarantine: File) {
 }
 
 /**
- * Set a saved PDF of another article aside, so the cache never serves it again (#546).
+ * Set a PDF of another article aside, so the cache never serves it again (#546).
  *
- * Renamed beside itself with [Constants.PDF_MISMATCH_SUFFIX], which no lookup
+ * Renamed to its cache name plus [Constants.PDF_MISMATCH_SUFFIX], which no lookup
  * reads, rather than deleted: the check can be wrong (a preprint retitled between
  * versions), as Python's `pdf_library_check` keeps its set-aside PDFs. One copy per
  * name is kept, the latest, replacing an earlier one: the app has no keep to
  * restore one by. A rename that fails is logged and the file deleted instead, as
- * [quarantineCachedFile] does, so the next source's download does not find it in
- * its place; a file that can be neither is still there, and the open-access walk
- * stops on it rather than blame the next source for it.
+ * [quarantineCachedFile] does. A download is set aside from where it waited for
+ * its check (#561), so it never took the cache name. A cached file refused (by the
+ * viewer, or Elsevier's fetch) that can be neither moved nor deleted stays, and is
+ * refused again each time it is read: for Elsevier's, every later fetch of that
+ * DOI answers another article's PDF without asking Elsevier, as it would for the
+ * bytes it holds.
  *
- * @param file The saved PDF
+ * @param file The PDF: the cached file, or a download waiting for its check
+ * @param cacheName The cache name its set-aside name follows: the file itself for
+ *   a cached PDF
  * @return Where it was set aside, or null when it could not be moved
  */
-internal fun setAsideWrongArticle(file: File): File? {
-    val aside = File(file.parentFile, file.name + Constants.PDF_MISMATCH_SUFFIX)
+internal fun setAsideWrongArticle(file: File, cacheName: File): File? {
+    val aside = File(cacheName.parentFile, cacheName.name + Constants.PDF_MISMATCH_SUFFIX)
     if (aside.exists()) aside.delete()
     if (file.renameTo(aside)) return aside
     Log.e(TAG, "Could not set aside the PDF of another article at ${file.absolutePath}; deleting it")

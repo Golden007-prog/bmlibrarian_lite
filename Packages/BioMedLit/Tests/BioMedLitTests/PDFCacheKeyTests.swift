@@ -150,6 +150,16 @@ final class PDFCacheKeyTests: XCTestCase {
             ),
             "only a PDF's set-aside name"
         )
+        // A download left waiting for its title check (#560): cache too
+        XCTAssertTrue(FullTextService.isClearableCacheEntry(
+            URL(fileURLWithPath: FullTextService.stagedPath(beside: cached.path))
+        ))
+        XCTAssertFalse(
+            FullTextService.isClearableCacheEntry(
+                FullTextService.pdfCacheDirectory.appendingPathComponent("notes.unchecked")
+            ),
+            "only a PDF's waiting name"
+        )
         XCTAssertFalse(
             FullTextService.isClearableCacheEntry(
                 FullTextService.pdfCacheDirectory.appendingPathComponent("notes.txt")

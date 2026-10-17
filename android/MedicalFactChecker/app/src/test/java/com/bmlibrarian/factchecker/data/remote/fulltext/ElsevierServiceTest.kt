@@ -104,10 +104,14 @@ class ElsevierServiceTest {
         ElsevierService.client(shared), baseUrl, { cacheRoot!! }, { key }, { token }, pacer, maxRetries, 0L, session
     )
 
-    /** Ask for [forDoi], the PDF cached in [dir]. */
-    private suspend fun ElsevierService.fetch(dir: File = cacheDir(), forDoi: String = doi): ElsevierFetch? {
+    /** Ask for [forDoi], the PDF cached in [dir], checked against [title] when one is given. */
+    private suspend fun ElsevierService.fetch(
+        dir: File = cacheDir(),
+        forDoi: String = doi,
+        title: String? = null
+    ): ElsevierFetch? {
         cacheRoot = dir
-        return fetchPdf(forDoi)
+        return fetchPdf(forDoi, title)
     }
 
     private fun cacheDir(): File = folder.newFolder()
@@ -352,6 +356,103 @@ class ElsevierServiceTest {
         assertEquals(ElsevierFetch.KeyRefused, service(session = session).fetch())
     }
 
+    // ==================== The title check (#546, #560) ====================
+
+    private val title = "Caffeine and blood pressure: a critical review"
+
+    /** A PDF's bytes whose first page carries [firstPage]. */
+    private fun titledPdfBytes(firstPage: String): ByteArray =
+        writeTitledPdf(File(folder.newFolder(), "titled.pdf"), firstPage).readBytes()
+
+    private val anotherArticle: ByteArray
+        get() = titledPdfBytes("Using Effect Size - or Why the P Value Is Not Enough\nGail M. Sullivan")
+
+    /**
+     * Another article's PDF served is judged where it waits: set aside beside its
+     * cache name, which it never takes, so no other fetch can read it there.
+     */
+    @Test
+    fun `a PDF of another article served is set aside and never cached`() = runBlocking {
+        val dir = cacheDir()
+        val body = anotherArticle
+        routes[path] = MockResponse().setBody(Buffer().write(body))
+        assertEquals(ElsevierFetch.WrongArticle, service().fetch(dir, title = title))
+        assertFalse(File(cachedPath(dir)).exists())
+        assertArrayEquals(body, File(cachedPath(dir) + Constants.PDF_MISMATCH_SUFFIX).readBytes())
+        assertEquals("no partial file left", listOf(Elsevier.cacheFileName(doi) + Constants.PDF_MISMATCH_SUFFIX),
+            dir.listFiles().orEmpty().map { it.name })
+    }
+
+    /** The control: this article's PDF served is cached and answered. */
+    @Test
+    fun `a PDF of this article served is cached`() = runBlocking {
+        val dir = cacheDir()
+        val body = titledPdfBytes("$title\nAbstract")
+        routes[path] = MockResponse().setBody(Buffer().write(body))
+        assertEquals(ElsevierFetch.Served(cachedPath(dir)), service().fetch(dir, title = title))
+        assertArrayEquals(body, File(cachedPath(dir)).readBytes())
+        assertEquals(listOf(Elsevier.cacheFileName(doi)), dir.listFiles().orEmpty().map { it.name })
+    }
+
+    /** A cached PDF of another article is set aside and told, without a request. */
+    @Test
+    fun `a cached PDF of another article is set aside without asking`() = runBlocking {
+        val dir = cacheDir()
+        File(dir, Elsevier.cacheFileName(doi)).writeBytes(anotherArticle)
+        routes[path] = pdf()
+        assertEquals(ElsevierFetch.WrongArticle, service().fetch(dir, title = title))
+        assertEquals(0, server.requestCount)
+        assertFalse(File(cachedPath(dir)).exists())
+        assertTrue(File(cachedPath(dir) + Constants.PDF_MISMATCH_SUFFIX).isFile)
+    }
+
+    /**
+     * A cached PDF another fetch set aside while this one checked it (#560) is no
+     * copy served: Elsevier is asked as on a miss, and its PDF is the answer.
+     */
+    @Test
+    fun `a cached PDF gone after its check is asked for`() = runBlocking {
+        val dir = cacheDir()
+        val cached = File(dir, Elsevier.cacheFileName(doi)).apply { writeBytes(CONTRACT_PDF_BODY) }
+        routes[path] = pdf()
+        val service = ElsevierService(
+            ElsevierService.client(OkHttpClient()), server.url("").toString().trimEnd('/'), { dir }, { key },
+            { token }, RequestPacer(0L), 0, 0L, Elsevier.newSession(),
+            refuses = { checked, _, _ ->
+                // The other fetch: its check refused the cached file and removed it
+                if (checked == cached.path) File(checked).delete()
+                false
+            }
+        )
+        assertEquals(ElsevierFetch.Served(cached.absolutePath), service.fetchPdf(doi, title))
+        assertEquals("asked", 1, server.requestCount)
+        assertArrayEquals(CONTRACT_PDF_BODY, cached.readBytes())
+    }
+
+    /**
+     * A PDF its check let in that cannot take its cache name is not saved (a fault of
+     * ours, logged at ERROR), never served, and leaves no partial file.
+     */
+    @Test
+    fun `a PDF that cannot take its cache name is not saved and leaves no partial`() = runBlocking {
+        val dir = cacheDir()
+        val cached = File(dir, Elsevier.cacheFileName(doi))
+        routes[path] = pdf()
+        val service = ElsevierService(
+            ElsevierService.client(OkHttpClient()), server.url("").toString().trimEnd('/'), { dir }, { key },
+            { token }, RequestPacer(0L), 0, 0L, Elsevier.newSession(),
+            refuses = { _, _, cacheName ->
+                // A directory that is not empty at the cache name: the rename fails
+                cacheName.mkdirs()
+                File(cacheName, "x").createNewFile()
+                false
+            }
+        )
+        assertEquals(ElsevierFetch.NotSaved, service.fetchPdf(doi, title))
+        assertTrue(cached.isDirectory)
+        assertEquals("no partial file left", listOf(cached.name), dir.listFiles().orEmpty().map { it.name })
+    }
+
     /** A cached file that is not a PDF is set aside, and Elsevier asked. */
     @Test
     fun `a corrupt cached file is quarantined and Elsevier asked`() = runBlocking {
@@ -423,12 +524,12 @@ class ElsevierServiceTest {
             apiKey, instToken, RequestPacer(0L), 0, 0L, Elsevier.newSession()
         )
         val unreachable = ElsevierFetch.Unreachable(RequestFailure(RequestFailureKind.REQUEST_FAILED))
-        assertEquals(unreachable, service(failing) { null }.fetchPdf(doi))
-        assertEquals(unreachable, service({ KEY }, failing).fetchPdf(doi))
+        assertEquals(unreachable, service(failing) { null }.fetchPdf(doi, null))
+        assertEquals(unreachable, service({ KEY }, failing).fetchPdf(doi, null))
         assertEquals(0, server.requestCount)
         // The control: readable settings ask
         routes[path] = MockResponse().setResponseCode(404)
-        assertEquals(ElsevierFetch.Absent, service({ KEY }) { null }.fetchPdf(doi))
+        assertEquals(ElsevierFetch.Absent, service({ KEY }) { null }.fetchPdf(doi, null))
     }
 
     /** One fetch whose 429s outlast its retries counts once toward the pause, however many attempts it made. */
@@ -495,8 +596,8 @@ class ElsevierServiceTest {
             chain.proceed(chain.request().newBuilder().url(local).build())
         }).build()
         routes[path] = MockResponse().setResponseCode(Constants.ELSEVIER_KEY_REFUSED_STATUS)
-        assertEquals(ElsevierFetch.KeyRefused, ElsevierService(toServer, settings, context).fetchPdf(doi))
-        assertEquals(ElsevierFetch.KeyRefused, ElsevierService(toServer, settings, context).fetchPdf(doi))
+        assertEquals(ElsevierFetch.KeyRefused, ElsevierService(toServer, settings, context).fetchPdf(doi, null))
+        assertEquals(ElsevierFetch.KeyRefused, ElsevierService(toServer, settings, context).fetchPdf(doi, null))
         assertEquals("the second service sent nothing", 1, server.requestCount)
         // The control: a test's own session is not the process's
         routes[path] = MockResponse().setResponseCode(404)
@@ -527,7 +628,7 @@ class ElsevierServiceTest {
         }).build()
         routes[path] = MockResponse().setResponseCode(Constants.HTTP_NOT_FOUND)
         val before = server.requestCount
-        assertEquals(ElsevierFetch.Absent, ElsevierService(toServer, settings, context).fetchPdf(doi))
+        assertEquals(ElsevierFetch.Absent, ElsevierService(toServer, settings, context).fetchPdf(doi, null))
         assertEquals("Elsevier was asked", before + 1, server.requestCount)
     }
 

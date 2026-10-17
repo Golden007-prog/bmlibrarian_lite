@@ -266,10 +266,18 @@ sealed interface ElsevierAnswer {
 sealed interface ElsevierFetch {
     /**
      * The PDF, saved at this local path: never a link, as Elsevier's URL needs the key.
+     * Checked against the title, when one was given, before it was answered (#546, #560).
      *
      * @property localPath Where the PDF is cached
      */
     data class Served(val localPath: String) : ElsevierFetch
+
+    /**
+     * The PDF, cached or just served, is another article's: its first page with text
+     * does not carry the title (#546). Set aside unread; a download never took its
+     * cache name (#560). The chain records it and asks Unpaywall.
+     */
+    data object WrongArticle : ElsevierFetch
 
     /** No PDF of this article for this requestor (a 404, or a first page only): the chain goes on. */
     data object Absent : ElsevierFetch
@@ -318,6 +326,9 @@ sealed interface ElsevierFetch {
  *   [Constants.ELSEVIER_RETRYABLE_STATUSES]; tests pass 0
  * @property initialBackoffMs The wait before the first retry, doubling after
  * @property session What one fetch leaves for the next
+ * @property refuses Whether a PDF is another article's, setting it aside under the
+ *   given cache name when it is ([refusedAsAnotherArticle], #546); a seam so a test
+ *   can stand in for a concurrent fetch's set-aside (#560)
  */
 @Singleton
 class ElsevierService internal constructor(
@@ -329,7 +340,8 @@ class ElsevierService internal constructor(
     private val pacer: RequestPacer,
     private val maxRetries: Int,
     private val initialBackoffMs: Long,
-    private val session: KeyedServiceSession
+    private val session: KeyedServiceSession,
+    private val refuses: suspend (path: String, title: String?, cacheName: File) -> Boolean = ::refusedAsAnotherArticle
 ) {
     /** The key and the token are the user's, read from the settings at each request. */
     @Inject
@@ -355,32 +367,41 @@ class ElsevierService internal constructor(
      * @property status The HTTP status it ended on, or null when it got none
      * @property answer The answer classified
      * @property fetch What it comes to, when that is settled by the attempt (a PDF
-     *   saved or not saved); null for every other answer
+     *   saved, not saved, or another article's); null for every other answer
      */
     private class Ending(val status: Int?, val answer: ElsevierAnswer, val fetch: ElsevierFetch? = null)
 
     /**
      * This article's PDF from Elsevier.
      *
-     * The cache is consulted first, as every PDF tier consults it: a read is no
-     * request, so a PDF saved earlier (on the institution's network, say) is served
-     * even when Elsevier would now refuse or is paused, without spending the weekly
-     * quota. A cached file that is not a PDF is quarantined and Elsevier asked.
+     * The cache is consulted first: Elsevier's PDF is cached by its DOI, so a cached
+     * file is this address's (unlike [FullTextService.downloadPdf]'s one name per
+     * document, which is never answered from, #561). A read is no request, so a PDF
+     * saved earlier (on the institution's network, say) is served even when Elsevier
+     * would now refuse or is paused, without spending the weekly quota. A cached file
+     * that is not a PDF is quarantined and Elsevier asked.
      *
      * Never throws but for cancellation: an unexpected error is logged (never with
      * the key or the token) and answered as Elsevier unreachable.
      *
+     * A PDF is checked against [title] before it is answered (#546): a cached one where
+     * it is, a download where it waits beside its cache name, before it replaces
+     * anything there (#560), so another fetch of the same article never reads another
+     * article's PDF from the cache. A cached PDF gone by the time its check passed was
+     * set aside by another fetch, and Elsevier is asked as on a miss.
+     *
      * @param doi The DOI; only an Elsevier DOI ([Elsevier.isEligible]) is asked
+     * @param title The article's title the PDF is checked against; null checks nothing
      * @return Null when not asked, nothing sent or recorded: a DOI that is not
      *   Elsevier's (not logged), or no key (a DEBUG line, never the key). Unreachable
      *   `request_failed` when the key or token could not be read, or holds a character
      *   that cannot be sent (a WARNING, never the value). Otherwise served (a local
-     *   path), absent (a 404 or a first page only, logged at INFO), unreachable of
+     *   path), another article's PDF, absent (a 404 or a first page only, logged at INFO), unreachable of
      *   its real kind (a paused Elsevier is HTTP 429, nothing sent), the key or the
      *   credentials refused, or not saved
      * @throws CancellationException if the caller cancelled
      */
-    suspend fun fetchPdf(doi: String): ElsevierFetch? {
+    suspend fun fetchPdf(doi: String, title: String?): ElsevierFetch? {
         // No per-article log for another publisher's DOI (as Python and Swift).
         if (!Elsevier.isEligible(doi)) return null
         val key = try {
@@ -403,8 +424,13 @@ class ElsevierService internal constructor(
         }
         val cached = File(cacheDir(), Elsevier.cacheFileName(doi))
         if (withContext(Dispatchers.IO) { cachedPdfOrQuarantine(cached) }) {
-            Log.i(TAG, "Serving the cached PDF from $SERVICE for DOI $doi at ${cached.absolutePath}")
-            return ElsevierFetch.Served(cached.absolutePath)
+            if (refuses(cached.path, title, cached)) return ElsevierFetch.WrongArticle
+            if (cached.isFile) {
+                Log.i(TAG, "Serving the cached PDF from $SERVICE for DOI $doi at ${cached.absolutePath}")
+                return ElsevierFetch.Served(cached.absolutePath)
+            }
+            // Set aside by another fetch's check meanwhile (#560): no copy, so asked
+            Log.i(TAG, "The cached PDF from $SERVICE for DOI $doi went away before it was read; asking")
         }
         val keyDigest = KeyDigest.key(key)
         val credentialsDigest = KeyDigest.credentials(key, token)
@@ -439,7 +465,7 @@ class ElsevierService internal constructor(
         }
 
         val ending = try {
-            get(request, cached, doi)
+            get(request, cached, doi, title)
         } catch (e: RetryableStatusException) {
             // A throttle or server error that outlasted its retries
             Ending(e.statusCode, ElsevierAnswer.Unreachable(RequestFailure.forHttpStatus(e.statusCode)))
@@ -479,11 +505,12 @@ class ElsevierService internal constructor(
      * @param request The article request, its headers set
      * @param cached Where a PDF served is saved
      * @param doi The DOI, for the log
+     * @param title The title a PDF served is checked against; null checks nothing
      * @return How the request ended
      * @throws RetryableStatusException for a retryable status that outlasted its retries
      * @throws IOException for a transport failure that did
      */
-    private suspend fun get(request: Request, cached: File, doi: String): Ending = NetworkRetry.withExponentialBackoff(
+    private suspend fun get(request: Request, cached: File, doi: String, title: String?): Ending = NetworkRetry.withExponentialBackoff(
         maxRetries = maxRetries,
         initialDelayMs = initialBackoffMs,
         shouldRetry = { NetworkRetry.isRetryableException(it) }
@@ -494,7 +521,7 @@ class ElsevierService internal constructor(
                 if (response.code in Constants.ELSEVIER_RETRYABLE_STATUSES) {
                     throw RetryableStatusException(response.code)
                 }
-                answered(response, cached, doi)
+                answered(response, cached, doi, title)
             }
         }
     }
@@ -504,13 +531,14 @@ class ElsevierService internal constructor(
      * PDF served.
      *
      * A first page is told by its header alone. A 200 is read to its first bytes
-     * (`%PDF`), then, a PDF, streamed to `<name>.part` and renamed into place; a 403
+     * (`%PDF`), then, a PDF, streamed to a partial file of its own, checked there against
+     * the title and renamed into place only when not refused (#560); a 403
      * is read to [Constants.ELSEVIER_ERROR_BODY_MAX_BYTES] for the token, and nothing
      * of it is logged or kept. No other body is read.
      *
      * @throws IOException if the body could not be read (retried by the caller)
      */
-    private fun answered(response: Response, cached: File, doi: String): Ending {
+    private suspend fun answered(response: Response, cached: File, doi: String, title: String?): Ending {
         val code = response.code
         val headers = response.headers.toList()
         val source = response.body?.source()
@@ -523,26 +551,40 @@ class ElsevierService internal constructor(
         }
         val answer = Elsevier.classify(code, headers, prefix)
         if (answer != ElsevierAnswer.Served || source == null) return Ending(code, answer)
-        return Ending(code, answer, save(source, cached, doi))
+        return Ending(code, answer, save(source, cached, doi, title))
     }
 
     /**
-     * Stream a PDF served to its cache file, through a `.part` file renamed into
-     * place only once it arrived whole and begins with `%PDF`.
+     * Stream a PDF served to its cache file, through a partial file of its own
+     * (`<name>.<n>.part`, so two fetches never write one file) renamed into place only
+     * once it arrived whole, begins with `%PDF` and was not refused by its title check
+     * (#560): another article's is set aside beside the cache name and never takes it.
      *
-     * @return Served, or NotSaved (logged at ERROR with its cause) when it could not be written
+     * @return Served; WrongArticle; or NotSaved (logged at ERROR with its cause) when
+     *   it could not be written
      * @throws IOException if the body could not be read
      */
-    private fun save(source: BufferedSource, cached: File, doi: String): ElsevierFetch {
-        val partial = File(cached.parentFile, cached.name + PDF_PARTIAL_SUFFIX)
-        try {
+    private suspend fun save(source: BufferedSource, cached: File, doi: String, title: String?): ElsevierFetch {
+        val partial = try {
             cached.parentFile?.mkdirs()
+            File.createTempFile(cached.name + ".", PDF_PARTIAL_SUFFIX, cached.parentFile)
+        } catch (e: IOException) {
+            Log.e(
+                TAG,
+                "$SERVICE served the PDF for DOI $doi, and it could not be saved on this device " +
+                    "(${e.javaClass.simpleName})"
+            )
+            return ElsevierFetch.NotSaved
+        }
+        try {
             source.inputStream().copyToCache(partial)
             if (!isCachedPdf(partial)) {
                 // Its first bytes were %PDF; a file that is not one now was not written as served
                 Log.e(TAG, "$SERVICE served the PDF for DOI $doi, and it could not be saved on this device (written incomplete)")
                 return ElsevierFetch.NotSaved
             }
+            // Logged and set aside by the check
+            if (refuses(partial.path, title, cached)) return ElsevierFetch.WrongArticle
             if (!partial.renameTo(cached)) {
                 Log.e(TAG, "$SERVICE served the PDF for DOI $doi, and it could not be saved on this device (rename failed)")
                 return ElsevierFetch.NotSaved

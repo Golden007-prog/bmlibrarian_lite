@@ -209,9 +209,9 @@ class FactCheckViewModelFullTextTest {
     fun `OpenAlex is asked through the service once Unpaywall's PDFs failed`() {
         val unpaywallPdf = "https://repo.example.org/a.pdf"
         val openAlexPdf = "https://oa.example.org/b.pdf"
-        coEvery { fullTextService.downloadPdf(unpaywallPdf, any()) } returns
+        coEvery { fullTextService.downloadPdf(unpaywallPdf, "d", document.title) } returns
             PdfDownload.Failed(RequestFailure.forHttpStatus(404))
-        coEvery { fullTextService.downloadPdf(openAlexPdf, any()) } returns PdfDownload.Saved("/cache/d.pdf")
+        coEvery { fullTextService.downloadPdf(openAlexPdf, "d", document.title) } returns PdfDownload.Saved("/cache/d.pdf")
         coEvery { fullTextService.openAlexSteps("10.1/x", listOf(unpaywallPdf)) } returns
             listOf(OpenAccessStep.Candidate(openAlexPdf, PdfNamer.OPENALEX))
 
@@ -234,7 +234,7 @@ class FactCheckViewModelFullTextTest {
     @Test
     fun `CORE is asked through the service once every PDF failed`() {
         val unpaywallPdf = "https://repo.example.org/a.pdf"
-        coEvery { fullTextService.downloadPdf(unpaywallPdf, any()) } returns
+        coEvery { fullTextService.downloadPdf(unpaywallPdf, "d", document.title) } returns
             PdfDownload.Failed(RequestFailure.forHttpStatus(404))
         coEvery { fullTextService.askCore("10.1/x") } returns CoreFetch.Served("core text")
 

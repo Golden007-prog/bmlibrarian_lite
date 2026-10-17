@@ -245,11 +245,9 @@ class FullTextViewModelElsevierTest {
     @Test
     fun `a render of another article with no DOI offers no link, told`() = runBlocking {
         val render = "https://europepmc.org/articles/PMC1/pdf"
-        val saved = File(folder.root, "d.pdf")
-        coEvery { fullTextService.downloadPdf(render, "d") } answers {
-            writeTitledPdf(saved, "Using Effect Size - or Why the P Value Is Not Enough\nGail M. Sullivan")
-            PdfDownload.Saved(saved.path)
-        }
+        // Refused by the download's own title check (#546, #561)
+        coEvery { fullTextService.downloadPdf(render, "d", "Caffeine and blood pressure: a critical review") } returns
+            PdfDownload.WrongArticle
         val viewModel = open(
             document.copy(doi = null, title = "Caffeine and blood pressure: a critical review"),
             answer = FullTextService.FullTextResult.EuropePmcPdf(render)
@@ -308,7 +306,7 @@ class FullTextViewModelElsevierTest {
             state
         )
         assertFalse("$state", state is FullTextViewModel.FullTextState.WebUrl)
-        coVerify(exactly = 0) { fullTextService.downloadPdf(any(), any()) }
+        coVerify(exactly = 0) { fullTextService.downloadPdf(any(), any(), any()) }
         coVerify {
             documentDao.update(
                 match {

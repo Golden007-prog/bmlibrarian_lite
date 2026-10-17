@@ -5,7 +5,6 @@ import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService.FullText
 import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
 import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
 import com.bmlibrarian.factchecker.domain.model.RequestFailure
-import com.bmlibrarian.factchecker.util.Constants
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -17,10 +16,11 @@ import org.junit.rules.TemporaryFolder
 import java.io.File
 
 /**
- * A PDF the recording saves is checked against the document's title (#546): another
- * article's is set aside unread, recorded as a wrong-article skip with its address,
- * and never an absence. An open-access candidate's lets the walk go on; a render's
- * ends the fetch on the DOI link, or with no DOI on no link.
+ * Another article's PDF, refused by the download's own title check before it is
+ * cached (#546, #561), is recorded as a wrong-article skip with its address, and
+ * never an absence. An open-access candidate's lets the walk go on; a render's
+ * ends the fetch on the DOI link, or with no DOI on no link. The check itself is
+ * `FullTextServicePdfDownloadTest`'s.
  */
 class WrongArticleRecordingTest {
     @get:Rule
@@ -38,16 +38,15 @@ class WrongArticleRecordingTest {
 
     /** Where the download saves, as `FullTextService.downloadPdf` saves every PDF of a document. */
     private val saved: File get() = File(folder.root, "d.pdf")
-    private val setAside: File get() = File(folder.root, "d.pdf" + Constants.PDF_MISMATCH_SUFFIX)
 
-    /** A download that saves another article's PDF for [wrong] and this one's otherwise. */
+    /** A download whose check refuses [wrong] and the render, and saves anything else. */
     private val download: suspend (String) -> PdfDownload = { url ->
         if (url == wrong || url == render) {
-            writeTitledPdf(saved, "Using Effect Size - or Why the P Value Is Not Enough\nGail M. Sullivan")
+            PdfDownload.WrongArticle
         } else {
-            writeTitledPdf(saved, "Caffeine and blood pressure: a critical review\nAbstract")
+            saved.writeText("%PDF-1.7")
+            PdfDownload.Saved(saved.path)
         }
-        PdfDownload.Saved(saved.path)
     }
 
     private fun document(title: String = this.title, doi: String? = this.doi) =
@@ -57,12 +56,11 @@ class WrongArticleRecordingTest {
         FullTextResult.OpenAccessPdfs(urls.map { OpenAccessStep.Candidate(it, PdfNamer.UNPAYWALL) }, doi)
 
     @Test
-    fun `another article's PDF is set aside and the next candidate is tried`() = runTest {
+    fun `another article's PDF is told and the next candidate is tried`() = runTest {
         val recorded = document().recordingFullTextFetch(found(wrong, right), download, noOpenAlex, noCore)
         assertEquals(FullTextResult.OpenAccessPdf(right, doi, PdfNamer.UNPAYWALL), recorded.result)
         assertEquals(saved.path, recorded.document.pdfPath)
         assertNull("a copy served settles the question", recorded.document.fullTextOpenAccessShortfallJson)
-        assertTrue("set aside, not deleted", setAside.isFile)
     }
 
     @Test
@@ -73,7 +71,6 @@ class WrongArticleRecordingTest {
         assertEquals(expected, recorded.document.openAccessShortfall)
         assertNull(recorded.document.pdfPath)
         assertFalse(recorded.document.fullTextUnavailable)
-        assertFalse("never left to be served", saved.exists())
         assertEquals(
             "Failed to obtain a PDF from the following tried sources: wrong.example.org, named by Unpaywall " +
                 "(another article's PDF). A freely available copy may exist. Whether this document is open " +
@@ -96,65 +93,27 @@ class WrongArticleRecordingTest {
         assertEquals(FullTextResult.DoiUrl(doiLink(doi), expected), recorded.result)
     }
 
-    /** The control: a document stored with no title checks nothing. */
-    @Test
-    fun `a document with no title checks nothing`() = runTest {
-        val recorded = document(title = "").recordingFullTextFetch(found(wrong, right), download, noOpenAlex, noCore)
-        assertEquals(FullTextResult.OpenAccessPdf(wrong, doi, PdfNamer.UNPAYWALL), recorded.result)
-        assertEquals(saved.path, recorded.document.pdfPath)
-        assertFalse(setAside.exists())
-    }
-
     /**
-     * A PDF the check could not judge is kept, never refused: a scan has no text to
-     * compare, and a truncated PDF cannot be read. Only a mismatch refuses.
+     * A refusal never stops the walk (#561): the download checks a PDF before it
+     * takes the document's cache name, so nothing it left there can be handed to
+     * the next candidate, and every later candidate and OpenAlex are still asked.
      */
     @Test
-    fun `a PDF the check cannot judge is kept`() = runTest {
-        val unjudged = mapOf<String, (File) -> Unit>(
-            "a scan" to { file -> writeTitledPdf(file, "") },
-            "a truncated PDF" to { file -> file.writeText("%PDF-1.7\n1 0 obj\n<<") }
-        )
-        for ((name, write) in unjudged) {
-            val recorded = document().recordingFullTextFetch(
-                found(wrong),
-                downloadPdf = { write(saved); PdfDownload.Saved(saved.path) },
-                askOpenAlex = noOpenAlex,
-                askCore = noCore
-            )
-            assertEquals(name, FullTextResult.OpenAccessPdf(wrong, doi, PdfNamer.UNPAYWALL), recorded.result)
-            assertEquals(name, saved.path, recorded.document.pdfPath)
-            assertFalse(name, setAside.exists())
-        }
-    }
-
-    /**
-     * Another article's PDF that can be neither renamed nor deleted ends the walk:
-     * every PDF of a document is saved under one name, so the next candidate would
-     * be handed that file and refused under its own address. The question stays open.
-     */
-    @Test
-    fun `a refused PDF that cannot be moved ends the walk`() = runTest {
+    fun `a refusal lets every later source be asked`() = runTest {
         val asked = mutableListOf<String>()
         var openAlexAsked = false
-        try {
-            val recorded = document().recordingFullTextFetch(
-                found(wrong, right),
-                downloadPdf = { url ->
-                    asked += url
-                    download(url).also { folder.root.setWritable(false) }
-                },
-                askOpenAlex = { _, _ -> openAlexAsked = true; emptyList() },
-                askCore = noCore
-            )
-            assertEquals(listOf(wrong), asked)
-            assertFalse(openAlexAsked)
-            val expected = OpenAccessShortfall.wrongArticle(OpenAccessSource.PDF, wrong)
-            assertEquals(FullTextResult.DoiUrl(doiLink(doi), expected), recorded.result)
-            assertNull(recorded.document.pdfPath)
-        } finally {
-            folder.root.setWritable(true)
-        }
+        val recorded = document().recordingFullTextFetch(
+            found(wrong, wrong + "?again"),
+            downloadPdf = { url -> asked += url; PdfDownload.WrongArticle },
+            askOpenAlex = { _, _ -> openAlexAsked = true; listOf(OpenAccessStep.Candidate(right, PdfNamer.OPENALEX)) },
+            askCore = noCore
+        )
+        assertEquals(listOf(wrong, wrong + "?again", right), asked)
+        assertTrue(openAlexAsked)
+        val expected = OpenAccessShortfall.wrongArticle(OpenAccessSource.PDF, wrong) +
+            OpenAccessShortfall.wrongArticle(OpenAccessSource.PDF, wrong + "?again") +
+            OpenAccessShortfall.wrongArticle(OpenAccessSource.OPENALEX_PDF, right)
+        assertEquals(FullTextResult.DoiUrl(doiLink(doi), expected), recorded.result)
     }
 
     // ==================== Europe PMC's render ====================
@@ -166,7 +125,6 @@ class WrongArticleRecordingTest {
         assertEquals(FullTextResult.DoiUrl(doiLink(doi), expected), recorded.result)
         assertEquals(expected, recorded.document.openAccessShortfall)
         assertNull(recorded.document.pdfPath)
-        assertTrue(setAside.isFile)
         assertEquals(
             "Failed to obtain a PDF from the following tried sources: europepmc.org, named by Europe PMC " +
                 "(another article's PDF). A freely available copy may exist. Whether this document is open " +
@@ -186,7 +144,6 @@ class WrongArticleRecordingTest {
         val expected = OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, render)
         assertEquals(FullTextResult.OpenAccessNotEstablished(expected), recorded.result)
         assertEquals("recorded nothing", stored, recorded.document)
-        assertTrue(setAside.isFile)
         assertEquals(
             "No source provided this article's full text. Failed to obtain a PDF from the following tried " +
                 "sources: europepmc.org, named by Europe PMC (another article's PDF). A freely available copy " +

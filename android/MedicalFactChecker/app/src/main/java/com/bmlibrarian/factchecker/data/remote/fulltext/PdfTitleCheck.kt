@@ -10,6 +10,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.attribute.BasicFileAttributes
 import java.text.Normalizer
 import java.util.Locale
 
@@ -365,39 +367,79 @@ object PdfTitleChecker {
 }
 
 /**
+ * A file's identity and contents as far as its metadata tells them: its file key
+ * (device and inode, where the platform gives one), size and modification time.
+ */
+private data class FileStamp(val key: Any?, val size: Long, val modified: Long)
+
+/**
+ * [file]'s stamp, or null when it cannot be read (gone, most often).
+ *
+ * @param file The file
+ * @return Its stamp, or null
+ */
+private fun stampOf(file: File): FileStamp? = try {
+    val attributes = Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)
+    FileStamp(attributes.fileKey(), attributes.size(), attributes.lastModifiedTime().toMillis())
+} catch (e: IOException) {
+    null
+}
+
+/**
  * Whether a saved PDF is another article's, and so refused: its first page with
  * text does not carry [title] (#546). A refused PDF is set aside
  * ([setAsideWrongArticle]) and never read; a check that judged nothing (no title,
  * no text, a translated title, a file iText cannot read) leaves it in use.
  *
+ * The file is set aside only if it is still the file checked. Every PDF of a
+ * document is cached under one name, so a download a concurrent fetch checked and
+ * moved in can replace the cached file during this check; set aside by its path,
+ * this article's PDF would go with it, and the fetch would store a path to
+ * nothing. A file replaced or gone meanwhile is left to the check its own fetch
+ * gave it, and answered as not refused: the caller reads what the name now holds,
+ * or finds it gone.
+ *
  * Read off the main thread: iText parses the page.
  *
- * @param path The saved PDF
+ * @param path The saved PDF, or a download waiting for its check
  * @param title The article's title; null checks nothing
+ * @param cacheName The cache name a refused file's set-aside name follows: the
+ *   file itself for a cached PDF, the name beside which a download waits (#561)
+ * @param check The title check; [PdfTitleChecker.check] but in a test
  * @return Whether it was refused
  */
-internal suspend fun refusedAsAnotherArticle(path: String, title: String?): Boolean {
+internal suspend fun refusedAsAnotherArticle(
+    path: String,
+    title: String?,
+    cacheName: File,
+    check: (File, String) -> PdfTitleCheck = PdfTitleChecker::check
+): Boolean {
     val file = File(path)
     // A missing file is never refused (it would read as unreadable), so it is
     // answered here without a thread hop
     if (title == null || !file.isFile) return false
     return withContext(Dispatchers.IO) {
-        val check = PdfTitleChecker.check(file, title)
-        if (!check.refusesPdf) {
+        val checked = stampOf(file)
+        val outcome = check(file, title)
+        if (!outcome.refusesPdf) {
             // Told apart from a match in the log: a PDF kept unjudged was never
             // checked. Unreadable was logged by the check, with its cause
-            if (check.share == null && check != PdfTitleCheck.Unreadable) {
-                Log.i("PdfTitleChecker", "${file.name} kept unjudged: ${check.outcomeName}")
+            if (outcome.share == null && outcome != PdfTitleCheck.Unreadable) {
+                Log.i("PdfTitleChecker", "${file.name} kept unjudged: ${outcome.outcomeName}")
             }
             return@withContext false
         }
-        val percent = Math.round((check.share ?: 0.0) * PERCENT)
+        val percent = Math.round((outcome.share ?: 0.0) * PERCENT)
         Log.w(
             "PdfTitleChecker",
             "${file.name} is another article's: its first page with text carries $percent% of the " +
                 "title's word pairs; set aside unread"
         )
-        setAsideWrongArticle(file)
+        if (checked == null || stampOf(file) != checked) {
+            Log.i("PdfTitleChecker", "${file.name} was replaced or removed during its check; not set aside")
+            return@withContext false
+        }
+        setAsideWrongArticle(file, cacheName)
         true
     }
 }

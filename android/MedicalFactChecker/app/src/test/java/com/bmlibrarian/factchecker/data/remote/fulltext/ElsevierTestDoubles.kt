@@ -22,5 +22,5 @@ import io.mockk.mockk
 
 /** Elsevier with no key: never asked, as for a user without one. A relaxed mock returns null too, but say it. */
 internal fun absentElsevier(): ElsevierService = mockk {
-    coEvery { fetchPdf(any()) } returns null
+    coEvery { fetchPdf(any(), any()) } returns null
 }
