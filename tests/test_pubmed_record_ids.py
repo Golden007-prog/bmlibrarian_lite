@@ -149,6 +149,66 @@ def test_record_for_pmid_strips_the_text_it_compares() -> None:
     assert served_pmids(root) == ["7"]
 
 
+def test_a_zero_padded_pmid_finds_its_record() -> None:
+    """A zero-padded PMID finds the record efetch serves for it.
+
+    efetch answers ``id=0033301246`` with ``<PMID>33301246</PMID>``; a
+    textual comparison read that as a record for another PMID.
+    """
+    root = ET.fromstring(BODY)
+    found = record_for_pmid(root, "0033301246")
+    assert found is not None
+    assert found.findtext("MedlineCitation/PMID") == PMID
+    assert record_for_pmid(root, " 0033301246\n") is not None  # stripped too
+
+
+def test_a_zero_padded_record_pmid_matches_the_plain_one() -> None:
+    """Leading zeros on the record's own PMID are not a different paper."""
+    root = ET.fromstring(
+        "<PubmedArticleSet><PubmedArticle><MedlineCitation>"
+        "<PMID>007</PMID></MedlineCitation></PubmedArticle>"
+        "</PubmedArticleSet>"
+    )
+    assert record_for_pmid(root, "7") is not None
+    assert record_for_pmid(root, "70") is None  # only leading zeros go
+
+
+def test_zeros_are_dropped_only_from_ascii_digit_pmids() -> None:
+    """A PMID that is not all ASCII digits is compared as text, zeros kept."""
+    root = ET.fromstring(
+        "<PubmedArticleSet><PubmedArticle><MedlineCitation>"
+        "<PMID>0A7</PMID></MedlineCitation></PubmedArticle>"
+        "<PubmedArticle><MedlineCitation>"
+        "<PMID>\u0667</PMID></MedlineCitation></PubmedArticle>"
+        "</PubmedArticleSet>"
+    )
+    assert record_for_pmid(root, "A7") is None
+    assert record_for_pmid(root, "0A7") is not None
+    # ARABIC-INDIC DIGIT SEVEN is a digit to str.isdigit, but not ASCII.
+    assert record_for_pmid(root, "7") is None
+    assert record_for_pmid(root, "0\u0667") is None
+
+
+def test_an_all_zero_pmid_does_not_match_a_record_without_one() -> None:
+    """"000" canonicalises to nothing, but a missing PMID is not a match."""
+    root = ET.fromstring(
+        "<PubmedArticleSet><PubmedArticle><MedlineCitation>"
+        "<PMID>  </PMID></MedlineCitation></PubmedArticle>"
+        "<PubmedArticle><MedlineCitation/></PubmedArticle>"
+        "</PubmedArticleSet>"
+    )
+    assert record_for_pmid(root, "000") is None
+
+
+def test_the_transparency_parser_serves_a_zero_padded_pmid() -> None:
+    """_parse_pubmed_xml serves the record for a zero-padded PMID."""
+    fetch = PubMedClient("t@example.com")._parse_pubmed_xml(BODY, "0033301246")
+    assert not fetch.is_unreachable
+    assert fetch.record is not None
+    assert fetch.record["pmcid"] == OWN_PMC
+    assert fetch.record["doi"] == OWN_DOI
+
+
 def test_a_record_without_its_own_pmid_is_not_matched_by_a_cited_one() -> None:
     """A record without its own pmid is not matched by a cited one."""
     root = ET.fromstring(

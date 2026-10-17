@@ -10,7 +10,8 @@ another article's full text (bmlib#474 and the defect beside it).
 
 A body can also hold records other than the one asked about, or only a
 record for another PMID; the record is selected by its own
-``MedlineCitation/PMID``, never by position.
+``MedlineCitation/PMID``, never by position, compared in canonical form:
+efetch answers ``id=0033301246`` with ``<PMID>33301246</PMID>``.
 
 These are pure functions over :mod:`xml.etree.ElementTree` elements.
 """
@@ -68,6 +69,26 @@ def served_pmids(root: ET.Element) -> list[str]:
     return pmids
 
 
+def _comparable_pmid(pmid: str) -> str:
+    """The form in which two PMIDs are compared.
+
+    Stripped; a PMID that is all ASCII digits also loses its leading zeros,
+    since efetch serves ``id=0033301246`` as ``<PMID>33301246</PMID>``.
+    Anything else is compared as its stripped text, so a malformed PMID is
+    never made to match a real one.
+
+    Args:
+        pmid: A PMID, asked about or read from a record.
+
+    Returns:
+        The PMID in comparable form.
+    """
+    text = pmid.strip()
+    if text.isascii() and text.isdigit():
+        return text.lstrip("0")
+    return text
+
+
 def record_for_pmid(root: ET.Element, pmid: str) -> ET.Element | None:
     """The ``PubmedArticle`` that is the record for ``pmid``.
 
@@ -77,12 +98,13 @@ def record_for_pmid(root: ET.Element, pmid: str) -> ET.Element | None:
 
     Returns:
         The first ``PubmedArticle`` whose direct-child
-        ``MedlineCitation/PMID`` text, stripped, equals ``pmid``; ``None``
-        when the body holds no record for it.
+        ``MedlineCitation/PMID`` equals ``pmid``, both compared stripped
+        and, when all ASCII digits, without leading zeros; ``None`` when
+        the body holds no record for it.
     """
-    wanted = pmid.strip()
+    wanted = _comparable_pmid(pmid)
     for article in root.iter(PUBMED_ARTICLE_TAG):
-        text = (article.findtext(PUBMED_RECORD_PMID_PATH) or "").strip()
-        if text == wanted:
+        text = article.findtext(PUBMED_RECORD_PMID_PATH) or ""
+        if text.strip() and _comparable_pmid(text) == wanted:
             return article
     return None
