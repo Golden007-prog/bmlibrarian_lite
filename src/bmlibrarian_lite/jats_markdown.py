@@ -82,7 +82,8 @@ logger = logging.getLogger(__name__)
 #: 6: bmlib#111 -- an author role declared on the ``<contrib-group>``
 #: (``content-type="author"``) reaches its bare ``<contrib>`` children, and
 #: every group is read, not only the first; a bare contributor is inferred only
-#: from a group directly in ``<article-meta>`` (bmlib#266).
+#: from a group directly in ``<article-meta>`` (bmlib#266); a contributor
+#: named only in ``<name-alternatives>`` is named by its last spelling.
 JATS_MARKDOWN_CONVERTER_VERSION = 6
 
 #: The line that opens end matter: before the back matter and the
@@ -309,13 +310,14 @@ def _front_matter(front: ET.Element) -> str:
         if article_title is not None:
             parts.append(f"# {text_of(article_title)}")
 
-    meta_for_authors = front.find(".//article-meta")
-    authors = _article_authors(front if meta_for_authors is None else meta_for_authors)
+    article_meta = front.find(".//article-meta")
+    # Only the article's own <article-meta> names its authors, as on Swift and
+    # Android; a <front> without one has no contributor list of the article's.
+    authors = _article_authors(article_meta) if article_meta is not None else []
     if authors:
         parts.append(f"**Authors:** {', '.join(authors)}")
 
     journal_meta = front.find(".//journal-meta")
-    article_meta = front.find(".//article-meta")
 
     meta_parts = []
     if journal_meta is not None:
@@ -371,6 +373,11 @@ def _article_authors(article_meta: ET.Element) -> list[str]:
     A ``<contrib>`` is not entered, so the member roster of a ``<collab>``
     inside it is never listed as the article's authors.
 
+    A contributor named only in ``<name-alternatives>`` is named by its last
+    ``<name>``, as bmlib's parser (bmlib#143) and the apps' parsers do: the
+    real articles that use it (Chinese and Korean journals) put the
+    native-script spelling first and the Latin one last.
+
     Args:
         article_meta: The article's ``<article-meta>`` (or any element holding
             its contributor groups as direct children).
@@ -381,8 +388,16 @@ def _article_authors(article_meta: ET.Element) -> list[str]:
     authors: list[str] = []
 
     def walk(element: ET.Element, declared: list[str], anchored: bool) -> None:
-        # ``anchored``: inside a contrib-group that is a direct child of
-        # ``article_meta``, where a bare contributor's role may be inferred.
+        """Collect the authors among ``element``'s descendants into ``authors``.
+
+        Args:
+            element: The element whose children are visited.
+            declared: The ``content-type`` of each enclosing contrib-group,
+                outermost first; an empty string where a group declares none.
+            anchored: Whether ``element`` is inside a contrib-group that is a
+                direct child of ``article_meta``, where a bare contributor's
+                role may be inferred.
+        """
         for child in element:
             if child.tag == "contrib-group":
                 walk(
@@ -399,6 +414,9 @@ def _article_authors(article_meta: ET.Element) -> list[str]:
                 if role and role.lower() != "author":
                     continue
                 name = child.find("name")
+                if name is None:
+                    spellings = child.findall("name-alternatives/name")
+                    name = spellings[-1] if spellings else None
                 if name is None:
                     continue
                 surname = name.findtext("surname", "")

@@ -220,3 +220,88 @@ class TestBareContributorsAreInferredOnlyFromTheArticlesOwnGroups:
         markdown = jats_to_markdown(xml)
         assert "**Authors:** A Smith" in markdown
         assert "SupEd" not in markdown
+
+
+class TestScopeAndNaming:
+    """The innermost declared role, the article's own scope, and its names."""
+
+    def test_a_bare_roster_inside_an_editor_group_stays_editors(self) -> None:
+        """The innermost *declared* group decides, not the innermost group.
+
+        An undeclared group nested in an editor group inherits ``editor``;
+        reading the innermost group even when it declares nothing (Swift's
+        rule before PR #570) would make its bare contributors authors.
+        """
+        meta = _meta(
+            '<contrib-group content-type="editor"><contrib-group>'
+            f"{_contrib('Ed')}</contrib-group></contrib-group>"
+            f'<contrib-group content-type="author">{_contrib("Smith")}</contrib-group>'
+        )
+        assert _article_authors(meta) == ["A Smith"]
+
+    def test_an_own_author_role_in_a_sub_article_front_stub_adds_no_author(self) -> None:
+        """PLOS lists a decision letter's academic editor as contrib-type="author".
+
+        The shape of ``PMC13298931``'s ``aggregated-review-documents``
+        sub-article: that editor is not the article's author.
+        """
+        xml = (
+            "<article><front><article-meta>"
+            f'<contrib-group content-type="author">{_contrib("Smith")}</contrib-group>'
+            "</article-meta></front>"
+            '<sub-article article-type="aggregated-review-documents">'
+            '<front-stub><contrib-group><contrib contrib-type="author">'
+            "<name><surname>Reviewer</surname><given-names>R</given-names></name>"
+            "<role>Academic Editor</role></contrib></contrib-group>"
+            "</front-stub></sub-article></article>"
+        )
+        markdown = jats_to_markdown(xml)
+        assert "**Authors:** A Smith" in markdown
+        assert "Reviewer" not in markdown
+
+    def test_an_own_author_role_in_journal_meta_adds_no_author(self) -> None:
+        """Only the article's own ``<article-meta>`` names its authors."""
+        xml = (
+            "<article><front><journal-meta><contrib-group>"
+            f"{_contrib('Editor', attrs=AUTHOR)}</contrib-group></journal-meta>"
+            f'<article-meta><contrib-group content-type="author">{_contrib("Smith")}'
+            "</contrib-group></article-meta></front></article>"
+        )
+        markdown = jats_to_markdown(xml)
+        assert "**Authors:** A Smith" in markdown
+        assert "Editor" not in markdown
+
+    def test_a_front_without_article_meta_names_no_author(self) -> None:
+        """No ``<article-meta>``, no contributor list of the article's own.
+
+        As on Swift and Android; none of 1,623 real PMC articles lacks one.
+        """
+        xml = (
+            "<article><front><contrib-group>"
+            f"{_contrib('Smith', attrs=AUTHOR)}</contrib-group></front></article>"
+        )
+        assert "**Authors:**" not in jats_to_markdown(xml)
+
+    def test_name_alternatives_give_the_last_spelling(self) -> None:
+        """A contributor named only in ``<name-alternatives>`` is listed.
+
+        The contributor of ``PMC12337215`` (Chinese Journal of Hematology),
+        verbatim: nine real articles in the survey corpus name every
+        contributor this way and rendered no author line. The last spelling
+        is the one bmlib (bmlib#143), Swift and Android keep.
+        """
+        meta = _meta(
+            '<contrib-group><contrib contrib-type="author"><name-alternatives>'
+            '<name name-style="eastern"><surname>周</surname>'
+            '<given-names initials="诚程">诚程</given-names></name>'
+            '<name xml:lang="en" name-style="western"><surname>Zhou</surname>'
+            '<given-names initials="C">Chengcheng</given-names></name>'
+            '</name-alternatives><xref rid="aff1" ref-type="aff">1</xref>'
+            "</contrib></contrib-group>"
+        )
+        assert _article_authors(meta) == ["Chengcheng Zhou"]
+
+    def test_a_direct_name_is_read_as_before(self) -> None:
+        """Control: a contributor with a direct ``<name>`` is read as before."""
+        meta = _meta(f"<contrib-group>{_contrib('Smith', attrs=AUTHOR)}</contrib-group>")
+        assert _article_authors(meta) == ["A Smith"]
