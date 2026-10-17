@@ -107,4 +107,44 @@ class JATSAuthorRoleTest {
             </contrib-group>"""
         assertEquals(listOf("Smith"), authors(groups))
     }
+
+    /** The authors of a whole article whose `<front>` holds [front] and which holds [after] after `<body>`. */
+    private fun authorsOf(front: String, after: String = ""): List<String> = JATSXMLParser(
+        """
+        <?xml version="1.0"?>
+        <article><front>$front</front>
+        <body><sec><title>Intro</title><p>Text.</p></sec></body>$after</article>
+        """.trimIndent().toByteArray()
+    ).parseToArticle().authors.map { it.surname }
+
+    private val ownMeta = """<article-meta><title-group><article-title>T</article-title></title-group>
+        <contrib-group content-type="author">${contrib("Smith")}</contrib-group></article-meta>"""
+
+    @Test
+    fun `a bare contrib in journal-meta adds no author`() {
+        val front = """<journal-meta><contrib-group>${contrib("Editor")}</contrib-group></journal-meta>$ownMeta"""
+        assertEquals(listOf("Smith"), authorsOf(front))
+    }
+
+    @Test
+    fun `a bare contrib in a sub-article front-stub adds no author`() {
+        val after = """<sub-article><front-stub><contrib-group>${contrib("Reviewer")}</contrib-group></front-stub></sub-article>"""
+        assertEquals(listOf("Smith"), authorsOf(ownMeta, after))
+    }
+
+    @Test
+    fun `a bare contrib in a sub-article front article-meta adds no author`() {
+        val after = """<sub-article><front><article-meta><contrib-group>${contrib("Reviewer")}</contrib-group>
+            </article-meta></front></sub-article>"""
+        assertEquals(listOf("Smith"), authorsOf(ownMeta, after))
+    }
+
+    @Test
+    fun `the innermost declared content-type decides in nested groups`() {
+        val groups = """<contrib-group content-type="author">
+            <contrib-group content-type="editor">${contrib("Ed")}</contrib-group>
+            <contrib-group>${contrib("Smith")}</contrib-group>
+            </contrib-group>"""
+        assertEquals(listOf("Smith"), authors(groups))
+    }
 }

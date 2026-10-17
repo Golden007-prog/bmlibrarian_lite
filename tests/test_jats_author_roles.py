@@ -125,3 +125,30 @@ def test_the_author_line_reaches_the_markdown() -> None:
         "</article-meta></front></article>"
     )
     assert "**Authors:** A Smith" in jats_to_markdown(xml)
+
+
+def test_a_journal_meta_group_adds_no_author() -> None:
+    """The journal's editors, in ``<journal-meta>``, are not the article's authors."""
+    xml = (
+        "<article><front><journal-meta>"
+        f"<contrib-group>{_contrib('Editor')}</contrib-group></journal-meta>"
+        f'<article-meta><contrib-group content-type="author">{_contrib("Smith")}'
+        "</contrib-group></article-meta></front></article>"
+    )
+    markdown = jats_to_markdown(xml)
+    assert "**Authors:** A Smith" in markdown
+    assert "Editor" not in markdown
+
+
+def test_a_sub_article_front_stub_adds_no_author() -> None:
+    """A sub-article's reviewers are not the article's authors."""
+    xml = (
+        "<article><front><article-meta>"
+        f'<contrib-group content-type="author">{_contrib("Smith")}</contrib-group>'
+        "</article-meta></front><sub-article><front-stub>"
+        f"<contrib-group>{_contrib('Reviewer')}</contrib-group>"
+        "</front-stub></sub-article></article>"
+    )
+    markdown = jats_to_markdown(xml)
+    assert "**Authors:** A Smith" in markdown
+    assert "Reviewer" not in markdown

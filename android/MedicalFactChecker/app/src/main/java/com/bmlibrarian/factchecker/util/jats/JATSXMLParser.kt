@@ -240,13 +240,16 @@ class JATSXMLParser(
      * innermost enclosing `<contrib-group>` that declares a non-empty
      * `content-type` decides; where none does, the contributor is an author. An
      * empty attribute declares nothing, and the comparison folds case. A bare
-     * contributor outside `<front>` (a reference's) is not inferred an author.
+     * contributor is inferred an author only inside the article's own `<article-meta>`.
      */
     private fun isAuthorContrib(contribType: String?): Boolean {
         val own = contribType?.trim().orEmpty()
         if (own.isNotEmpty()) return own.equals("author", ignoreCase = true)
-        // A collaboration's member roster is not the article's authors.
-        if (!inFront || "collab" in elementStack) return false
+        // Only the article's own front > article-meta: not journal-meta (the
+        // journal's editors), not a sub-article or response (its reviewers), and
+        // not a collaboration's member roster.
+        if (!inArticleMeta || "collab" in elementStack) return false
+        if ("sub-article" in elementStack || "response" in elementStack) return false
         val declared = contribGroupTypes.lastOrNull { it.isNotEmpty() }
         return declared == null || declared.equals("author", ignoreCase = true)
     }
