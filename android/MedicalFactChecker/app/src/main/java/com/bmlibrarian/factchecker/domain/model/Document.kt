@@ -19,6 +19,7 @@
 package com.bmlibrarian.factchecker.domain.model
 
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
+import com.bmlibrarian.factchecker.data.remote.fulltext.Pmid
 import com.bmlibrarian.factchecker.util.Constants
 import java.util.Date
 
@@ -162,12 +163,21 @@ data class Document(
         get() = doi?.let { "${Constants.DOI_URL_PREFIX}$it" }
 
     /**
+     * The PMID as a PubMed link may carry it: canonical digits (bmlib#470).
+     *
+     * @return The canonical PMID, or null when there is none or the stored
+     *   value is not one (a refused value, or a PMC ID).
+     */
+    val pubmedId: String?
+        get() = pmid?.let { Pmid.canonical(it).pmid }
+
+    /**
      * Get PubMed URL.
      *
-     * @return Full PubMed URL or null if no PMID
+     * @return Full PubMed URL, or null if there is no usable PMID
      */
     val pubmedUrl: String?
-        get() = pmid?.let { "${Constants.PUBMED_URL_PREFIX}$it/" }
+        get() = pmid?.let { Pmid.pubmedUrl(it) }
 
     /**
      * Get PMC URL.

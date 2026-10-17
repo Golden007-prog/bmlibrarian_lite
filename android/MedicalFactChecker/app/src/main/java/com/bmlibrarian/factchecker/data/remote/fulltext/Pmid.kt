@@ -17,6 +17,7 @@
  */
 package com.bmlibrarian.factchecker.data.remote.fulltext
 
+import com.bmlibrarian.factchecker.data.remote.europepmc.FullTextAccession
 import com.bmlibrarian.factchecker.util.Constants
 
 /**
@@ -44,7 +45,6 @@ data class PmidReading(
  */
 object Pmid {
     private val PMID_REGEX = Regex("[0-9]+")
-    private const val PMC_PREFIX = "PMC"
 
     /**
      * Read a caller's PMID.
@@ -65,7 +65,8 @@ object Pmid {
             val stripped = text.trimStart('0')
             return if (stripped.isEmpty()) PmidReading(refused = true) else PmidReading(pmid = stripped)
         }
-        if (text.startsWith(PMC_PREFIX) && PMID_REGEX.matches(text.removePrefix(PMC_PREFIX))) {
+        val prefix = FullTextAccession.PMC_PREFIX
+        if (text.startsWith(prefix) && PMID_REGEX.matches(text.removePrefix(prefix))) {
             return PmidReading(pmcId = text)
         }
         return PmidReading(refused = true)
@@ -81,6 +82,59 @@ object Pmid {
      */
     fun stripped(raw: String): String = raw.trim { it.code in Constants.PMID_STRIPPED_WHITESPACE }
 
-    /** Whether [value] is already a canonical PMID, as the Europe PMC lookup requires. */
-    fun isCanonical(value: String): Boolean = canonical(value).pmid == value
+    /**
+     * The PubMed page for [raw], when it reads as a PMID, or null.
+     *
+     * Every PubMed link goes through here, as Swift's
+     * `ArticleIdentifierKind.pubmedID` does: a padded `0033301246` links as
+     * `33301246`, and a refused value or a PMC ID builds no PubMed URL.
+     *
+     * @param raw What the document holds as its PMID.
+     * @return The URL, or null.
+     */
+    fun pubmedUrl(raw: String): String? =
+        canonical(raw).pmid?.let { "${Constants.PUBMED_URL_PREFIX}$it/" }
+
+    /**
+     * [raw] for a log line: in single quotes, with control, format and
+     * separator characters escaped, as Python's `%r` writes them, so a newline
+     * in a caller's value cannot start a log line of its own.
+     *
+     * @param raw The caller's value.
+     * @return The quoted, escaped value.
+     */
+    fun logQuoted(raw: String): String = buildString {
+        append('\'')
+        var index = 0
+        while (index < raw.length) {
+            val codePoint = raw.codePointAt(index)
+            when {
+                codePoint == '\\'.code -> append("\\\\")
+                codePoint == '\''.code -> append("\\'")
+                codePoint == '\n'.code -> append("\\n")
+                codePoint == '\r'.code -> append("\\r")
+                codePoint == '\t'.code -> append("\\t")
+                codePoint != ' '.code && Character.getType(codePoint) in UNPRINTABLE_TYPES ->
+                    append(escapedCodePoint(codePoint))
+                else -> appendCodePoint(codePoint)
+            }
+            index += Character.charCount(codePoint)
+        }
+        append('\'')
+    }
+
+    /** Python's `\xhh`, `\uhhhh` or `\Uhhhhhhhh` for [codePoint]. */
+    private fun escapedCodePoint(codePoint: Int): String = when {
+        codePoint <= 0xFF -> "\\x%02x".format(codePoint)
+        codePoint <= 0xFFFF -> "\\u%04x".format(codePoint)
+        else -> "\\U%08x".format(codePoint)
+    }
+
+    /** The categories Python's `str.isprintable()` refuses, so `%r` escapes. */
+    private val UNPRINTABLE_TYPES: Set<Int> = setOf(
+        Character.CONTROL.toInt(), Character.FORMAT.toInt(), Character.SURROGATE.toInt(),
+        Character.PRIVATE_USE.toInt(), Character.UNASSIGNED.toInt(),
+        Character.LINE_SEPARATOR.toInt(), Character.PARAGRAPH_SEPARATOR.toInt(),
+        Character.SPACE_SEPARATOR.toInt()
+    )
 }

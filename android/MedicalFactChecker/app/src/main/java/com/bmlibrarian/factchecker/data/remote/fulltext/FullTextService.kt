@@ -82,7 +82,6 @@ class FullTextService @Inject constructor(
 ) {
     companion object {
         private const val TAG = "FullTextService"
-        private const val PMID_LOG_LIMIT = 80
 
         /**
          * The Europe PMC queries that name an article by the primary slot and DOI.
@@ -1023,10 +1022,15 @@ class FullTextService @Inject constructor(
      */
     private suspend fun resolvePmcIdAndPdfUrl(pmid: String?, doi: String?): PmcResolution {
         val queries = pmidQueries(pmid, doi)
-        if (pmid != null && Pmid.canonical(pmid).refused) {
-            // The caller's value, quoted so it cannot pass for a log line of
-            // its own (bmlib#470, bmlib#472, bmlib#478)
-            Log.w(TAG, "Not a usable PMID, so Europe PMC was not asked about it: '${pmid.take(PMID_LOG_LIMIT)}'")
+        // The caller's value, escaped as Python's %r escapes it, so a newline in
+        // it cannot start a log line of its own (bmlib#470, bmlib#472, bmlib#478)
+        val reading = pmid?.let { Pmid.canonical(it) }
+        if (pmid != null && reading?.refused == true) {
+            Log.w(TAG, "Not a usable PMID, so Europe PMC was not asked about it: ${Pmid.logQuoted(pmid)}")
+        }
+        if (pmid != null && reading?.pmcId != null) {
+            // As Python's read_caller_ids logs it
+            Log.w(TAG, "The PMID ${Pmid.logQuoted(pmid)} is a PMC ID, so it is read as one")
         }
         var accumulated = PmcResolution()
         for (query in queries) {

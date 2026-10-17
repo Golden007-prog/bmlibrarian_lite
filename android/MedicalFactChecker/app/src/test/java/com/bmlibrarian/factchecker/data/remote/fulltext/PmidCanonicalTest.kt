@@ -17,6 +17,8 @@
  */
 package com.bmlibrarian.factchecker.data.remote.fulltext
 
+import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
+import com.bmlibrarian.factchecker.domain.model.Document
 import com.bmlibrarian.factchecker.util.Constants
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -29,6 +31,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
@@ -91,12 +94,39 @@ class PmidCanonicalTest {
         }
     }
 
+    /** A PubMed link carries the canonical PMID, or there is no link (bmlib#470). */
     @Test
-    fun canonicalCheck() {
-        assertTrue(Pmid.isCanonical("33301246"))
-        assertFalse(Pmid.isCanonical("0033301246"))
-        assertFalse(Pmid.isCanonical(""))
-        assertFalse(Pmid.isCanonical("PMC1"))
+    fun pubmedUrlIsCanonicalOrNone() {
+        assertEquals("${Constants.PUBMED_URL_PREFIX}33301246/", Pmid.pubmedUrl("0033301246"))
+        assertEquals("${Constants.PUBMED_URL_PREFIX}33301246/", Pmid.pubmedUrl(" 33301246 "))
+        assertNull(Pmid.pubmedUrl("PMC7745181"))
+        assertNull(Pmid.pubmedUrl("1 OR 2"))
+        assertNull(Pmid.pubmedUrl("٣٣٣٠١٢٤٦"))
+        assertNull(Pmid.pubmedUrl(""))
+    }
+
+    /** The domain document's link and PMID go through the same reading. */
+    @Test
+    fun documentPubmedLinkIsCanonical() {
+        val entity = DocumentEntity(id = "d", sessionId = "s", title = "t", pmid = "0033301246")
+        val document = Document.fromEntity(entity)
+        assertEquals("33301246", document.pubmedId)
+        assertEquals("${Constants.PUBMED_URL_PREFIX}33301246/", document.pubmedUrl)
+        val refused = Document.fromEntity(entity.copy(pmid = "PMID:33301246"))
+        assertNull(refused.pubmedId)
+        assertNull(refused.pubmedUrl)
+    }
+
+    /** A newline in a refused value cannot start a log line of its own. */
+    @Test
+    fun logQuotedEscapesAsPythonReprDoes() {
+        assertEquals("'1\\nFAKE LOG LINE'", Pmid.logQuoted("1\nFAKE LOG LINE"))
+        assertEquals("'a\\u2028b\\x00\\t'", Pmid.logQuoted("a b\u0000\t"))
+        assertEquals("'it\\'s \\\\'", Pmid.logQuoted("it's \\"))
+        // Printable non-ASCII is kept, as repr keeps it
+        assertEquals("'٣٣ x'", Pmid.logQuoted("٣٣ x"))
+        assertFalse(Pmid.logQuoted("1\r\n2").contains('\n'))
+        assertTrue(Pmid.logQuoted("1\r\n2").startsWith("'"))
     }
 
     @Test
