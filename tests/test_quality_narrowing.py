@@ -221,6 +221,7 @@ class TestTierThreeSurvivesANull:
 
 class TestTierThreeNarrowsEveryValue:
     """Tier three narrows every value."""
+
     def test_a_boolean_sample_size_is_not_a_count(self) -> None:
         """A boolean sample size is not a count."""
         assert _tier3(sample_size=True).sample_size is None
@@ -344,6 +345,7 @@ def _tier2(**fields: Any) -> StudyClassification:
 
 class TestTierTwoNarrowsEveryValue:
     """Tier two narrows every value."""
+
     def test_a_null_study_design_is_unknown(self) -> None:
         """A null study design is unknown."""
         assert _tier2(study_design=None).study_design is StudyDesign.UNKNOWN
@@ -403,6 +405,7 @@ class TestTierTwoNarrowsEveryValue:
 
 class TestAFailedDetailedAssessmentKeepsAConfidentTierOne:
     """A failed detailed assessment keeps a confident tier one."""
+
     def _manager(self, detailed: QualityAssessment) -> QualityManager:
         manager = QualityManager(LiteConfig())
         manager.metadata_filter = MagicMock()
@@ -435,6 +438,24 @@ class TestAFailedDetailedAssessmentKeepsAConfidentTierOne:
             r.levelno == logging.WARNING and "Detailed assessment failed" in r.getMessage()
             for r in caplog.records
         )
+
+    def test_a_genuine_tier_3_unknown_verdict_stands(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A real Tier 3 reply of "unknown" is an answer, not a failure."""
+        manager = self._manager(
+            _tier3_text('{"study_design": "unknown", "confidence": 0.7}')
+        )
+
+        with caplog.at_level(logging.WARNING, logger="bmlibrarian_lite.quality.quality_manager"):
+            result = manager.assess_document(
+                MagicMock(), QualityFilter(use_detailed_assessment=True)
+            )
+
+        assert result.assessment_tier == 3
+        assert result.quality_tier is QualityTier.UNCLASSIFIED
+        assert result.confidence == 0.7
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_a_successful_tier_3_still_replaces_tier_1(self) -> None:
         """The control: the detailed answer is used when it is an answer."""

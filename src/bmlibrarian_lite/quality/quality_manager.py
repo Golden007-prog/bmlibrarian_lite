@@ -132,9 +132,12 @@ class QualityManager:
             if filter_settings.use_detailed_assessment:
                 logger.debug("Tier 3: Detailed assessment requested despite confident metadata")
                 detailed = self.quality_agent.assess_quality(document)
-                if detailed.quality_tier == QualityTier.UNCLASSIFIED:
-                    # A failed detailed assessment must not replace a
-                    # confident classification (bmlib#295).
+                if detailed.assessment_tier == 0:
+                    # Only the failure sentinel (QualityAssessment.unclassified(),
+                    # assessment_tier 0) is kept out: a genuine Tier 3 verdict of
+                    # "unknown" (assessment_tier 3) stands.  A failed detailed
+                    # assessment must not replace a confident classification
+                    # (bmlib#295).
                     logger.warning(
                         "Detailed assessment failed; kept the metadata "
                         f"classification ({metadata_result.study_design.value}, "
