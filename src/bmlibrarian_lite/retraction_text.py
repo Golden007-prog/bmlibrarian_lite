@@ -222,6 +222,7 @@ CHECK_AGAIN_LABEL = "Check again"
 CHECKING_AGAIN_LINE = "Checking retraction status…"
 CHECK_AGAIN_FAILED = "; it could not be checked again, so this is still the run's record"
 CHECK_AGAIN_NOT_SAVED = "; the new status could not be saved with this run"
+NO_AUDIT_RECORD_LINE = "Retraction status not recorded for this report"
 
 
 def saved_work_warning(

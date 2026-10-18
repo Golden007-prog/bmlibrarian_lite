@@ -66,6 +66,7 @@ from ..audit_records import (
     EXTRACTION_FAILED_COUNT_KEY,
     DocumentOutcomes,
     checkpoint_metadata_with_retraction_snapshot,
+    retraction_evidence,
     classify_document_outcomes,
     excluded_in_snapshot,
     extraction_failure_record,
@@ -93,6 +94,7 @@ from ..retraction_text import (
     CHECK_AGAIN_FAILED,
     CHECK_AGAIN_LABEL,
     CHECK_AGAIN_NOT_SAVED,
+    NO_AUDIT_RECORD_LINE,
     CHECKING_AGAIN_LINE,
     plain_title,
     saved_work_line,
@@ -493,7 +495,11 @@ class ReportTab(QWidget):
         note = ""
         try:
             if checkpoint_id.startswith(FILE_ID_PREFIX):
-                updated = self._rewrite_audit_snapshot(Path(checkpoint_id[len(FILE_ID_PREFIX):]), screen)
+                updated, audit = self._rewrite_audit_snapshot(
+                    Path(checkpoint_id[len(FILE_ID_PREFIX):]), screen
+                )
+                if showing:
+                    self._loaded_audit_data = audit
             else:
                 checkpoint = self.storage.get_checkpoint(checkpoint_id)
                 if checkpoint is None:
@@ -516,7 +522,9 @@ class ReportTab(QWidget):
         self.retraction_rechecked.emit(rows)
 
     @staticmethod
-    def _rewrite_audit_snapshot(report_path: Path, screen: RetractionScreen) -> RetractionSnapshot:
+    def _rewrite_audit_snapshot(
+        report_path: Path, screen: RetractionScreen
+    ) -> tuple[RetractionSnapshot, dict[str, Any]]:
         """Write *Check again*'s answers into a report's audit JSON, and nothing else.
 
         The file is read again, and replaced whole through a temp file in the
@@ -526,8 +534,12 @@ class ReportTab(QWidget):
             report_path: The report; its sibling ``*_audit.json`` is rewritten.
             screen: The check's screen.
 
+        The summary's unchecked count and the left-out papers' dates and
+        notices follow the new snapshot; which papers were left out stays as
+        the run recorded it.
+
         Returns:
-            The new snapshot.
+            The new snapshot and the audit record as written.
 
         Raises:
             OSError: The file could not be read or replaced.
@@ -537,7 +549,23 @@ class ReportTab(QWidget):
         audit = json.loads(audit_path.read_text(encoding="utf-8"))
         record = audit.get("retraction")
         rows = record.get("snapshot") if isinstance(record, Mapping) else None
-        updated = rechecked_snapshot(RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}, screen)
+        old = RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}
+        updated = rechecked_snapshot(old, screen)
+        left_out = audit.get("retracted_documents")
+        left_out = left_out if isinstance(left_out, list) else []
+        if not old:
+            # An older report: the run left these out, whatever the check now says
+            ids = {str(e["id"]) for e in left_out if isinstance(e, Mapping) and "id" in e}
+            updated = RetractionSnapshot(tuple({**r, "excluded": r["document_id"] in ids} for r in updated.rows))
+        by_id = {r["document_id"]: r for r in updated.rows}
+        for entry in left_out:
+            if isinstance(entry, dict) and entry.get("id") in by_id:
+                entry.update(retraction_evidence(by_id[entry["id"]]))
+        summary = audit.get("workflow_summary")
+        if isinstance(summary, dict):
+            summary["documents_retraction_unchecked"] = sum(
+                1 for r in updated.rows if r.get("status") == RetractionStatus.UNCHECKED
+            )
         audit["retraction"] = retraction_entry(updated.rows)
         temp = audit_path.with_name(audit_path.name + ".tmp")
         try:
@@ -545,7 +573,7 @@ class ReportTab(QWidget):
             os.replace(temp, audit_path)
         finally:
             temp.unlink(missing_ok=True)
-        return updated
+        return updated, audit
 
     def _on_recheck_cancelled(self, checkpoint_id: str) -> None:
         """A cancel (at quit) stopped *Check again*: nothing is saved."""
@@ -956,6 +984,9 @@ class ReportTab(QWidget):
                 # Nothing of the previous report's record belongs to this one.
                 self._loaded_audit_data = None
                 self._citations_by_doc_id.clear()
+                # silence would read as clear
+                self.retraction_line.setText(NO_AUDIT_RECORD_LINE)
+                self.retraction_line.setVisible(True)
                 self.audit_btn.setEnabled(False)
                 self.status_label.setText("Loaded report (no audit trail found)")
 
@@ -980,18 +1011,22 @@ class ReportTab(QWidget):
         record = audit_data.get("retraction")
         rows = record.get("snapshot") if isinstance(record, Mapping) else None
         self._retraction_snapshot = RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}
-        left_out = [
+        documents = [
             LiteDocument(
-                id=str(entry["id"]),
-                title=entry.get("title", ""),
+                id=str(entry[id_key]),
+                title=entry.get(title_key, ""),
                 abstract="",
-                doi=entry.get("doi"),
-                pmid=entry.get("pmid"),
+                doi=entry.get(doi_key),
+                pmid=entry.get(pmid_key),
             )
-            for entry in audit_data.get("retracted_documents", [])
-            if isinstance(entry, Mapping) and "id" in entry
+            for key, id_key, title_key, doi_key, pmid_key in (
+                ("citations", "document_id", "document_title", "document_doi", "document_pmid"),
+                ("retracted_documents", "id", "title", "doi", "pmid"),
+            )
+            for entry in audit_data.get(key, [])
+            if isinstance(entry, Mapping) and id_key in entry
         ]
-        self._file_documents = list({d.id: d for d in [*self._used_documents(), *left_out]}.values())
+        self._file_documents = list({d.id: d for d in documents}.values())
         self.show_saved_retraction(FILE_ID_PREFIX + str(report_path))
 
     def _audit_trail_data(self) -> dict[str, Any]:

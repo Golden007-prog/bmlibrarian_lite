@@ -834,8 +834,9 @@ def test_check_again_on_a_loaded_report_rewrites_only_the_audit_json_snapshot(
     assert ids == sorted([CITED.id, LEFT_OUT.id])  # the cited paper and the one the run left out
     assert report_path.read_bytes() == md_before
     after = json.loads(audit_path.read_text(encoding="utf-8"))
-    assert {k: v for k, v in after.items() if k != "retraction"} == {
-        k: v for k, v in before.items() if k != "retraction"
+    derived = {"retraction", "retracted_documents", "workflow_summary"}  # follow the new snapshot
+    assert {k: v for k, v in after.items() if k not in derived} == {
+        k: v for k, v in before.items() if k not in derived
     }
     rows = {r["document_id"]: r for r in after["retraction"]["snapshot"]}
     assert rows[CITED.id]["status"] == "retracted" and rows[CITED.id]["excluded"] is False
@@ -865,4 +866,109 @@ def test_a_failed_write_tells_the_reader_and_leaves_the_file(
 
     assert audit_path.read_bytes() == before
     assert not list(audit_path.parent.glob("*.tmp"))
+    assert CHECK_AGAIN_NOT_SAVED in tab.retraction_line.text()
+
+
+def saved_with_left_out(tab: ReportTab, snapshot: dict[str, dict[str, Any]] | None) -> Any:
+    """Save a run that left LEFT_OUT out as retracted; returns the report path."""
+    reopen(tab, snapshot)
+    tab._documents_found = list(DOCUMENTS)
+    tab._all_scored_documents = []
+    tab._auto_save_report()
+    return tab._current_report_path
+
+
+def test_check_again_refreshes_the_derived_audit_fields_and_the_shown_data(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Summary count and left-out dates follow the new snapshot, on disk and on screen."""
+    report_path = saved_with_left_out(tab, run_snapshot())
+    audit_path = audit_of(report_path)
+    before = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert [e["id"] for e in before["retracted_documents"]] == [LEFT_OUT.id]
+    load(tab, report_path, monkeypatch)
+    # CITED comes back unchecked-by-outage? no: a served clear answer; LEFT_OUT's notice is withdrawn
+    run_check_again(
+        tab,
+        storage,
+        monkeypatch,
+        {CITED.id: check(RetractionStatus.CLEAR, NOW), LEFT_OUT.id: check(RetractionStatus.CLEAR, NOW)},
+    )
+    after = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert [e["id"] for e in after["retracted_documents"]] == [LEFT_OUT.id]  # membership is the run's
+    assert after["retracted_documents"][0]["retraction_date"] is None
+    assert after["retracted_documents"][0]["notice_doi"] is None
+    assert before["retracted_documents"][0]["notice_doi"] == "10.9/notice"
+    assert tab._loaded_audit_data == after
+    assert "10.9/notice" not in tab._audit_trail_text()
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-15"
+
+
+def test_loading_a_report_without_an_audit_file_says_its_status_is_unknown(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A line, and no Check again (nothing to check)."""
+    report_path = save_report(tab, run_snapshot())
+    audit_of(report_path).unlink()
+    load(tab, report_path, monkeypatch)
+    assert tab.retraction_line.text() == "Retraction status not recorded for this report"
+    assert not tab.retraction_line.isHidden() and tab.check_again_btn.isHidden()
+
+
+def test_an_old_report_marks_its_left_out_papers_excluded_when_checked_again(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No retraction key, but retracted_documents: those stay excluded, others do not."""
+    report_path = saved_with_left_out(tab, run_snapshot())
+    audit_path = audit_of(report_path)
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    del audit["retraction"]
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    load(tab, report_path, monkeypatch)
+    run_check_again(
+        tab,
+        storage,
+        monkeypatch,
+        {
+            CITED.id: check(RetractionStatus.RETRACTED, NOW),
+            LEFT_OUT.id: check(RetractionStatus.CLEAR, NOW),
+        },
+    )
+    rows = {r["document_id"]: r for r in json.loads(audit_path.read_text(encoding="utf-8"))["retraction"]["snapshot"]}
+    assert rows[LEFT_OUT.id]["excluded"] is True
+    assert rows[CITED.id]["excluded"] is False
+
+
+def test_a_late_file_result_saves_to_its_own_file_and_leaves_the_view(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another report opened meanwhile: the first file is updated, the view is not."""
+    saved = save_report(tab, run_snapshot())
+    first = saved.with_name("first_report.md")
+    saved.rename(first)
+    audit_of(saved).rename(audit_of(first))
+    other = save_report(tab, None)
+    load(tab, first, monkeypatch)
+    first_key = "file:" + str(first)
+    load(tab, other, monkeypatch)
+    line = tab.retraction_line.text()
+    tab._on_rechecked(first_key, screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.RETRACTED, NOW)}))
+    rows = {r["document_id"]: r for r in json.loads(audit_of(first).read_text(encoding="utf-8"))["retraction"]["snapshot"]}
+    assert rows[CITED.id]["status"] == "retracted"
+    assert tab.retraction_line.text() == line and tab._retraction_snapshot == {}
+
+
+def test_a_malformed_audit_json_is_not_saved_and_left_alone(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Garbage on disk at rewrite time: not-saved wording, bytes unchanged."""
+    report_path = save_report(tab, run_snapshot())
+    load(tab, report_path, monkeypatch)
+    audit_path = audit_of(report_path)
+    audit_path.write_text("{not json", encoding="utf-8")
+    tab._on_rechecked(
+        "file:" + str(report_path),
+        screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.RETRACTED, NOW)}),
+    )
+    assert audit_path.read_text(encoding="utf-8") == "{not json"
     assert CHECK_AGAIN_NOT_SAVED in tab.retraction_line.text()

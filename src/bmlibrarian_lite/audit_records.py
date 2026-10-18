@@ -454,7 +454,7 @@ def outcome_entries(
                 "title": document.title,
                 "doi": document.doi,
                 "pmid": document.pmid,
-                **_retraction_evidence((retraction_snapshot or {}).get(document.id)),
+                **retraction_evidence((retraction_snapshot or {}).get(document.id)),
             }
             for document in outcomes.excluded_retracted
         ],
@@ -501,7 +501,7 @@ def outcome_entries(
     }
 
 
-def _retraction_evidence(row: Mapping[str, Any] | None) -> dict[str, Any]:
+def retraction_evidence(row: Mapping[str, Any] | None) -> dict[str, Any]:
     """The retraction date and notice DOI a snapshot row's evidence names.
 
     Args:
