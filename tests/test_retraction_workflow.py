@@ -311,8 +311,9 @@ class TestTheChokePoint:
 
         assert scored == []
         message = seen["finished"][0][0]
-        assert message.startswith("No documents")
-        assert "3 retracted papers left out" in message
+        assert message.startswith("> **Retracted papers left out:**")
+        assert message.count("3 retracted papers left out") == 1
+        assert message.endswith("No documents left to score.")
 
     def test_without_a_checker_the_review_is_unchanged(
         self, monkeypatch: pytest.MonkeyPatch, storage: LiteStorage

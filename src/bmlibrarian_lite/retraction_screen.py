@@ -112,6 +112,51 @@ class RetractionScreen:
         return out
 
 
+@dataclass(frozen=True)
+class RetractionSnapshot:
+    """What a stored report needs of a screen, rebuilt from its snapshot rows.
+
+    It does not rebuild the documents or verdicts: the report reads rows
+    (``to_snapshot``) and the counts the notice needs, nothing more.
+
+    Attributes:
+        rows: Snapshot rows as ``RetractionScreen.to_snapshot`` wrote them.
+    """
+
+    rows: tuple[dict[str, Any], ...]
+
+    @property
+    def excluded(self) -> tuple[dict[str, Any], ...]:
+        """The rows of the papers the run left out."""
+        return tuple(r for r in self.rows if r.get("excluded"))
+
+    @property
+    def unchecked_count(self) -> int:
+        """Kept rows whose status is unchecked."""
+        return sum(
+            1
+            for r in self.rows
+            if not r.get("excluded") and r["status"] == RetractionStatus.UNCHECKED.value
+        )
+
+    @property
+    def checked_at(self) -> datetime | None:
+        """The oldest check time; ``None`` without any."""
+        return min(
+            (as_utc(datetime.fromisoformat(r["checked_at"])) for r in self.rows if r.get("checked_at")),
+            default=None,
+        )
+
+    def to_snapshot(self) -> list[dict[str, Any]]:
+        """The rows, as given."""
+        return [dict(r) for r in self.rows]
+
+    @classmethod
+    def from_rows(cls, rows: Iterable[Mapping[str, Any]]) -> RetractionSnapshot:
+        """Build from stored rows, skipping any an older build wrote short."""
+        return cls(tuple(RetractionScreen.from_snapshot(rows).values()))
+
+
 def screen_documents(
     documents: Iterable[LiteDocument], checks: Mapping[str, PaperCheck]
 ) -> RetractionScreen:

@@ -9,7 +9,9 @@ No provider text: a failure's cause comes from ``RequestFailure.describe()``.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
+from typing import Any
 
 from bmlib.publications.retraction_status import RetractionLookup, RetractionStatus
 
@@ -105,3 +107,41 @@ def paper_status_line(check: PaperCheck) -> str:
     if check.export_data_as_of is not None:
         line += f"; {_RW} data as of {check.export_data_as_of.isoformat()}"
     return line
+
+
+LEFT_OUT_HEADING = "## Left out as retracted"
+_CONCERN_INDENT = "    "
+
+
+def _evidence_parts(row: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """The deciding notice's date and DOI from a snapshot row."""
+    deciding = row.get("deciding") or {}
+    return deciding.get("date"), deciding.get("notice_doi")
+
+
+def format_retracted_section(screen: Any) -> str:
+    """List the papers a run left out, from the screen's snapshot rows.
+
+    Returns:
+        The section, one line per paper ("<title>. Retracted <date>; notice
+        <doi>"), or "" when nothing was left out.
+    """
+    lines = []
+    for row in screen.to_snapshot():
+        if not row.get("excluded"):
+            continue
+        when, notice = _evidence_parts(row)
+        line = f"- {row['title']}. Retracted"
+        line += f" {when}" if when else " (PubMed's label)" if notice is None else ""
+        line += f"; notice {notice}" if notice else ""
+        lines.append(line)
+    return f"{LEFT_OUT_HEADING}\n\n" + "\n".join(lines) if lines else ""
+
+
+def format_reference_concern_annotation(row: Mapping[str, Any]) -> str:
+    """Caveat for a cited paper under an expression of concern (a snapshot row)."""
+    when, notice = _evidence_parts(row)
+    detail = ", ".join(
+        part for part in (when, f"notice {notice}" if notice else None) if part
+    )
+    return f"{_CONCERN_INDENT}⚠️ Expression of concern" + (f" ({detail})" if detail else "")

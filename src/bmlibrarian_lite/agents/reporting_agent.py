@@ -22,12 +22,21 @@ professional research summary with proper attribution.
 
 import logging
 from collections.abc import Mapping, Sequence
+from typing import Any
+
+from bmlib.publications.retraction_status import RetractionStatus
 
 from ..analysis_failures import (
     describe_analysis_shortfalls,
     with_analysis_shortfall_notice,
 )
 from ..data_models import AnalysisShortfall, AnalysisStage, Citation, ReportMetadata
+from ..retraction_text import (
+    checked_on_line,
+    format_reference_concern_annotation,
+    format_retracted_section,
+    with_retraction_notice,
+)
 from ..search_failures import describe_search_shortfalls, with_search_shortfall_notice
 from ..transparency.transparency_models import (
     StoredTransparency,
@@ -211,6 +220,9 @@ class LiteReportingAgent(LiteBaseAgent):
             losses,
             documents_accepted,
         )
+        screen = metadata.retraction_screen if metadata else None
+        if screen is not None:
+            report = with_retraction_notice(report, screen)
         return with_search_shortfall_notice(
             with_analysis_shortfall_notice(report, losses), shortfalls
         )
@@ -275,6 +287,9 @@ class LiteReportingAgent(LiteBaseAgent):
                 documents_accepted=documents_accepted,
             )
             if metadata:
+                if metadata.retraction_screen is not None:
+                    left_out = format_retracted_section(metadata.retraction_screen)
+                    report += "\n\n" + left_out if left_out else ""
                 report += "\n\n" + self.format_methodology_section(metadata)
             return report
 
@@ -358,10 +373,22 @@ IMPORTANT: Use ONLY the exact Source and Document ID values provided above. Do n
             report = self._chat(messages, temperature=0.3, max_tokens=4096)
 
             # Add references section with risk annotations
+            concerns = {}
+            if metadata and metadata.retraction_screen is not None:
+                concerns = {
+                    r["document_id"]: r
+                    for r in metadata.retraction_screen.to_snapshot()
+                    if r["status"] == RetractionStatus.CONCERN.value
+                }
             references = self._format_references_with_risk(
-                citations, risky_doc_results, withheld
+                citations, risky_doc_results, withheld, concerns
             )
             full_report = f"{report}\n\n## References\n\n{references}"
+
+            if metadata and metadata.retraction_screen is not None:
+                left_out = format_retracted_section(metadata.retraction_screen)
+                if left_out:
+                    full_report += "\n\n" + left_out
 
             # Why each cited High is high: every shown row rated High, not
             # only those past ``report_risk_threshold``, which governs
@@ -615,6 +642,7 @@ Key passages:
         citations: list[Citation],
         risky_doc_results: dict[str, TransparencyResult],
         withheld: Mapping[str, str] | None = None,
+        concerns: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> str:
         """Format reference list with risk annotations for risky citations.
 
@@ -626,11 +654,14 @@ Key passages:
                 are annotated as unassessed rather than left bare, which
                 would read as a study with no transparency concerns (#360,
                 #372).
+            concerns: Retraction snapshot rows by document id for cited
+                papers under an expression of concern; each gets a caveat.
 
         Returns:
             Formatted reference list with risk annotations
         """
         withheld = withheld or {}
+        concerns = concerns or {}
         # Deduplicate by document ID
         seen: set[str] = set()
         unique_citations = []
@@ -653,6 +684,9 @@ Key passages:
             if doc.pmid:
                 ref += f". PMID: {doc.pmid}"
             references.append(ref)
+
+            if doc.id in concerns:
+                references.append(format_reference_concern_annotation(concerns[doc.id]))
 
             # Add risk annotation if this document is risky
             if doc.id in risky_doc_results:
@@ -763,6 +797,10 @@ Key passages:
             f"- **Accepted:** {metadata.documents_accepted:,} | "
             f"**Rejected:** {metadata.documents_rejected:,}",
         ])
+        if metadata.retraction_screen is not None:
+            lines.append(
+                f"- **Retraction Check:** {checked_on_line(metadata.retraction_screen.checked_at)}"
+            )
         # Documents the model could not read are neither accepted nor
         # rejected: recording them as rejected made a failure read as the
         # literature's answer (#261, #262).

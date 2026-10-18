@@ -113,7 +113,7 @@ from ..retraction_checks import RetractionChecker
 from ..retraction_crossref import crossref_session
 from ..retraction_screen import RetractionScreen, screen_documents
 from ..retraction_store import PaperCheck
-from ..retraction_text import run_summary_clause
+from ..retraction_text import run_summary_clause, with_retraction_notice
 from datetime import UTC, datetime
 
 from .quality_filter_panel import QualityFilterPanel
@@ -411,12 +411,13 @@ class WorkflowWorker(QThread):
                     self.finished.emit("Workflow cancelled.", metadata)
                     return
                 self.retraction_screen = screen
+                metadata.retraction_screen = screen
                 self.retraction_screened.emit(screen)
                 documents = list(screen.kept)
                 excluded = list(screen.excluded)
                 if not documents:
                     self._finish_without_report(
-                        f"No documents left to score: {run_summary_clause(screen)}.",
+                        "No documents left to score.",
                         metadata,
                     )
                     return
@@ -840,6 +841,10 @@ class WorkflowWorker(QThread):
             message: Why there is no report.
             metadata: The workflow's metadata so far.
         """
+        if self.retraction_screen is not None:
+            # Innermost, so it follows the search and analysis notices; it
+            # states the count, so the message itself does not
+            message = with_retraction_notice(message, self.retraction_screen)
         qualified = with_analysis_shortfall_notice(message, metadata.analysis_shortfalls)
         self.finished.emit(
             with_search_shortfall_notice(qualified, metadata.search_shortfalls),
