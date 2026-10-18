@@ -631,6 +631,7 @@ class SearchService:
             sources={"pubmed"},
             is_preprint=False,
             has_fulltext_xml=False,
+            publication_types=article.publication_types,
         )
 
     def _europepmc_to_merged(self, article: ArticleInfo) -> MergedArticle:
@@ -649,4 +650,5 @@ class SearchService:
             sources={"europepmc"},
             is_preprint=article.is_preprint,
             has_fulltext_xml=article.has_fulltext_xml,
+            publication_types=article.publication_types,
         )

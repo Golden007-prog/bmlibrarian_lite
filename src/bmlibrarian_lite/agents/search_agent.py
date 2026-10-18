@@ -430,6 +430,7 @@ class LiteSearchAgent(LiteBaseAgent):
                 source=DocumentSource.PUBMED,
                 url=article.url,
                 mesh_terms=article.mesh_terms,
+                publication_types=article.publication_types,
             )
             documents.append(doc)
 

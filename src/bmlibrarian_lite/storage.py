@@ -160,6 +160,16 @@ def _stored_version_text(raw: object) -> str | None:
     return None
 
 
+def _types_to_json(types: list[str] | None) -> str | None:
+    """Serialise publication types; ``None`` (not recorded) stays NULL."""
+    return None if types is None else json.dumps(types)
+
+
+def _types_from_json(raw: str | None) -> list[str] | None:
+    """Read publication types; NULL (not recorded) stays ``None``."""
+    return None if raw is None else json.loads(raw)
+
+
 def compute_question_hash(question: str) -> str:
     """
     Compute deterministic hash for research question lookup.
@@ -244,6 +254,7 @@ class LiteStorage:
             self._migrate_benchmark_question_hashes()
             self._migrate_scored_documents_constraint()
             self._migrate_transparency_results()
+            self._migrate_document_publication_types()
             logger.debug(f"SQLite initialized at {self._storage_config.sqlite_path}")
         except sqlite3.Error as e:
             raise SQLiteError(
@@ -669,6 +680,31 @@ class LiteStorage:
                 f"Could not add transparency_results.score_components: {e}"
             ) from e
 
+    def _migrate_document_publication_types(self) -> None:
+        """Give older databases the column a record's publication types live in.
+
+        Rows written before it read NULL, which is "not recorded", not
+        "the record had none" (``[]``).
+
+        Raises:
+            SQLiteError: If the column cannot be added. Runs from
+                ``_init_sqlite``, so it aborts construction.
+        """
+        try:
+            with self._sqlite_connection() as conn:
+                cursor = conn.execute("PRAGMA table_info(documents)")
+                columns = [row["name"] for row in cursor.fetchall()]
+                if "publication_types" not in columns:
+                    conn.execute(
+                        "ALTER TABLE documents ADD COLUMN publication_types TEXT"
+                    )
+                    logger.info("Added publication_types to documents.")
+                conn.commit()
+        except sqlite3.Error as e:
+            raise SQLiteError(
+                f"Could not add documents.publication_types: {e}"
+            ) from e
+
     @staticmethod
     def _retract_migrated_coi_indicators(conn: sqlite3.Connection) -> None:
         """Remove the missing-COI indicator from rows that never established it.
@@ -850,7 +886,8 @@ class LiteStorage:
             url TEXT,
             mesh_terms TEXT,  -- JSON array
             source TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            publication_types TEXT  -- JSON array; NULL = not recorded
         );
 
         -- Search sessions
@@ -1163,8 +1200,10 @@ class LiteStorage:
                     """
                     INSERT OR REPLACE INTO documents
                     (id, title, abstract, authors, year, journal, doi, pmid,
-                     pmc_id, url, mesh_terms, source)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     pmc_id, url, mesh_terms, source, publication_types)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                            COALESCE(?, (SELECT publication_types
+                                         FROM documents WHERE id = ?)))
                     """,
                     (
                         document.id,
@@ -1179,6 +1218,8 @@ class LiteStorage:
                         document.url,
                         json.dumps(document.mesh_terms),
                         document.source.value,
+                        _types_to_json(document.publication_types),
+                        document.id,
                     ),
                 )
 
@@ -1267,8 +1308,10 @@ class LiteStorage:
                         """
                         INSERT OR REPLACE INTO documents
                         (id, title, abstract, authors, year, journal, doi, pmid,
-                         pmc_id, url, mesh_terms, source)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         pmc_id, url, mesh_terms, source, publication_types)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                                COALESCE(?, (SELECT publication_types
+                                             FROM documents WHERE id = ?)))
                         """,
                         (
                             doc.id,
@@ -1283,6 +1326,8 @@ class LiteStorage:
                             doc.url,
                             json.dumps(doc.mesh_terms),
                             doc.source.value,
+                            _types_to_json(doc.publication_types),
+                            doc.id,
                         ),
                     )
                     ids.append(doc.id)
@@ -1354,7 +1399,8 @@ class LiteStorage:
                 cursor = conn.execute(
                     """
                     SELECT id, title, abstract, authors, year, journal,
-                           doi, pmid, pmc_id, url, mesh_terms, source
+                           doi, pmid, pmc_id, url, mesh_terms, source,
+                           publication_types
                     FROM documents
                     WHERE id = ?
                     """,
@@ -1378,6 +1424,7 @@ class LiteStorage:
                     url=row["url"],
                     mesh_terms=json.loads(row["mesh_terms"] or "[]"),
                     source=DocumentSource(row["source"]),
+                    publication_types=_types_from_json(row["publication_types"]),
                 )
         except sqlite3.Error as e:
             logger.error(f"Failed to get document {document_id}: {e}")
@@ -1417,7 +1464,8 @@ class LiteStorage:
                 cursor = conn.execute(
                     f"""
                     SELECT id, title, abstract, authors, year, journal,
-                           doi, pmid, pmc_id, url, mesh_terms, source
+                           doi, pmid, pmc_id, url, mesh_terms, source,
+                           publication_types
                     FROM documents
                     WHERE id IN ({placeholders})
                     """,
@@ -1439,6 +1487,7 @@ class LiteStorage:
                         url=row["url"],
                         mesh_terms=json.loads(row["mesh_terms"] or "[]"),
                         source=DocumentSource(row["source"]),
+                        publication_types=_types_from_json(row["publication_types"]),
                     ))
 
                 return documents
@@ -1507,7 +1556,7 @@ class LiteStorage:
                     SELECT
                         d.id, d.title, d.abstract, d.authors, d.year,
                         d.journal, d.doi, d.pmid, d.pmc_id, d.url,
-                        d.mesh_terms, d.source,
+                        d.mesh_terms, d.source, d.publication_types,
                         v.distance
                     FROM vec_documents v
                     JOIN documents d ON d.rowid = v.rowid
@@ -1532,6 +1581,7 @@ class LiteStorage:
                         url=row["url"],
                         mesh_terms=json.loads(row["mesh_terms"] or "[]"),
                         source=DocumentSource(row["source"]),
+                        publication_types=_types_from_json(row["publication_types"]),
                     ))
 
                 return documents

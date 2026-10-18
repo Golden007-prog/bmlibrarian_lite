@@ -908,6 +908,16 @@ class PubMedSearchClient:
                 if kw:
                     keywords.append(kw)
 
+            # None (not recorded) when the record has no list at all
+            types_elem = article_elem.find(".//PublicationTypeList")
+            publication_types = None
+            if types_elem is not None:
+                publication_types = [
+                    e.text.strip()
+                    for e in types_elem.findall("PublicationType")
+                    if e.text and e.text.strip()
+                ]
+
             return ArticleMetadata(
                 pmid=pmid,
                 doi=doi,
@@ -919,6 +929,7 @@ class PubMedSearchClient:
                 mesh_terms=mesh_terms,
                 keywords=keywords,
                 pmc_id=pmc_id,
+                publication_types=publication_types,
             )
 
         except Exception as e:
