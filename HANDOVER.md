@@ -29,30 +29,31 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**A refused PDF and the cache, in the apps** (#560 Swift, #561 Android;
-branch `fix/refused-pdf-cache-560-561`, PR #562). **Every download is
-now checked where it waits, beside its cache name, on all three platforms**
-(Python's `unchecked_download_path`): Swift stages each download as
-`<cache name>.<UUID>.unchecked` (open-access copies, the render and Elsevier's
-PDF; `admit` checks, then `rename(2)` into place); Android checks the partial
-(`<cache name>.<n>.part`) in `downloadPdf`'s `admitDownload` and in Elsevier's
-fetch (`PdfDownload.WrongArticle`, `ElsevierFetch.WrongArticle`). **Android's
-`downloadPdf` never answers from the cache** (one name per document says
-nothing about the address), so the walk's `cacheBlocked` stop is gone. A cached
-PDF gone by read time (another fetch set it aside) is no copy served: Swift
-re-asks that source once (`PDFTierOutcome.vanished`; gone again is
-`request_failed`, no link, Elsevier's with no address), Android's Elsevier fetch
-asks as on a miss. A download gone before its check is never let in or linked
-(Swift `Admission.gone`, Android `REQUEST_FAILED`). Android sets a cached file
-aside only if its stamp (file key, size, mtime) is unchanged by the check.
-Lodged: #563 (Android credits the wrong address when two downloads race).
-Contract: `fulltext_retrieval.md`, "A PDF of another article".
+**Next: retraction checking** (Phase 7 of
+`doc/plans/2026-10-17-port-bmlib-advances.md`, approved 2026-10-17; ledger row
+`bmlib:0.7.0-retraction-watch`). bmlib has `bmlib.publications.retractions`
+(Retraction Watch); no platform here warns about a retracted paper. Spec and
+plan first, then code.
 
 ## Recently landed (context)
 
 Compressed once merged: the rules that still bind. Git history and the
 `doc/cross_platform/` READMEs carry the rest.
 
+- **The bmlib port set** (PRs #564–#570, #572; Phases 0–2 of the plan).
+  **`doc/cross_platform/bmlib_sync/ledger.json` records every bmlib change
+  per platform**, pinned to bmlib 0.11.0. A sync is: bump `bmlib_commit`,
+  triage every id `scripts/check_bmlib_ledger.py --bmlib ~/src/bmlib` lists
+  (the weekly `bmlib drift` workflow fails until then). New contracts:
+  `pmid_canonical.json`, `score_values.json` (an unreadable score is a parse
+  failure, never 3), `europepmc_free_pdf.json`; desktop `pubmed/record_ids.py`
+  and `quality/json_fields.py`; converter **6**, analyser **2.7**. **WP-2:
+  Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet,
+  pin stale (**#583**). Lodged: #573–#581; **#585** (bmlib#485, a blank
+  id as a full-text cache name, on bmlib's `main` after 0.11.0).
+- **A download is checked before it is cached** (#560, #561; PR #562): Swift
+  stages `<cache name>.<UUID>.unchecked`, Android checks the `.part`;
+  **Android's `downloadPdf` never answers from the cache.** Lodged: #563.
 - **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559). Contract
   `pdf_title_check.json`: ≥ 0.5 of the title's adjacent word pairs on the first
   page with text, or the whole title with word breaks ignored (≥ 20
@@ -71,8 +72,6 @@ Compressed once merged: the rules that still bind. Git history and the
   *Walk the queue*, the interrogation tab's priority path. Live acceptance
   (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect 10/10
   `needs_person`. The apps' embedded browsers need their own spec.
-  Open follow-ups: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**,
-  **#533**–**#535**, **#537**–**#540**, **#543**, **#544**.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
@@ -212,11 +211,15 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
+- **Retraction checking** (above); then the plan's work packages: Phase 3
+  (transparency), Phase 4 (JATS, as adapter work over the Rust parser after
+  **#583**), Phase 5 (retrieval), Phase 6 (LLM plumbing). The bmlib audit's
+  leftovers are **#571**, **#573**–**#581**, **#585**.
 - **#545** sweep the PDF library for other articles' PDFs (CLI only, the
   maintainer's call); **#547** keep a set-aside PDF from the GUI (both from
   #541); **#555** Android release builds fail R8; **#556**–**#558** (#546's).
 - **C2's probe and acceptance, and C1's replay** (maintainer); the **embedded
-  browser rescue's follow-ups**: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**, **#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
+  browser rescue's follow-ups**: **#524**, **#525**, **#527**, **#528**, **#530**, **#531**, **#533** (stage 2 follow-ups), **#534**, **#535**, **#537**–**#540**, **#544** (stage 3); **#481** follows it; **#485**, **#488**, **#489**, **#490** (stage A follow-ups);
   **#492**, **#493** (stage B follow-ups); **#500**, **#502**–**#505** (C1 follow-ups); **#506**, **#508**–**#513** (C2); **#516** (PySide6 cap, leaked widgets), **#517** (GC on worker threads); **#467**, **#468** / **#470**, **#476**.
 
 ### Left by the #420 and #428 rounds (PRs #426, #431), Python unless noted

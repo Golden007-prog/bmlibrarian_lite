@@ -1,96 +1,96 @@
 {
   "schema": 1,
-  "bmlib_commit": "a368a673d4467897ac7837945a556f8d67075a44",
+  "bmlib_commit": "8edd3d76e877a7c00f5483030d9468611118d391",
   "from_bmlib": [
     {
       "id": "lite:pubmed-articleid-reference-list",
       "title": "PubMed `ArticleId` from the reference list",
-      "python": "owed",
+      "python": "ported",
       "swift": "ported",
-      "android": "owed",
+      "android": "ported",
       "issue": "#404",
-      "note": "WP T1. Android lite issue #404."
+      "note": "WP T1, lite PR #566: the desktop reads `PubmedData/ArticleIdList` only; Android skips `ArticleId` inside `ReferenceList`."
     },
     {
       "id": "bmlib#474",
       "title": "The PubMed record read is the one asked about",
-      "python": "owed",
+      "python": "ported",
       "swift": "owed",
       "android": "n/a",
-      "issue": null,
-      "note": "WP T1. Partial on swift. Android has no PubMed record read of this shape (audit: not applicable)."
+      "issue": "#414",
+      "note": "WP T1, lite PR #566: the desktop picks the record whose own `MedlineCitation/PMID` was asked about. Swift's PMID lookup still adopts PubMed's first hit (lite #414). Android has no PubMed record read of this shape (audit: not applicable)."
     },
     {
       "id": "bmlib#470",
       "title": "PMID canonical ASCII digits",
-      "python": "owed",
-      "swift": "owed",
-      "android": "owed",
+      "python": "ported",
+      "swift": "ported",
+      "android": "ported",
       "issue": null,
-      "note": "WP T2. Partial on swift."
+      "note": "WP T2, lite PR #565: contract `fulltext_parity/pmid_canonical.json` on all three."
     },
     {
       "id": "bmlib#472",
       "title": "PMID canonical ASCII digits; PMC ids ASCII",
-      "python": "owed",
-      "swift": "owed",
-      "android": "owed",
+      "python": "ported",
+      "swift": "ported",
+      "android": "ported",
       "issue": null,
-      "note": "WP T2. PMID digits owed on all three; PMC ids ASCII still owes python (leftover `pdf_discovery` `\\d`) and swift (leftover `isNumber`); android has the PMC half."
+      "note": "WP T2, lite PR #565: PMID digits on all three (`pmid_canonical.json`); PMC ids ASCII (`pdf_discovery` `\\d` and Swift's `isNumber` replaced)."
     },
     {
       "id": "bmlib#478",
       "title": "PMID canonical ASCII digits",
-      "python": "owed",
-      "swift": "owed",
-      "android": "owed",
+      "python": "ported",
+      "swift": "ported",
+      "android": "ported",
       "issue": null,
-      "note": "WP T2. Partial on swift."
+      "note": "WP T2, lite PR #565: contract `fulltext_parity/pmid_canonical.json` on all three."
     },
     {
       "id": "lite:out-of-range-scores",
       "title": "Android invents score 3; Swift bool and `1e300` scores",
       "python": "ported",
-      "swift": "owed",
-      "android": "owed",
+      "swift": "ported",
+      "android": "ported",
       "issue": null,
-      "note": "WP T3. Partial on swift."
+      "note": "WP T3, lite PR #567: contract `llm_parity/score_values.json` on all three; Android's invented score 3 removed."
     },
     {
       "id": "bmlib#295",
       "title": "Quality JSON narrowing; NaN read as 1.0; string flags",
-      "python": "owed",
+      "python": "ported",
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "WP T4."
+      "note": "WP T4, lite PR #568: `quality/json_fields.py`, read by Tier 2, Tier 3 and the quality benchmark."
     },
     {
       "id": "bmlib#320",
       "title": "Quality JSON narrowing; NaN read as 1.0; string flags",
-      "python": "owed",
+      "python": "ported",
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "WP T4."
+      "note": "WP T4, lite PR #568: `quality/json_fields.py`, read by Tier 2, Tier 3 and the quality benchmark."
     },
     {
       "id": "bmlib#79",
       "title": "Europe PMC free-PDF allow-list",
-      "python": "owed",
+      "python": "ported",
       "swift": "ported",
-      "android": "owed",
+      "android": "ported",
       "issue": null,
-      "note": "WP T5."
+      "note": "WP T5, lite PR #569: contract `fulltext_parity/europepmc_free_pdf.json` on all three (the code decides; Europe PMC's own site only)."
     },
     {
       "id": "bmlib#111",
       "title": "Author role on the contrib-group",
-      "python": "owed",
+      "python": "ported",
       "swift": "ported",
-      "android": "owed",
+      "android": "ported",
       "issue": null,
-      "note": "WP T6."
+      "note": "WP T6, lite PR #570: Python `_article_authors`, Android `isAuthorContrib`; Swift aligned with Python."
     },
     {
       "id": "bmlib:474-europepmc-pmid-only-lookup",
@@ -1337,47 +1337,47 @@
     {
       "id": "bmlib#310",
       "title": "Every reader of a model's JSON in `quality/` narrows each value to the type its field holds",
-      "python": "owed",
+      "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
+      "note": "bmlib's Cochrane readers, `QualityAssessment.from_dict` and the assessment markdown formatter; the desktop has none of them (it stores only the Tier-2 classification). The rest of the rule landed with bmlib#295 (lite PR #568)."
     },
     {
       "id": "bmlib#312",
       "title": "Every reader of a model's JSON in `quality/` narrows each value to the type its field holds",
-      "python": "owed",
+      "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
+      "note": "bmlib's Cochrane readers, `QualityAssessment.from_dict` and the assessment markdown formatter; the desktop has none of them (it stores only the Tier-2 classification). The rest of the rule landed with bmlib#295 (lite PR #568)."
     },
     {
       "id": "bmlib#317",
       "title": "Every reader of a model's JSON in `quality/` narrows each value to the type its field holds",
-      "python": "owed",
+      "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
+      "note": "bmlib's Cochrane readers, `QualityAssessment.from_dict` and the assessment markdown formatter; the desktop has none of them (it stores only the Tier-2 classification). The rest of the rule landed with bmlib#295 (lite PR #568)."
     },
     {
       "id": "bmlib#318",
       "title": "Every reader of a model's JSON in `quality/` narrows each value to the type its field holds",
-      "python": "owed",
+      "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
+      "note": "bmlib's Cochrane readers, `QualityAssessment.from_dict` and the assessment markdown formatter; the desktop has none of them (it stores only the Tier-2 classification). The rest of the rule landed with bmlib#295 (lite PR #568)."
     },
     {
       "id": "bmlib#319",
       "title": "Every reader of a model's JSON in `quality/` narrows each value to the type its field holds",
-      "python": "owed",
+      "python": "n/a",
       "swift": "n/a",
       "android": "n/a",
       "issue": null,
-      "note": "quality/ JSON narrowing; Python only, WP T4 with bmlib#295, bmlib#320; unaudited at seeding."
+      "note": "bmlib's Cochrane readers, `QualityAssessment.from_dict` and the assessment markdown formatter; the desktop has none of them (it stores only the Tier-2 classification). The rest of the rule landed with bmlib#295 (lite PR #568)."
     },
     {
       "id": "bmlib#323",
@@ -1702,6 +1702,60 @@
       "android": "n/a",
       "issue": null,
       "note": "bmlib measurement script or sampler, or a comment/test pin; no library behaviour moves."
+    },
+    {
+      "id": "bmlib#195",
+      "title": "`risk_indicators` strings changed",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "Named only in 0.11.0's breaking-change note, as `#195/#206` (bmlib PR #195 with issue #206). Lite words its own indicators; the behaviour is bmlib#206's row."
+    },
+    {
+      "id": "bmlib:0.11.0-cached-full-text-refetched",
+      "title": "Cached full text is re-fetched",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "0.11.0 upgrade note restating bmlib#172, which has its own row."
+    },
+    {
+      "id": "bmlib:0.11.0-ensure-schema-download-days",
+      "title": "`ensure_schema()` adds",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib's publications database (`download_days`); lite has none."
+    },
+    {
+      "id": "bmlib:0.11.0-transparency-result-falsy-status",
+      "title": "`TransparencyResult.from_dict()` refuses a falsy non-string status",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "bmlib's four stored status fields; lite's `TransparencyResult` has none of them."
+    },
+    {
+      "id": "bmlib:0.11.0-cochrane-from-dict-valueerror",
+      "title": "`CochraneStudyAssessment.from_dict()`, `CochraneRiskOfBias` and `RiskOfBiasItem` raise `ValueError` naming what is missing",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "No platform here has a Cochrane assessor or reads a stored Tier-3 assessment back."
+    },
+    {
+      "id": "bmlib#485",
+      "title": "A blank `identifier` is no cache key",
+      "python": "owed",
+      "swift": "owed",
+      "android": "n/a",
+      "issue": "#585",
+      "note": "bmlib `[Unreleased]` after 0.11.0 (bmlib PR #499). Python names the markdown and PDF caches from an unstripped PMC ID, PMID or DOI (`pdf_utils.generate_fulltext_path`, `generate_pdf_path`), so a whitespace-only one is a file shared across documents. Swift's fetch caches refuse a blank id (`ArticleCacheKey.usable()`), but its upload path names the copy `\"\\(document.pmid).pdf\"` (`ScoredDocumentsView.swift`). Android names PDFs by the document's UUID."
     }
   ],
   "to_bmlib": [
