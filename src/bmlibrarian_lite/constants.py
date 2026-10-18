@@ -1524,3 +1524,21 @@ PAYWALL_HTTP_STATUSES = (401, 403)
 # The statuses of a page that shows no marker but refuses us: the HTTP client
 # was walled at this address already, so the entry waits for a person.
 RESCUE_REFUSED_PAGE_STATUSES = frozenset(PAYWALL_HTTP_STATUSES)
+
+
+# =============================================================================
+# Retraction Watch local copy
+# =============================================================================
+
+# Crossref's public export of the Retraction Watch database (takes ``mailto=``).
+RETRACTION_WATCH_EXPORT_URL = "https://api.labs.crossref.org/data/retractionwatch"
+# The copy lives beside the other data files, as its own SQLite file.
+RETRACTION_WATCH_DB_NAME = "retraction_watch.db"
+# The export is refreshed daily upstream; past five weeks a copy is too old to
+# say "not retracted", so it is no longer consulted.
+RETRACTION_WATCH_MAX_AGE_DAYS = 35
+# The export is ~68 MB, so a slow link needs far longer than a lookup call;
+# applies to connect and to each read, not the whole transfer.
+RETRACTION_WATCH_DOWNLOAD_TIMEOUT_SECONDS = 120
+# Streaming chunk size for the download, so the file never sits in memory.
+RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
