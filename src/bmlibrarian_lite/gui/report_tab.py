@@ -66,7 +66,6 @@ from ..audit_records import (
     EXTRACTION_FAILED_COUNT_KEY,
     DocumentOutcomes,
     checkpoint_metadata_with_retraction_snapshot,
-    retraction_evidence,
     classify_document_outcomes,
     excluded_in_snapshot,
     extraction_failure_record,
@@ -528,15 +527,13 @@ class ReportTab(QWidget):
         """Write *Check again*'s answers into a report's audit JSON, and nothing else.
 
         The file is read again, and replaced whole through a temp file in the
-        same directory, so a failure leaves it as it was.
+        same directory, so a failure leaves it as it was. Only the snapshot
+        changes: the summary's counts and the left-out papers' dates and
+        notices are facts of the run, and stay as it recorded them.
 
         Args:
             report_path: The report; its sibling ``*_audit.json`` is rewritten.
             screen: The check's screen.
-
-        The summary's unchecked count and the left-out papers' dates and
-        notices follow the new snapshot; which papers were left out stays as
-        the run recorded it.
 
         Returns:
             The new snapshot and the audit record as written.
@@ -551,21 +548,12 @@ class ReportTab(QWidget):
         rows = record.get("snapshot") if isinstance(record, Mapping) else None
         old = RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}
         updated = rechecked_snapshot(old, screen)
-        left_out = audit.get("retracted_documents")
-        left_out = left_out if isinstance(left_out, list) else []
         if not old:
             # An older report: the run left these out, whatever the check now says
+            left_out = audit.get("retracted_documents")
+            left_out = left_out if isinstance(left_out, list) else []
             ids = {str(e["id"]) for e in left_out if isinstance(e, Mapping) and "id" in e}
             updated = RetractionSnapshot(tuple({**r, "excluded": r["document_id"] in ids} for r in updated.rows))
-        by_id = {r["document_id"]: r for r in updated.rows}
-        for entry in left_out:
-            if isinstance(entry, dict) and entry.get("id") in by_id:
-                entry.update(retraction_evidence(by_id[entry["id"]]))
-        summary = audit.get("workflow_summary")
-        if isinstance(summary, dict):
-            summary["documents_retraction_unchecked"] = sum(
-                1 for r in updated.rows if r.get("status") == RetractionStatus.UNCHECKED
-            )
         audit["retraction"] = retraction_entry(updated.rows)
         temp = audit_path.with_name(audit_path.name + ".tmp")
         try:

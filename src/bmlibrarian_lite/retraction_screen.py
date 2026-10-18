@@ -26,14 +26,32 @@ from .retraction_store import PaperCheck
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_REQUIRED = ("document_id", "status")
-#: The status the run saw, kept in a row once *Check again* rewrites ``status``
+#: The status the run saw, kept in a row once *Check again* rewrites ``status``;
+#: ``None`` in a row *Check again* added to a run that was never checked
 RUN_STATUS_KEY = "run_status"
+#: The deciding notice the run saw, kept beside ``run_status``
+RUN_DECIDING_KEY = "run_deciding"
 _WARNING_STATUSES = (RetractionStatus.RETRACTED, RetractionStatus.CONCERN)
 
 
 def as_utc(moment: datetime) -> datetime:
     """Read a naive datetime as UTC, the zone every stored check is in."""
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
+def run_status_of(row: Mapping[str, Any]) -> str | None:
+    """The status the run saw in a snapshot row: ``run_status`` once *Check again* rewrote it."""
+    return row[RUN_STATUS_KEY] if RUN_STATUS_KEY in row else row.get("status")
+
+
+def run_deciding_of(row: Mapping[str, Any]) -> Any:
+    """The deciding notice (a dict, or ``None``) the run saw in a snapshot row."""
+    return row[RUN_DECIDING_KEY] if RUN_DECIDING_KEY in row else row.get("deciding")
+
+
+def as_the_run_saw_it(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A snapshot row with the run's status and notice in place of the current ones."""
+    return {**row, "status": run_status_of(row), "deciding": run_deciding_of(row)}
 
 
 class RetractionRecord(Protocol):
@@ -384,8 +402,10 @@ def rechecked_snapshot(
     """The run's snapshot with *Check again*'s answers written in.
 
     Status, check time and deciding notice are the new check's. ``excluded``
-    stays as the run recorded it, and ``run_status`` keeps the status the run
-    saw, so a later reopen still warns. An unchecked answer never replaces a
+    stays as the run recorded it, and ``run_status`` and ``run_deciding`` keep
+    what the run saw, set once and never overwritten: a later reopen still
+    warns, and why the run left a paper out stays its own (``None`` status
+    for a run that was never checked). An unchecked answer never replaces a
     decided row (an outage is not knowledge; the checker's own rule), and a
     document the check did not reach keeps its row. Only the run's own
     documents are written: a document another run linked gets a row only
@@ -413,13 +433,16 @@ def rechecked_snapshot(
             and old.get("status", RetractionStatus.UNCHECKED.value) != RetractionStatus.UNCHECKED.value
         ):
             continue
+        run_status = (
+            (old.get("status") if old.get("checked_at") else RetractionStatus.UNCHECKED.value)
+            if old
+            else None  # no row: the run was never checked
+        )
         rows[doc_id] = {
             **row,
             "excluded": old.get("excluded") is True,
-            RUN_STATUS_KEY: old.get(
-                RUN_STATUS_KEY,
-                old.get("status") if old.get("checked_at") else RetractionStatus.UNCHECKED.value,
-            ),
+            RUN_STATUS_KEY: old.get(RUN_STATUS_KEY, run_status),
+            RUN_DECIDING_KEY: run_deciding_of(old),
         }
     return RetractionSnapshot(tuple(rows.values()))
 

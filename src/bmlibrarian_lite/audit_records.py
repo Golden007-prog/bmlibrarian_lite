@@ -51,7 +51,7 @@ from .data_models import (
     LiteDocument,
     ScoredDocument,
 )
-from .retraction_screen import RetractionRecord, RetractionScreen
+from .retraction_screen import RetractionRecord, RetractionScreen, run_deciding_of, run_status_of
 
 #: What a failure whose code this build cannot name is recorded as. The count
 #: never degrades, only the reason (the #301 rule); the code itself is kept
@@ -409,16 +409,17 @@ def outcome_summary(
 
     Returns:
         The counts, the documents actually scored, and the threshold. The
-        retraction counts are None for a run that recorded no snapshot:
-        never 0, which would say the run was checked and nothing was found.
+        retraction counts are the run's (``run_status``), never a later
+        *Check again*'s, and None for a run that recorded no snapshot or was
+        never checked: never 0, which would say the run was checked and
+        nothing was found.
     """
-    rows = list((retraction_snapshot or {}).values())
+    statuses = [run_status_of(row) for row in (retraction_snapshot or {}).values()]
+    checked = any(status is not None for status in statuses)
     return {
-        "documents_excluded_retracted": len(outcomes.excluded_retracted) if rows else None,
+        "documents_excluded_retracted": len(outcomes.excluded_retracted) if checked else None,
         "documents_retraction_unchecked": (
-            sum(1 for row in rows if row.get("status") == RetractionStatus.UNCHECKED)
-            if rows
-            else None
+            statuses.count(RetractionStatus.UNCHECKED.value) if checked else None
         ),
         "documents_scored": outcomes.documents_scored,
         "documents_scored_relevant": len(outcomes.accepted),
@@ -502,7 +503,10 @@ def outcome_entries(
 
 
 def retraction_evidence(row: Mapping[str, Any] | None) -> dict[str, Any]:
-    """The retraction date and notice DOI a snapshot row's evidence names.
+    """The retraction date and notice DOI the run's evidence named for a paper.
+
+    The run's (``run_deciding``), never a later *Check again*'s: this says
+    why the run left the paper out.
 
     Args:
         row: The paper's snapshot row, read as input; None when absent.
@@ -510,7 +514,7 @@ def retraction_evidence(row: Mapping[str, Any] | None) -> dict[str, Any]:
     Returns:
         ``retraction_date`` and ``notice_doi``, each None when not named.
     """
-    deciding = row.get("deciding") if isinstance(row, Mapping) else None
+    deciding = run_deciding_of(row) if isinstance(row, Mapping) else None
     deciding = deciding if isinstance(deciding, Mapping) else {}
     return {"retraction_date": deciding.get("date"), "notice_doi": deciding.get("notice_doi")}
 

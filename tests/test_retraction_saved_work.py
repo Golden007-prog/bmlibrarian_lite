@@ -226,7 +226,14 @@ def test_rechecked_snapshot_keeps_what_the_run_did() -> None:
     assert rows[CITED.id]["deciding"]["notice_doi"] == "10.9/notice"
     assert rows[CITED.id]["excluded"] is False and rows[CITED.id]["run_status"] == "clear"
     assert rows[LEFT_OUT.id]["status"] == "clear" and rows[LEFT_OUT.id]["excluded"] is True
+    assert rows[LEFT_OUT.id]["deciding"] is None
+    assert rows[LEFT_OUT.id]["run_deciding"]["notice_doi"] == "10.9/notice"
     assert rows[UNCITED.id] == snapshot[UNCITED.id]  # not reached: kept as it was
+    # a second Check again never overwrites what the run saw
+    again = rechecked_snapshot(rows, screen_documents(DOCUMENTS, {LEFT_OUT.id: check(RetractionStatus.CONCERN, NOW)}))
+    row = {r["document_id"]: r for r in again.to_snapshot()}[LEFT_OUT.id]
+    assert row["run_status"] == "retracted" and row["run_deciding"]["notice_doi"] == "10.9/notice"
+    assert row["deciding"]["notice_doi"] == "10.9/eoc"
     failed = screen_documents(DOCUMENTS, {}, failed=True)
     assert {r["document_id"]: r for r in rechecked_snapshot(snapshot, failed).to_snapshot()} == snapshot
 
@@ -523,7 +530,11 @@ def test_reopen_keeps_excluded_as_excluded(
     LiteMainWindow._on_question_selected(window, QUESTION, "aspirin")
 
     card = window.audit_trail_tab.literature_tab.get_card(LEFT_OUT.id)
-    assert card._excluded_label.text().startswith("Excluded: retracted")
+    run_line = "Excluded: retracted. Retracted on 2026-03-09 (notice 10.9/notice)"
+    assert card._excluded_label.text() == f"{run_line}. Checked again: No retraction found"
+    # control: a paper still retracted as the run saw it gets the run's line alone
+    window.audit_trail_tab.show_retraction_snapshot(run_snapshot())
+    assert card._excluded_label.text() == run_line
     window.report_tab.show_saved_retraction.assert_called_once_with(checkpoint_id)
     kwargs = window.report_tab.display_report.call_args.kwargs
     assert kwargs["retraction_snapshot"][LEFT_OUT.id]["excluded"] is True
@@ -834,9 +845,8 @@ def test_check_again_on_a_loaded_report_rewrites_only_the_audit_json_snapshot(
     assert ids == sorted([CITED.id, LEFT_OUT.id])  # the cited paper and the one the run left out
     assert report_path.read_bytes() == md_before
     after = json.loads(audit_path.read_text(encoding="utf-8"))
-    derived = {"retraction", "retracted_documents", "workflow_summary"}  # follow the new snapshot
-    assert {k: v for k, v in after.items() if k not in derived} == {
-        k: v for k, v in before.items() if k not in derived
+    assert {k: v for k, v in after.items() if k != "retraction"} == {
+        k: v for k, v in before.items() if k != "retraction"
     }
     rows = {r["document_id"]: r for r in after["retraction"]["snapshot"]}
     assert rows[CITED.id]["status"] == "retracted" and rows[CITED.id]["excluded"] is False
@@ -878,16 +888,15 @@ def saved_with_left_out(tab: ReportTab, snapshot: dict[str, dict[str, Any]] | No
     return tab._current_report_path
 
 
-def test_check_again_refreshes_the_derived_audit_fields_and_the_shown_data(
+def test_check_again_keeps_the_runs_record_of_a_left_out_paper(
     tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Summary count and left-out dates follow the new snapshot, on disk and on screen."""
+    """A left-out paper reinstated since: the run's date, notice and counts stay, on disk and on screen."""
     report_path = saved_with_left_out(tab, run_snapshot())
     audit_path = audit_of(report_path)
     before = json.loads(audit_path.read_text(encoding="utf-8"))
     assert [e["id"] for e in before["retracted_documents"]] == [LEFT_OUT.id]
     load(tab, report_path, monkeypatch)
-    # CITED comes back unchecked-by-outage? no: a served clear answer; LEFT_OUT's notice is withdrawn
     run_check_again(
         tab,
         storage,
@@ -895,13 +904,58 @@ def test_check_again_refreshes_the_derived_audit_fields_and_the_shown_data(
         {CITED.id: check(RetractionStatus.CLEAR, NOW), LEFT_OUT.id: check(RetractionStatus.CLEAR, NOW)},
     )
     after = json.loads(audit_path.read_text(encoding="utf-8"))
-    assert [e["id"] for e in after["retracted_documents"]] == [LEFT_OUT.id]  # membership is the run's
-    assert after["retracted_documents"][0]["retraction_date"] is None
-    assert after["retracted_documents"][0]["notice_doi"] is None
-    assert before["retracted_documents"][0]["notice_doi"] == "10.9/notice"
+    assert after["retracted_documents"] == before["retracted_documents"]
+    assert after["retracted_documents"][0]["retraction_date"] == "2026-03-09"
+    assert after["retracted_documents"][0]["notice_doi"] == "10.9/notice"
+    assert after["workflow_summary"] == before["workflow_summary"]
+    row = {r["document_id"]: r for r in after["retraction"]["snapshot"]}[LEFT_OUT.id]
+    assert row["status"] == "clear" and row["deciding"] is None  # the current status, kept apart
+    assert row["run_status"] == "retracted" and row["run_deciding"]["notice_doi"] == "10.9/notice"
     assert tab._loaded_audit_data == after
-    assert "10.9/notice" not in tab._audit_trail_text()
+    assert "10.9/notice" in tab._audit_trail_text()
     assert tab.retraction_line.text() == "Retraction status checked 2026-10-15"
+
+
+def test_check_again_keeps_the_runs_counts_and_evidence_on_a_reopened_question(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's unchecked count and left-out notice survive Check again, live and reopened."""
+    checks = {**run_checks(), UNCITED.id: check(RetractionStatus.UNCHECKED, LATER_RUN)}
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, checks))
+    checkpoint_id = saved_checkpoint(storage, metadata)
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    summary = tab._audit_trail_data()["workflow_summary"]
+    assert (summary["documents_retraction_unchecked"], summary["documents_excluded_retracted"]) == (1, 1)
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS})
+    rows = recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata)
+    assert rows[UNCITED.id]["status"] == "clear" and rows[LEFT_OUT.id]["status"] == "clear"
+    for reopened in (False, True):
+        if reopened:
+            reopen(tab, rows, checkpoint_id)
+        data = tab._audit_trail_data()
+        assert data["workflow_summary"]["documents_retraction_unchecked"] == 1
+        assert data["workflow_summary"]["documents_excluded_retracted"] == 1
+        [entry] = data["retracted_documents"]
+        assert (entry["retraction_date"], entry["notice_doi"]) == ("2026-03-09", "10.9/notice")
+
+
+def test_a_pre_feature_run_checked_again_reads_as_not_recorded(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run was never screened: its counts say not recorded, never 0 left out; the line dates the check."""
+    checkpoint_id = saved_checkpoint(storage, {})
+    reopen(tab, None, checkpoint_id)
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS})
+    rows = recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata)
+    assert {r["run_status"] for r in rows.values()} == {None}
+    reopen(tab, rows, checkpoint_id)
+    summary = tab._audit_trail_data()["workflow_summary"]
+    assert summary["documents_excluded_retracted"] is None
+    assert summary["documents_retraction_unchecked"] is None
+    text = tab._audit_trail_text()
+    assert "- Retracted papers left out: not recorded for this run" in text
+    assert "- Papers whose retraction status could not be checked: not recorded for this run" in text
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-19"
 
 
 def test_loading_a_report_without_an_audit_file_says_its_status_is_unknown(

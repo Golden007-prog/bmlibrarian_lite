@@ -23,7 +23,7 @@ from bmlib.publications.retraction_status import (
 
 from .retraction_checks import paper_key
 from .retraction_export import ExportCopy, ExportState
-from .retraction_screen import RetractionRecord, RetractionScreen, as_utc
+from .retraction_screen import RetractionRecord, RetractionScreen, as_utc, run_deciding_of
 from .retraction_store import PaperCheck
 
 _NOTICE_OPENING = "> **Retraction check:** "
@@ -314,14 +314,14 @@ _CONCERN_INDENT = "    "
 
 
 def _evidence_parts(row: Mapping[str, Any]) -> tuple[str | None, str | None]:
-    """The deciding notice's date and DOI from a snapshot row."""
-    deciding = row.get("deciding") or {}
+    """The date and DOI of the deciding notice the run saw, from a snapshot row."""
+    deciding = run_deciding_of(row) or {}
     return deciding.get("date"), deciding.get("notice_doi")
 
 
 def _row_by_label(row: Mapping[str, Any]) -> bool:
-    """Whether a snapshot row's verdict rests on PubMed's label."""
-    deciding = row.get("deciding") or {}
+    """Whether the run's verdict in a snapshot row rests on PubMed's label."""
+    deciding = run_deciding_of(row) or {}
     return deciding.get("source") in (None, RetractionSource.PUBMED_LABEL.value)
 
 
@@ -371,6 +371,18 @@ _BADGE_TEXTS = {
     RetractionStatus.UNCHECKED: "NOT CHECKED",
 }
 EXCLUDED_RETRACTED_LABEL = "Excluded: retracted"
+
+
+def excluded_line(run_check: PaperCheck, current: PaperCheck) -> str:
+    """A left-out paper's card line: why the run left it out, then its status now when that differs.
+
+    Args:
+        run_check: The check as the run saw it.
+        current: The latest check (*Check again*'s, or the run's own).
+    """
+    line = f"{EXCLUDED_RETRACTED_LABEL}. {paper_status_line(run_check)}"
+    now = paper_status_line(current)
+    return line if now == paper_status_line(run_check) else f"{line}. Checked again: {now}"
 
 
 def badge_text(status: RetractionStatus) -> str | None:

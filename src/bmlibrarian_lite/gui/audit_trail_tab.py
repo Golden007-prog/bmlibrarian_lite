@@ -48,7 +48,7 @@ from ..data_models import (
     TransparencyAnalysisFailure,
 )
 from ..quality.data_models import QualityAssessment
-from ..retraction_screen import RetractionScreen, check_from_snapshot_row
+from ..retraction_screen import RetractionScreen, as_the_run_saw_it, check_from_snapshot_row
 from ..transparency import (
     TransparencyOutcome,
     TransparencyResult,
@@ -375,13 +375,19 @@ class AuditTrailTab(QWidget):
     def show_retraction_snapshot(self, rows: Mapping[str, Mapping[str, Any]]) -> None:
         """Show a reopened question's stored snapshot the same way.
 
+        A left-out paper's line gives the run's evidence, and its status now
+        when *Check again* found another; the badge is the status now.
+
         Args:
             rows: The snapshot rows by document id.
         """
         for doc_id, row in rows.items():
             check = check_from_snapshot_row(row)
-            if check is not None:
-                self.literature_tab.update_retraction(doc_id, check, bool(row.get("excluded")))
+            if check is None:
+                continue
+            excluded = bool(row.get("excluded"))
+            run_check = check_from_snapshot_row(as_the_run_saw_it(row)) if excluded else None
+            self.literature_tab.update_retraction(doc_id, check, excluded, run_check)
 
     # =========================================================================
     # Data Access
