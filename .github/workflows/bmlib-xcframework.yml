@@ -10,20 +10,22 @@ permissions:
 # The committed copy is this job's own build. Byte-identity needs the same
 # rustc *and* the same Apple linker, so a copy built on a developer's Mac never
 # matches a runner's. To re-pin:
-#   1. set bmlibCommit (and rustc, if it moves) in the pin;
-#   2. run this workflow; it fails and uploads `bmlib-xcframework`;
+#   1. set bmlibCommit (and rustc, if it moves) in the pin, on a PR branch;
+#   2. this workflow's run on that PR fails and uploads `bmlib-xcframework`;
 #   3. unpack its xcframework.tgz into Packages/BioMedLit/Frameworks (the
 #      xcframework) and Packages/BioMedLit/Sources/BmlibCore (bmlib_ffi.swift),
 #      and copy treeSha256 and xcode from its build.json into the pin.
 # When a runner image moves to another Xcode, this fails on an unchanged pin;
 # the log names both Xcode versions, and the same three steps re-pin.
 #
-# Deliberately NOT filtered by `paths:` (HANDOVER: no job gains one).
+# Deliberately NOT filtered by `paths:` (HANDOVER: no job gains one). No
+# workflow_dispatch: a manual run would build the pinned code with the default
+# branch's privileges and write the cache later runs restore (CodeQL's cache
+# poisoning alert on PR #588); a re-pin is a PR anyway.
 on:
   pull_request:
   push:
     branches: [master]
-  workflow_dispatch:
 
 concurrency:
   group: bmlib-xcframework-${{ github.ref }}
