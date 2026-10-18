@@ -6,7 +6,7 @@
 
 **Architecture:** Phase 0 builds the sync ledger and its CI check. Phase 1 fixes the defects that give wrong results today (full TDD tasks below). Phase 2 is a gate: a spike that decides whether Swift and Android take bmlib's Rust crate through UniFFI instead of hand-porting. Phases 3–7 are work packages; each is expanded into its own plan with this document's conventions when it is picked up, and Phase 4 (JATS on mobile) is shaped by the Phase 2 decision. Every rule shared by more than one platform gets a contract JSON under `doc/cross_platform/` that all three test suites read.
 
-**Status (2026-10-18):** Phases 0 to 2 have landed: the ledger (PR #564), Tasks 1 to 6 (PRs #565 to #570), and WP-2 (PR #572; verdict "Phase 4 consumes Rust"). The ledger's statuses were updated after they merged, and its pin was bumped to bmlib 0.11.0. Phase 7's retraction checking is next.
+**Status (2026-10-18):** Phases 0 to 2 have landed: the ledger (PR #564), Tasks 1 to 6 (Task 1 PR #566, Task 2 PR #565, Tasks 3 to 6 PRs #567 to #570), and WP-2 (PR #572; verdict "Phase 4 consumes Rust"). The ledger's statuses were updated after they merged, and its pin was bumped to bmlib 0.11.0; bmlib#485, on bmlib's `main` after 0.11.0, is triaged too (lite #585). Phase 7's retraction checking is next.
 
 **Tech Stack:** Python 3.12 / pytest / ElementTree; Swift 6 / SwiftPM / XCTest; Kotlin / JUnit / kxml2 (JVM tests); Rust + UniFFI (Phase 2 only).
 

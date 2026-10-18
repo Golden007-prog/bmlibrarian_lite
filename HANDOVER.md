@@ -49,7 +49,8 @@ Compressed once merged: the rules that still bind. Git history and the
   failure, never 3), `europepmc_free_pdf.json`; desktop `pubmed/record_ids.py`
   and `quality/json_fields.py`; converter **6**, analyser **2.7**. **WP-2:
   Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet,
-  pin stale (**#583**). Lodged: #573–#581.
+  pin stale (**#583**). Lodged: #573–#581; **#585** (bmlib#485, a blank
+  id as a full-text cache name, on bmlib's `main` after 0.11.0).
 - **A download is checked before it is cached** (#560, #561; PR #562): Swift
   stages `<cache name>.<UUID>.unchecked`, Android checks the `.part`;
   **Android's `downloadPdf` never answers from the cache.** Lodged: #563.
@@ -213,7 +214,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 - **Retraction checking** (above); then the plan's work packages: Phase 3
   (transparency), Phase 4 (JATS, as adapter work over the Rust parser after
   **#583**), Phase 5 (retrieval), Phase 6 (LLM plumbing). The bmlib audit's
-  leftovers are **#571**, **#573**–**#581**.
+  leftovers are **#571**, **#573**–**#581**, **#585**.
 - **#545** sweep the PDF library for other articles' PDFs (CLI only, the
   maintainer's call); **#547** keep a set-aside PDF from the GUI (both from
   #541); **#555** Android release builds fail R8; **#556**–**#558** (#546's).

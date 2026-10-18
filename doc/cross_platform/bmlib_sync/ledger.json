@@ -1747,6 +1747,15 @@
       "android": "n/a",
       "issue": null,
       "note": "No platform here has a Cochrane assessor or reads a stored Tier-3 assessment back."
+    },
+    {
+      "id": "bmlib#485",
+      "title": "A blank `identifier` is no cache key",
+      "python": "owed",
+      "swift": "owed",
+      "android": "n/a",
+      "issue": "#585",
+      "note": "bmlib `[Unreleased]` after 0.11.0 (bmlib PR #499). Python names the markdown and PDF caches from an unstripped PMC ID, PMID or DOI (`pdf_utils.generate_fulltext_path`, `generate_pdf_path`), so a whitespace-only one is a file shared across documents. Swift's fetch caches refuse a blank id (`ArticleCacheKey.usable()`), but its upload path names the copy `\"\\(document.pmid).pdf\"` (`ScoredDocumentsView.swift`). Android names PDFs by the document's UUID."
     }
   ],
   "to_bmlib": [
