@@ -176,3 +176,10 @@ def test_a_store_error_keeps_the_previous_copy(tmp_path, monkeypatch):
     monkeypatch.setattr("bmlibrarian_lite.retraction_export.store_retraction_notices", boom)
     _refresh(tmp_path, _Session())
     _assert_untouched(tmp_path, before)
+
+
+def test_a_gzip_encoded_response_is_not_judged_by_content_length(tmp_path):
+    """Content-Length counts compressed bytes, so it cannot refuse a decoded body."""
+    session = _Session(headers={"Content-Encoding": "gzip", "Content-Length": "7"})
+    copy = _refresh(tmp_path, session)
+    assert copy.state is ExportState.CURRENT and copy.data_as_of == TODAY

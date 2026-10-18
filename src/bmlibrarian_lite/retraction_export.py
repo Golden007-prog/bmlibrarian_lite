@@ -151,7 +151,10 @@ def _download(session: requests.Session, mailto: str, part: Path) -> bool:
                 handle.write(chunk)
                 received += len(chunk)
         declared = response.headers.get("Content-Length")
-        if declared is not None and int(declared) != received:
+        # iter_content decompresses, so a declared (compressed) length can
+        # only be compared when the body was not content-encoded.
+        encoded = response.headers.get("Content-Encoding")
+        if declared is not None and not encoded and int(declared) != received:
             logger.warning("Retraction Watch export cut short: %s of %s bytes", received, declared)
             return False
         return True
