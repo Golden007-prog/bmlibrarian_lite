@@ -26,4 +26,4 @@ class _ClearChecker:
 @pytest.fixture
 def mcp_retraction_clear(monkeypatch: pytest.MonkeyPatch) -> None:
     """Every paper is clear and no network is used."""
-    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx: _ClearChecker())
+    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx, **kw: _ClearChecker())

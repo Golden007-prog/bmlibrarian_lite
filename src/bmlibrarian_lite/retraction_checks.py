@@ -23,6 +23,7 @@ from pathlib import Path
 
 import requests
 from bmlib.publications.retraction_status import (
+    RetractionSource,
     RetractionStatus,
     RetractionVerdict,
     crossref_key,
@@ -90,6 +91,21 @@ def _keeps(old: PaperCheck, new: RetractionVerdict) -> bool:
         return False
     return not (
         new.status is RetractionStatus.CONCERN and old.verdict.status is RetractionStatus.CLEAR
+    )
+
+
+def _label_only_unreadable(old: PaperCheck, docs: Sequence[LiteDocument]) -> bool:
+    """Whether the stored warning rests on the PubMed label these documents cannot show.
+
+    A paper reached under another document id may carry no record at all; its
+    silence is then not a corrected label, so the stored row stands.
+    """
+    deciding = old.verdict.deciding
+    return (
+        old.verdict.status in (RetractionStatus.RETRACTED, RetractionStatus.CONCERN)
+        and deciding is not None
+        and deciding.source is RetractionSource.PUBMED_LABEL
+        and all(doc.publication_types is None for doc in docs)
     )
 
 
@@ -278,6 +294,13 @@ class RetractionChecker:
                 lookups.failures.get(doi) if doi else None,
             )
             old = stored.get(key)
+            if (
+                old is not None
+                and verdict.status is not RetractionStatus.RETRACTED
+                and _label_only_unreadable(old, docs)
+            ):
+                out.update((doc.id, old) for doc in docs)
+                continue
             if old is not None and _keeps(old, verdict):
                 # an outage never erases what an answer established
                 kept = old.verdict.status in (RetractionStatus.RETRACTED, RetractionStatus.CONCERN)
