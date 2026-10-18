@@ -29,17 +29,31 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Next: retraction checking** (Phase 7; ledger row
-`bmlib:0.7.0-retraction-watch`). Spec:
-`docs/superpowers/specs/2026-10-18-retraction-checking-design.md`. bmlib's
-rule landed (bmlib#504, PR #506; #508, a served Crossref result carries its
-DOI, PR #511; contract 47 rule cases). **Decided 2026-10-18: the desktop
-imports `bmlib.publications.retraction_status`** (a 0.12.0 release if one is
-cut, else a git pin): Phase 8 comes forward for this module; the apps use
-the FFI. Next: write the plan (superpowers:writing-plans), then the spec's
-PR order. **Owed in PR 1** (it copies the fixture): sync the ledger to bmlib
-`f767215`, triaging bmlib#489, #490, #494, #497, #504
-(`check_bmlib_ledger.py --bmlib ~/src/bmlib`).
+**Retraction checking, desktop: built, in review** (plan
+`docs/superpowers/plans/2026-10-18-retraction-checking-desktop.md`, spec
+`docs/superpowers/specs/2026-10-18-retraction-checking-design.md`; all 14
+tasks done subagent-driven, every task and each PR whole-branch reviewed).
+- **PR 1 = #594** (open): bmlib git dependency (`f767215`, no PyPI release
+  yet; a git pin blocks a PyPI upload), the contract copy
+  `doc/cross_platform/retraction_parity/`, ledger synced, publication types
+  stored (`documents.publication_types`), the incremental search stores
+  everything it fetches, the document upsert keeps rowid and never blanks a
+  field. Lodged #591 (Tier 1 never sees types), #592, #593, #590 (other
+  memory-only facts).
+- **PR 2** (local branch `feat/retraction-desktop-2`, head `98a1178b`, in the
+  worktree `.claude/worktrees/retraction-desktop`): export copy, Crossref
+  lookups, the checker and `retraction_checks` table, screening, the review
+  choke point, audit, report, MCP, badges/banner, `bmll retractions-update`.
+  **Open it against master after #594 merges** (rebase first). Lodged #595.
+- **PR 3** (local `feat/retraction-desktop-3`, head `1d12734b`, cut from
+  PR 2): saved work (reopened question, saved report file, *Check again*;
+  snapshot rows keep `run_status`/`run_deciding` as facts of the run) and
+  the Research Questions passes screened. Open after PR 2 merges.
+- The SDD ledger with every ruling is in that worktree's
+  `.superpowers/sdd/2026-10-18-retraction-checking-desktop/progress.md`
+  (git-ignored): keep it until PR 3 is open, then delete the worktree.
+- **Next after merge:** the iOS and Android plans (they consume bmlib's FFI;
+  the pin and CI are #588), against the same contract.
 
 ## Recently landed (context)
 
@@ -63,24 +77,15 @@ PR order. **Owed in PR 1** (it copies the fixture): sync the ledger to bmlib
   id as a full-text cache name, on bmlib's `main` after 0.11.0).
 - **A download is checked before it is cached** (#560, #561; PR #562); **Android's
   `downloadPdf` never answers from the cache.** Lodged: #563.
-- **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559). Contract
-  `pdf_title_check.json`: ≥ 0.5 of the title's adjacent word pairs on the first
-  page with text, or the whole title with word breaks ignored (≥ 20
-  letters/numbers); no title, no text or a translated `[title]` is unchecked,
-  never a match (limits: #543). A mismatch is set aside as `.mismatch`, never
-  read; the refusal is `wrong_article`, a skip **with its address**, never an
-  absence; no platform keeps a link to a refused PDF. Desktop only: numbered
-  set-asides, a person's keep `<pdf>.kept` (`bmll keep-pdf`). **Android's render
-  of another article ends the fetch** (#556). Open: #545, #547, #555–#558.
-- **Bot-walled PDFs: the desktop browser rescue** (#480, closed; stages 1–3,
-  PRs #521, #529, #536). Spec
-  `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, developer doc
-  `doc/developer/browser_rescue.md`. `challenged` on all three platforms; a
-  SQLite queue; a hidden QtWebEngine pass; a rescue re-analyses; the review
-  queue window (`gui/review_queue_dialog.py`), "Walled PDFs: N", shown visits,
-  *Walk the queue*, the interrogation tab's priority path. Live acceptance
-  (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect 10/10
-  `needs_person`. The apps' embedded browsers need their own spec.
+- **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559; contract
+  `pdf_title_check.json`): a mismatch is set aside as `.mismatch`, never read;
+  the refusal is `wrong_article`, a skip **with its address**, never an
+  absence; no title/text is unchecked, never a match. Desktop: `<pdf>.kept`
+  (`bmll keep-pdf`). Open: #543, #545, #547, #555–#558.
+- **Bot-walled PDFs: the desktop browser rescue** (#480; PRs #521, #529,
+  #536; spec `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, doc
+  `doc/developer/browser_rescue.md`): SQLite queue, hidden QtWebEngine pass,
+  review-queue window. Live: PMC 12/12, ScienceDirect `needs_person`.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
