@@ -10,7 +10,7 @@ No provider text: a failure's cause comes from ``RequestFailure.describe()``.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -174,6 +174,37 @@ def checked_on_line(checked_at: datetime | None) -> str:
     return f"Retraction status checked {as_utc(checked_at).date().isoformat()}"
 
 
+def saved_work_line(rows: Iterable[Mapping[str, Any]]) -> str:
+    """A reopened run's line: when its decided papers were checked, and how many were not.
+
+    The date is the oldest check time among decided rows (retracted,
+    concern, clear), so an unchecked answer's time never reads as a check.
+
+    Args:
+        rows: The run's snapshot rows.
+
+    Returns:
+        E.g. "Retraction status checked 2026-10-01; 2 papers could not be
+        checked"; "Retraction status could not be checked" when no row is
+        decided; "Retraction status never checked" without rows.
+    """
+    rows = list(rows)
+    if not rows:
+        return checked_on_line(None)
+    unchecked = sum(1 for r in rows if r.get("status") == RetractionStatus.UNCHECKED.value)
+    decided = [
+        as_utc(datetime.fromisoformat(r["checked_at"]))
+        for r in rows
+        if r.get("status") != RetractionStatus.UNCHECKED.value and r.get("checked_at")
+    ]
+    if not decided:
+        return "Retraction status could not be checked"
+    line = checked_on_line(min(decided))
+    if unchecked:
+        line += f"; {'1 paper' if unchecked == 1 else f'{unchecked:,} papers'} could not be checked"
+    return line
+
+
 def retraction_methods_line(record: RetractionRecord) -> str:
     """The report's methods line: when the run's status was checked.
 
@@ -223,6 +254,15 @@ def saved_work_warning(
 def with_pass_retraction_clause(text: str, clause: str) -> str:
     """Add a pass's retraction clause (``run_summary_clause``) to its final line."""
     return f"{text.rstrip().rstrip('.')}; {clause}." if clause else text
+
+
+#: A pass's offer counts papers before its screen runs (in the worker), so it says what the screen will do
+PASS_LEFT_OUT_SENTENCE = "Retracted papers are left out before the work starts."
+
+
+def pass_retraction_note(clause: str) -> str:
+    """A pass's retraction clause as a dialog's closing paragraph; "" without one."""
+    return f"\n\nRetraction check: {clause}." if clause else ""
 
 
 def paper_status_line(check: PaperCheck) -> str:

@@ -385,9 +385,12 @@ def rechecked_snapshot(
 
     Status, check time and deciding notice are the new check's. ``excluded``
     stays as the run recorded it, and ``run_status`` keeps the status the run
-    saw, so a later reopen still warns. A document the check did not reach
-    keeps its row; a document the run never recorded gets one, not excluded.
-    A failed check changes nothing.
+    saw, so a later reopen still warns. An unchecked answer never replaces a
+    decided row (an outage is not knowledge; the checker's own rule), and a
+    document the check did not reach keeps its row. Only the run's own
+    documents are written: a document another run linked gets a row only
+    when the run has no snapshot (it predates the check). A failed check
+    changes nothing.
 
     Args:
         snapshot: The run's snapshot rows by document id.
@@ -397,20 +400,27 @@ def rechecked_snapshot(
         The new snapshot.
     """
     rows = {doc_id: dict(row) for doc_id, row in snapshot.items()}
-    if not screen.failed:
-        for row in screen.to_snapshot():
-            doc_id = row["document_id"]
-            if doc_id not in screen.checks:
-                continue
-            old = rows.get(doc_id, {})
-            rows[doc_id] = {
-                **row,
-                "excluded": old.get("excluded") is True,
-                RUN_STATUS_KEY: old.get(
-                    RUN_STATUS_KEY,
-                    old.get("status") if old.get("checked_at") else RetractionStatus.UNCHECKED.value,
-                ),
-            }
+    if screen.failed:
+        return RetractionSnapshot(tuple(rows.values()))
+    for row in screen.to_snapshot():
+        doc_id = row["document_id"]
+        check = screen.checks.get(doc_id)
+        if check is None or (snapshot and doc_id not in snapshot):
+            continue
+        old = rows.get(doc_id, {})
+        if (
+            check.verdict.status is RetractionStatus.UNCHECKED
+            and old.get("status", RetractionStatus.UNCHECKED.value) != RetractionStatus.UNCHECKED.value
+        ):
+            continue
+        rows[doc_id] = {
+            **row,
+            "excluded": old.get("excluded") is True,
+            RUN_STATUS_KEY: old.get(
+                RUN_STATUS_KEY,
+                old.get("status") if old.get("checked_at") else RetractionStatus.UNCHECKED.value,
+            ),
+        }
     return RetractionSnapshot(tuple(rows.values()))
 
 

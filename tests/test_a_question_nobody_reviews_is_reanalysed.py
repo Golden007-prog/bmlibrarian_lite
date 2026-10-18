@@ -944,6 +944,9 @@ class TestTheTabOffersOnlyWhatIsPending:
         from bmlibrarian_lite.gui import research_questions_tab as module
 
         tab = MagicMock()
+        # no retraction screen left anything out of this pass
+        tab._left_out.side_effect = lambda text: text
+        tab._left_out_note.return_value = ""
         with patch.object(module, "QMessageBox") as box, \
                 patch.object(module, "QTimer"):
             getattr(module.ResearchQuestionsTab, handler)(tab, *args)

@@ -83,7 +83,6 @@ from ..search_failures import without_search_shortfall_notice
 from ..retraction_checks import build_retraction_checker, stored_checks
 from ..retraction_screen import (
     RetractionScreen,
-    RetractionSnapshot,
     UnbuiltChecker,
     changed_since_snapshot,
     rechecked_snapshot,
@@ -94,7 +93,7 @@ from ..retraction_text import (
     CHECK_AGAIN_NOT_SAVED,
     CHECKING_AGAIN_LINE,
     plain_title,
-    retraction_methods_line,
+    saved_work_line,
     saved_work_warning,
     without_retraction_notice,
 )
@@ -410,8 +409,7 @@ class ReportTab(QWidget):
         if current is not None:
             self._shown_checks = current
         snapshot = self._retraction_snapshot or {}
-        record = RetractionSnapshot.from_rows(snapshot.values())
-        self.retraction_line.setText(retraction_methods_line(record) + note)
+        self.retraction_line.setText(saved_work_line(snapshot.values()) + note)
         self.retraction_line.setVisible(True)
         self.check_again_btn.setVisible(True)
         # one Check again at a time, even across reopened questions

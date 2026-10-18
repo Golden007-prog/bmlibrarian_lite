@@ -70,7 +70,11 @@ from ..data_models import (
 from ..exceptions import SQLiteError
 from ..retraction_checks import RetractionChecker, build_retraction_checker
 from ..retraction_screen import UnbuiltChecker
-from ..retraction_text import with_pass_retraction_clause
+from ..retraction_text import (
+    PASS_LEFT_OUT_SENTENCE,
+    pass_retraction_note,
+    with_pass_retraction_clause,
+)
 from ..search_failures import describe_search_shortfalls
 from ..storage import LiteStorage
 from .workers import (
@@ -668,6 +672,8 @@ class ResearchQuestionsTab(QWidget):
             every check fails, so the pass goes on with every paper unchecked.
         """
         try:
+            # No I/O: a requests session and the configured paths; nothing is
+            # asked until the worker checks, so the GUI thread never waits
             return build_retraction_checker(self.config, self.storage)
         except Exception as e:
             # the type only: provider text never reaches the reader or the log
@@ -675,29 +681,31 @@ class ResearchQuestionsTab(QWidget):
             return UnbuiltChecker()
 
     def _watch_retraction_screen(self, worker: Any) -> None:
-        """Say what a pass's retraction screen left out, now and in its final line.
+        """Keep what a pass's retraction screen left out, for its final line and dialog.
 
-        Connected after the pass's own terminal handlers, so the clause is
-        added to the line they leave.
+        The screen's signal is emitted before the pass's terminal one, by the
+        same thread, so it arrives first; each terminal handler reads it
+        through :meth:`_left_out` and :meth:`_left_out_note`.
 
         Args:
             worker: A pass worker with ``retractions_screened``.
         """
         self._retraction_clause = ""
         worker.retractions_screened.connect(self._on_retractions_screened)
-        for signal in (worker.finished, worker.error, worker.cancelled):
-            signal.connect(lambda *_args: self._append_retraction_clause())
 
     def _on_retractions_screened(self, clause: str) -> None:
-        """Keep the screen's clause for the final line, and show it now."""
+        """Keep the screen's clause for the pass's end, and show it now."""
         self._retraction_clause = clause
         if clause:
             self.progress_label.setText(with_pass_retraction_clause("Retraction check", clause))
 
-    def _append_retraction_clause(self) -> None:
-        """Add the kept clause to the pass's final line, once."""
-        clause, self._retraction_clause = self._retraction_clause, ""
-        self.progress_label.setText(with_pass_retraction_clause(self.progress_label.text(), clause))
+    def _left_out(self, text: str) -> str:
+        """A pass's final line with what its retraction screen left out."""
+        return with_pass_retraction_clause(text, self._retraction_clause)
+
+    def _left_out_note(self) -> str:
+        """The same, as a closing paragraph for the pass's dialog."""
+        return pass_retraction_note(self._retraction_clause)
 
     def _is_busy(self) -> bool:
         """Whether any of the tab's workers is still held."""
@@ -1064,10 +1072,10 @@ class ResearchQuestionsTab(QWidget):
         failures = (
             failed_scorings_sentence(result) if isinstance(result, BenchmarkResult) else None
         )
-        self.progress_label.setText(
+        self.progress_label.setText(self._left_out(
             f"Benchmark complete: {doc_count} documents, {model_count} models"
             + (f" - {failures}" if failures else "")
-        )
+        ))
 
         # Clean up worker
         QTimer.singleShot(100, self._cleanup_benchmark_worker)
@@ -1088,7 +1096,7 @@ class ResearchQuestionsTab(QWidget):
         )
         if cancellation is not None:
             self.progress_label.setText(
-                benchmark_cancelled_text(cancellation, error)
+                self._left_out(benchmark_cancelled_text(cancellation, error))
             )
             # What it did evaluate is real, and is shown rather than dropped
             # -- but only if it evaluated something: a cancel that landed
@@ -1099,7 +1107,7 @@ class ResearchQuestionsTab(QWidget):
                 self.benchmark_completed.emit(result)
         else:
             self.progress_label.setText(
-                "Benchmark cancelled." + also_failed_text(error)
+                self._left_out("Benchmark cancelled." + also_failed_text(error))
             )
         logger.info("Benchmark cancelled")
 
@@ -1110,7 +1118,7 @@ class ResearchQuestionsTab(QWidget):
             QMessageBox.warning(
                 self,
                 "Benchmark Error",
-                f"An error occurred during benchmarking:\n\n{error}",
+                f"An error occurred during benchmarking:\n\n{error}" + self._left_out_note(),
             )
 
         QTimer.singleShot(100, self._cleanup_benchmark_worker)
@@ -1120,11 +1128,11 @@ class ResearchQuestionsTab(QWidget):
         self._reset_ui()
         self.progress_bar.setVisible(False)
 
-        self.progress_label.setText(f"Benchmark error: {error_message}")
+        self.progress_label.setText(self._left_out(f"Benchmark error: {error_message}"))
         QMessageBox.warning(
             self,
             "Benchmark Error",
-            f"An error occurred during benchmarking:\n\n{error_message}",
+            f"An error occurred during benchmarking:\n\n{error_message}" + self._left_out_note(),
         )
 
         # Clean up worker
@@ -1220,7 +1228,7 @@ class ResearchQuestionsTab(QWidget):
         self._load_questions()  # Refresh the table
 
         message = pass_finished_text("Re-classification", "re-classified", outcome)
-        self.progress_label.setText(message)
+        self.progress_label.setText(self._left_out(message))
 
         explanation = pass_failure_explanation(outcome)
         if outcome.failed:
@@ -1229,13 +1237,13 @@ class ResearchQuestionsTab(QWidget):
             QMessageBox.warning(
                 self,
                 "Re-classification Complete",
-                f"{message}\n\n{explanation}",
+                f"{message}\n\n{explanation}" + self._left_out_note(),
             )
         else:
             QMessageBox.information(
                 self,
                 "Re-classification Complete",
-                f"{message}{explanation}",
+                f"{message}{explanation}" + self._left_out_note(),
             )
 
         # Clean up worker
@@ -1256,12 +1264,12 @@ class ResearchQuestionsTab(QWidget):
         """
         self._reset_ui()
         self._load_questions()  # Refresh the table
-        self.progress_label.setText(f"Re-classify error: {error_message}")
+        self.progress_label.setText(self._left_out(f"Re-classify error: {error_message}"))
 
         QMessageBox.warning(
             self,
             "Re-classification Error",
-            f"An error occurred during re-classification:\n\n{error_message}",
+            f"An error occurred during re-classification:\n\n{error_message}" + self._left_out_note(),
         )
 
         # Clean up worker
@@ -1282,7 +1290,7 @@ class ResearchQuestionsTab(QWidget):
         message = pass_cancelled_text(
             "Re-classification", "re-classified", outcome, error
         )
-        self.progress_label.setText(message)
+        self.progress_label.setText(self._left_out(message))
         # A failed classification is recorded nowhere, so this dialog is the
         # only lasting notice of it -- the label the next click overwrites.
         # The gate is what there is to say, not only what went wrong: a
@@ -1294,7 +1302,7 @@ class ResearchQuestionsTab(QWidget):
             QMessageBox.warning(
                 self,
                 "Re-classification Cancelled",
-                f"{message}\n\n{explanation.lstrip()}" if explanation else message,
+                (f"{message}\n\n{explanation.lstrip()}" if explanation else message) + self._left_out_note(),
             )
         QTimer.singleShot(100, self._cleanup_reclassify_worker)
 
@@ -1387,7 +1395,7 @@ class ResearchQuestionsTab(QWidget):
         self._load_questions()  # Refresh the table
 
         message = pass_finished_text("Re-scoring", "re-scored", outcome)
-        self.progress_label.setText(message)
+        self.progress_label.setText(self._left_out(message))
 
         if outcome.failed:
             QMessageBox.warning(
@@ -1395,10 +1403,10 @@ class ResearchQuestionsTab(QWidget):
                 "Re-scoring Complete",
                 f"{message}\n\n{pass_failure_explanation(outcome)}\n\n"
                 "The failures were recorded, and re-running the question "
-                "scores those documents again.",
+                "scores those documents again." + self._left_out_note(),
             )
         else:
-            QMessageBox.information(self, "Re-scoring Complete", message)
+            QMessageBox.information(self, "Re-scoring Complete", message + self._left_out_note())
 
         # Clean up worker
         QTimer.singleShot(100, self._cleanup_rescore_worker)
@@ -1415,12 +1423,12 @@ class ResearchQuestionsTab(QWidget):
         """
         self._reset_ui()
         self._load_questions()  # Refresh the table
-        self.progress_label.setText(f"Re-score error: {error_message}")
+        self.progress_label.setText(self._left_out(f"Re-score error: {error_message}"))
 
         QMessageBox.warning(
             self,
             "Re-scoring Error",
-            f"An error occurred during re-scoring:\n\n{error_message}",
+            f"An error occurred during re-scoring:\n\n{error_message}" + self._left_out_note(),
         )
 
         # Clean up worker
@@ -1437,7 +1445,7 @@ class ResearchQuestionsTab(QWidget):
         self._reset_ui()
         self._load_questions()  # Refresh the table
         message = pass_cancelled_text("Re-scoring", "re-scored", outcome, error)
-        self.progress_label.setText(message)
+        self.progress_label.setText(self._left_out(message))
         explanation = pass_failure_explanation(outcome)
         if outcome.failed or error or explanation:
             detail = f"{message}\n\n{explanation.lstrip()}" if explanation else message
@@ -1445,7 +1453,7 @@ class ResearchQuestionsTab(QWidget):
                 self,
                 "Re-scoring Cancelled",
                 f"{detail}\n\nThe failures were recorded, and re-running "
-                "the question scores those documents again.",
+                "the question scores those documents again." + self._left_out_note(),
             )
         QTimer.singleShot(100, self._cleanup_rescore_worker)
 
@@ -1550,7 +1558,7 @@ class ResearchQuestionsTab(QWidget):
         reply = QMessageBox.question(
             self,
             REANALYSE_TRANSPARENCY_ACTION,
-            f"{message}\n\nEach study's records are fetched again from PubMed, "
+            f"{message} {PASS_LEFT_OUT_SENTENCE}\n\nEach study's records are fetched again from PubMed, "
             "Europe PMC, CrossRef and ClinicalTrials.gov, paced to what "
             "those services allow, so this can take a while.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1594,17 +1602,17 @@ class ResearchQuestionsTab(QWidget):
         message = pass_finished_text(
             "Transparency re-analysis", "re-analysed", outcome
         )
-        self.progress_label.setText(message)
+        self.progress_label.setText(self._left_out(message))
         explanation = pass_failure_explanation(outcome)
         if outcome.failed or outcome.provisional:
             QMessageBox.warning(
                 self,
                 "Transparency Re-analysis Complete",
-                f"{message}\n\n{explanation.lstrip()}",
+                f"{message}\n\n{explanation.lstrip()}" + self._left_out_note(),
             )
         else:
             QMessageBox.information(
-                self, "Transparency Re-analysis Complete", message
+                self, "Transparency Re-analysis Complete", message + self._left_out_note()
             )
         QTimer.singleShot(100, self._cleanup_transparency_worker)
 
@@ -1620,13 +1628,13 @@ class ResearchQuestionsTab(QWidget):
         """
         self._reset_ui()
         self.progress_label.setText(
-            f"Transparency re-analysis error: {error_message}"
+            self._left_out(f"Transparency re-analysis error: {error_message}")
         )
         QMessageBox.warning(
             self,
             "Transparency Re-analysis Error",
             "An error occurred during transparency re-analysis:"
-            f"\n\n{error_message}",
+            f"\n\n{error_message}" + self._left_out_note(),
         )
         QTimer.singleShot(100, self._cleanup_transparency_worker)
 
@@ -1643,13 +1651,13 @@ class ResearchQuestionsTab(QWidget):
         message = pass_cancelled_text(
             "Transparency re-analysis", "re-analysed", outcome, error
         )
-        self.progress_label.setText(message)
+        self.progress_label.setText(self._left_out(message))
         explanation = pass_failure_explanation(outcome)
         if outcome.failed or error or explanation:
             QMessageBox.warning(
                 self,
                 "Transparency Re-analysis Cancelled",
-                f"{message}\n\n{explanation.lstrip()}" if explanation else message,
+                (f"{message}\n\n{explanation.lstrip()}" if explanation else message) + self._left_out_note(),
             )
         QTimer.singleShot(100, self._cleanup_transparency_worker)
 

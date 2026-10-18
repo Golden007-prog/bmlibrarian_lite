@@ -230,6 +230,51 @@ def test_rechecked_snapshot_keeps_what_the_run_did() -> None:
     assert {r["document_id"]: r for r in rechecked_snapshot(snapshot, failed).to_snapshot()} == snapshot
 
 
+def test_an_outage_never_replaces_a_decided_row() -> None:
+    """Unchecked answers keep the decided rows whole; an unchecked row may still be decided over."""
+    snapshot = run_snapshot()
+    outage = screen_documents(DOCUMENTS, {d.id: check(RetractionStatus.UNCHECKED, NOW) for d in DOCUMENTS})
+    rows = {r["document_id"]: r for r in rechecked_snapshot(snapshot, outage).to_snapshot()}
+    assert rows == snapshot
+    # control: an unchecked row is replaced by an unchecked answer's newer time, and by a decided one
+    unchecked_run = {**snapshot, CITED.id: {**snapshot[CITED.id], "status": "unchecked"}}
+    served = screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.CLEAR, NOW)})
+    rows = {r["document_id"]: r for r in rechecked_snapshot(unchecked_run, served).to_snapshot()}
+    assert rows[CITED.id]["status"] == "clear" and rows[CITED.id]["checked_at"] == NOW.isoformat()
+
+
+def test_check_again_writes_only_this_runs_documents() -> None:
+    """A document another run linked is checked but not written into this run's snapshot."""
+    other = make_document("9")
+    screen = screen_documents([*DOCUMENTS, other], {d.id: check(RetractionStatus.CLEAR, NOW) for d in [*DOCUMENTS, other]})
+    rows = {r["document_id"] for r in rechecked_snapshot(run_snapshot(), screen).to_snapshot()}
+    assert rows == {d.id for d in DOCUMENTS}
+    # a run from before the feature has no snapshot: every linked document gets a row
+    rows = {r["document_id"] for r in rechecked_snapshot({}, screen).to_snapshot()}
+    assert rows == {d.id for d in [*DOCUMENTS, other]}
+
+
+def test_the_saved_work_line_dates_decided_rows_and_counts_the_unchecked() -> None:
+    """Oldest decided time; the unchecked counted; all unchecked, none, as before."""
+    from bmlibrarian_lite.retraction_text import saved_work_line
+
+    snapshot = run_snapshot()
+    assert saved_work_line(snapshot.values()) == "Retraction status checked 2026-10-01"
+    mixed = {
+        **snapshot,
+        CITED.id: {**snapshot[CITED.id], "status": "unchecked", "checked_at": "2026-09-01T00:00:00+00:00"},
+        UNCITED.id: {**snapshot[UNCITED.id], "status": "unchecked", "checked_at": None},
+    }
+    assert saved_work_line(mixed.values()) == (
+        "Retraction status checked 2026-10-15; 2 papers could not be checked"
+    )
+    one = {**snapshot, CITED.id: {**snapshot[CITED.id], "status": "unchecked"}}
+    assert saved_work_line(one.values()).endswith("; 1 paper could not be checked")
+    unchecked = [{**row, "status": "unchecked"} for row in snapshot.values()]
+    assert saved_work_line(unchecked) == "Retraction status could not be checked"
+    assert saved_work_line([]) == "Retraction status never checked"
+
+
 # ---------------------------------------------------------------------------
 # The report tab
 # ---------------------------------------------------------------------------
@@ -420,6 +465,38 @@ def test_a_cancelled_check_again_saves_nothing(qapp: Any) -> None:
     worker.checker = RecordingChecker(MagicMock(), {})
     worker.run()
     assert got == [("cancelled", ("cp",))]
+
+
+def test_an_outage_during_check_again_leaves_the_record_and_line(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every answer unchecked: the decided rows and the checked-on line stay as they were."""
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, run_checks()))
+    checkpoint_id = saved_checkpoint(storage, metadata)
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.UNCHECKED, NOW) for d in DOCUMENTS})
+    rows = recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata)
+    assert rows == recorded_retraction_snapshot(json.loads(json.dumps(metadata)))
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-01"
+
+
+def test_a_late_result_for_another_question_changes_neither_view_nor_audit_trail(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reader opened another question: the late result is saved to its own run only."""
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, run_checks()))
+    checkpoint_id = saved_checkpoint(storage, metadata)
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    rechecked: list[Any] = []
+    tab.retraction_rechecked.connect(rechecked.append)
+    reopen(tab, None, "another-checkpoint")
+    line, warning = tab.retraction_line.text(), tab.retraction_warning.text()
+    late = screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    tab._on_rechecked(checkpoint_id, late)
+    assert (tab.retraction_line.text(), tab.retraction_warning.text()) == (line, warning)
+    assert rechecked == [] and tab._retraction_snapshot is None
+    rows = recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata)
+    assert rows[CITED.id]["status"] == "retracted"
 
 
 def test_reopen_keeps_excluded_as_excluded(
@@ -645,11 +722,26 @@ def test_each_pass_is_given_the_tabs_checker(questions_tab: Any, action: str, wo
     worker_class.return_value.retractions_screened.connect.assert_called()
 
 
-def test_the_tab_says_what_its_pass_left_out(questions_tab: Any) -> None:
-    """The count is added to the pass's final line, once."""
+def test_a_pass_dialog_and_line_say_what_was_left_out(questions_tab: Any) -> None:
+    """Completion and error dialogs carry the count; it does not depend on connection order."""
+    from bmlibrarian_lite.data_models import PassOutcome
+
+    boxes = questions_module.QMessageBox
     questions_tab._on_retractions_screened("1 retracted paper left out")
-    questions_tab.progress_label.setText("Re-scored 2 documents.")
-    questions_tab._append_retraction_clause()
-    assert questions_tab.progress_label.text() == "Re-scored 2 documents; 1 retracted paper left out."
-    questions_tab._append_retraction_clause()
-    assert questions_tab.progress_label.text() == "Re-scored 2 documents; 1 retracted paper left out."
+    questions_tab._on_rescore_finished(PassOutcome(succeeded=2, total=2))
+    assert questions_tab.progress_label.text().endswith("; 1 retracted paper left out.")
+    assert boxes.information.call_args.args[2].endswith("Retraction check: 1 retracted paper left out.")
+    questions_tab._on_reclassify_error("The model timed out.")
+    assert questions_tab.progress_label.text().endswith("; 1 retracted paper left out.")
+    assert boxes.warning.call_args.args[2].endswith("Retraction check: 1 retracted paper left out.")
+    # control: a pass whose screen left nothing out says nothing of it
+    questions_tab._on_retractions_screened("")
+    questions_tab._on_rescore_finished(PassOutcome(succeeded=2, total=2))
+    assert "Retraction check" not in boxes.information.call_args.args[2]
+
+
+def test_the_transparency_offer_says_retracted_papers_are_left_out(questions_tab: Any) -> None:
+    """The scope counts pending papers before the screen, so the offer says what the screen does."""
+    questions_tab._on_reanalyse_transparency_clicked()
+    text = questions_module.QMessageBox.question.call_args.args[2]
+    assert "Retracted papers are left out before the work starts." in text
