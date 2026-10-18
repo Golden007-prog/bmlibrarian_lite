@@ -6,8 +6,8 @@
 
 The evidence is the local Retraction Watch copy, Crossref's answer and the
 record's PubMed label. A decided verdict is reused while it is younger than
-``RETRACTION_CHECK_MAX_AGE_DAYS``; an unchecked one is a failure, not
-knowledge, so it is asked again on every check.
+``RETRACTION_CHECK_MAX_AGE_DAYS``; one with a lookup unanswered rests on a
+failure, not knowledge, so it is asked again on every check.
 """
 
 from __future__ import annotations
@@ -122,14 +122,26 @@ class RetractionChecker:
     ) -> dict[str, PaperCheck]:
         """Each document's verdict, reusing fresh stored ones.
 
+        A stored verdict is reused while it is younger than
+        ``RETRACTION_CHECK_MAX_AGE_DAYS`` and every lookup answered it. A new
+        verdict that leaves unanswered a lookup the stored one had answered
+        never replaces it: the stored row keeps its ``checked_at`` and is
+        asked again next time. Meanwhile a stored retraction or concern is
+        still returned, and a stored clear is not.
+
         Args:
             documents: The documents.
             refresh: Ask again even for a fresh stored verdict.
-            should_cancel: Passed to the Crossref lookup.
+            should_cancel: Passed to the Crossref lookup. A check that is
+                cancelled before it starts does not refresh the export.
 
         Returns:
             A check per ``LiteDocument.id``. After a cancel, a document whose
             Crossref batch was never asked has none, and none is stored.
+
+        Raises:
+            sqlite3.Error: Reading or storing verdicts failed. Nothing is
+                caught here, so the caller marks the documents unchecked.
         """
         now = self._now()
         out: dict[str, PaperCheck] = {}
@@ -152,7 +164,7 @@ class RetractionChecker:
             if (
                 refresh
                 or row is None
-                or row.verdict.status is RetractionStatus.UNCHECKED
+                or row.verdict.unanswered  # a failure is not knowledge: ask again
                 or now - row.checked_at > max_age
                 or (row.verdict.status is not RetractionStatus.RETRACTED and _label_retracts(docs))
             ):
@@ -162,7 +174,12 @@ class RetractionChecker:
         if not due:
             return out
 
-        copy = self.ensure_export()
+        # a cancel never waits for the export download
+        copy = (
+            export_copy(self._data_dir, today=self._today())
+            if should_cancel()
+            else self.ensure_export()
+        )
         today = self._today()
         dois = [doc.doi for docs in due.values() for doc in docs[:1] if doc.doi]
         lookups = lookup_crossref(
@@ -182,12 +199,19 @@ class RetractionChecker:
                 crossref=lookups.results.get(doi) if doi else None,
                 publication_types=_types(docs),
             )
-            decided[key] = PaperCheck(
+            fresh = PaperCheck(
                 verdict,
                 now,
                 copy.data_as_of if export is not None else None,
                 lookups.failures.get(doi) if doi else None,
             )
-            out.update((doc.id, decided[key]) for doc in docs)
+            old = stored.get(key)
+            if old and set(verdict.unanswered) - set(old.verdict.unanswered):
+                # an outage never erases what an answer established
+                kept = old.verdict.status in (RetractionStatus.RETRACTED, RetractionStatus.CONCERN)
+                out.update((doc.id, old if kept else fresh) for doc in docs)
+                continue
+            decided[key] = fresh
+            out.update((doc.id, fresh) for doc in docs)
         self._storage.store_retraction_checks(decided)
         return out

@@ -8,12 +8,19 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 import requests
-from bmlib.publications.retraction_status import RetractionLookup, RetractionStatus
+from bmlib.publications.retraction_status import (
+    RetractionEvidence,
+    RetractionKind,
+    RetractionLookup,
+    RetractionSource,
+    RetractionStatus,
+    RetractionVerdict,
+)
 
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.constants import RETRACTION_WATCH_EXPORT_URL
 from bmlibrarian_lite.data_models import LiteDocument, RequestFailure, RequestFailureKind
-from bmlibrarian_lite.retraction_checks import RetractionChecker, paper_key
+from bmlibrarian_lite.retraction_checks import PaperCheck, RetractionChecker, paper_key
 from bmlibrarian_lite.retraction_export import ExportState, refresh_export
 from bmlibrarian_lite.storage import LiteStorage
 
@@ -301,3 +308,72 @@ def test_schema_is_idempotent(tmp_path):
     assert again.retraction_checks(["doi:10.1/a"])["doi:10.1/a"].verdict.status is (
         RetractionStatus.CLEAR
     )
+
+
+_NOTICE = RetractionEvidence(RetractionSource.CROSSREF_PUBLISHER, RetractionKind.RETRACTION, "2026-01")
+_CONCERN = RetractionEvidence(
+    RetractionSource.CROSSREF_PUBLISHER, RetractionKind.EXPRESSION_OF_CONCERN, "2026-01"
+)
+_KEY = "doi:10.1/a"
+
+
+def _store(storage, status, deciding=None, unanswered=(), age=timedelta(days=8)):
+    """Store a crafted verdict for 10.1/a, checked *age* before START."""
+    check = PaperCheck(
+        RetractionVerdict(status, deciding, tuple(unanswered)), START - age, START.date(), None
+    )
+    storage.store_retraction_checks({_KEY: check})
+    return check
+
+
+def test_an_outage_never_erases_a_stored_retraction(storage, tmp_path):
+    """Crossref down on the re-check: the row is unchanged and still says retracted."""
+    _current_export(tmp_path)
+    old = _store(storage, RetractionStatus.RETRACTED, _NOTICE)
+    session = StubSession(_unreachable)
+    out = _checker(storage, tmp_path, session).check([_doc("a", doi="10.1/a")])
+    assert out["a"] == old
+    assert storage.retraction_checks([_KEY])[_KEY] == old
+    assert len(session.crossref_urls) == 1
+
+
+def test_an_outage_does_not_extend_a_stored_clear(storage, tmp_path):
+    """An expired clear is kept as it was, but the reader is told unchecked, and why."""
+    _current_export(tmp_path)
+    old = _store(storage, RetractionStatus.CLEAR)
+    out = _checker(storage, tmp_path, StubSession(_unreachable)).check([_doc("a", doi="10.1/a")])
+    assert out["a"].verdict.status is RetractionStatus.UNCHECKED
+    assert out["a"].crossref_failure == RequestFailure(RequestFailureKind.CONNECTION)
+    assert storage.retraction_checks([_KEY])[_KEY] == old
+
+
+def test_a_new_answer_replaces_a_stored_concern(storage, tmp_path):
+    """Control: an answered re-check overwrites, here a concern Crossref no longer holds."""
+    _current_export(tmp_path)
+    _store(storage, RetractionStatus.CONCERN, _CONCERN)
+    out = _checker(storage, tmp_path, StubSession()).check([_doc("a", doi="10.1/a")])
+    assert out["a"].verdict.status is RetractionStatus.CLEAR
+    assert storage.retraction_checks([_KEY])[_KEY] == out["a"]
+
+
+def test_a_decided_verdict_with_a_lookup_unanswered_is_asked_again(storage, tmp_path):
+    """A fresh concern is reused only when every lookup answered it."""
+    _current_export(tmp_path)
+    session = StubSession()
+    docs = [_doc("a", doi="10.1/a")]
+    _store(storage, RetractionStatus.CONCERN, _CONCERN, age=timedelta(hours=1))
+    _checker(storage, tmp_path, session).check(docs)
+    assert session.crossref_urls == []
+    _store(storage, RetractionStatus.CONCERN, _CONCERN, [RetractionLookup.CROSSREF], timedelta(hours=1))
+    _checker(storage, tmp_path, session).check(docs)
+    assert len(session.crossref_urls) == 1
+
+
+def test_a_cancelled_check_does_not_download_the_export(storage, tmp_path):
+    """A cancel never waits for the export; a check not cancelled downloads it."""
+    session = StubSession()
+    docs = [_doc("a", doi="10.1/a")]
+    _checker(storage, tmp_path, session).check(docs, should_cancel=lambda: True)
+    assert session.export_calls == 0
+    _checker(storage, tmp_path, session).check(docs)
+    assert session.export_calls == 1

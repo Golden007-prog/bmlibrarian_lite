@@ -1555,5 +1555,5 @@ CROSSREF_MAX_RETRIES = 3
 RETRACTION_WATCH_MIN_KEEP_RATIO = 0.95
 # A decided retraction verdict is reused for a week, then asked again: a new
 # retraction reaches Crossref and the export within days, and a review run is
-# often repeated within one. An unchecked verdict is never reused.
+# often repeated within one. A verdict with a lookup unanswered is never reused.
 RETRACTION_CHECK_MAX_AGE_DAYS = 7
