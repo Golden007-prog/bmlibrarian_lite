@@ -78,7 +78,7 @@ jobs:
 
       - name: Package the build
         run: |
-          xcode="$(xcodebuild -version | head -1 | sed 's/^Xcode //')"
+          xcode="$(xcodebuild -version | sed -n 's/^Xcode //p')"
           hash="$(python3 .github/scripts/xcframework_tree_sha256.py "$RUNNER_TEMP/xcf/BmlibFFI.xcframework")"
           printf '{"treeSha256": "%s", "xcode": "%s"}\n' "$hash" "$xcode" > "$RUNNER_TEMP/xcf/build.json"
           cat "$RUNNER_TEMP/xcf/build.json"
@@ -100,7 +100,7 @@ jobs:
             "$RUNNER_TEMP/xcf/Swift/bmlib_ffi.swift" || status=1
           if [ "$status" != 0 ]; then
             echo "::error::The rebuild differs from what is committed. The pin was built with Xcode" \
-              "${{ steps.pin.outputs.xcode }}, this runner has $(xcodebuild -version | head -1)." \
+              "${{ steps.pin.outputs.xcode }}, this runner has $(xcodebuild -version | sed -n 1p)." \
               "Re-pin from this run's bmlib-xcframework artifact (see the comment at the top of this workflow)."
           fi
           exit "$status"

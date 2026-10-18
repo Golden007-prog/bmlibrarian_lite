@@ -6,6 +6,7 @@
   "bmlibCrateVersion": "0.2.0",
   "uniffiVersion": "0.32.2",
   "rustc": "1.98.0",
+  "xcode": "16.4",
   "profile": "release-ffi",
   "features": "default-features = false (no sqlite, no http-ureq)",
   "slices": [
@@ -18,5 +19,5 @@
     "macOS": "14.0"
   },
   "treeSha256Script": ".github/scripts/xcframework_tree_sha256.py",
-  "treeSha256": "492da54e9a702d2c0743d015aa900c5da3649d1675c37d92d1730262b5edd5f9"
+  "treeSha256": "79f787b3b6dfbf0dfbca82b29fdb892b9678cdaec3145596e381aab559d32a2d"
 }
