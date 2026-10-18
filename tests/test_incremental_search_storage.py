@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from bmlibrarian_lite import pubmed  # noqa: E402
+from bmlibrarian_lite import constants, embeddings, pubmed  # noqa: E402
 from bmlibrarian_lite.config import LiteConfig  # noqa: E402
 from bmlibrarian_lite.data_models import DocumentSource, LiteDocument, ScoredDocument  # noqa: E402
 from bmlibrarian_lite.gui import systematic_review_tab  # noqa: E402
@@ -33,15 +33,48 @@ QUESTION = "Does aspirin prevent stroke?"
 TYPES = ["Randomized Controlled Trial", "Journal Article"]
 
 
+DIMS = constants.DEFAULT_EMBEDDING_DIMENSIONS
+
+
+class FakeEmbedder:
+    """An embedder whose vector is a function of the text, no model needed."""
+
+    def __init__(self, **_: Any) -> None:
+        """Ignore the model name."""
+
+    def embed_single(self, text: str) -> list[float]:
+        """A one-hot-ish vector keyed on the text's last character."""
+        vector = [0.0] * DIMS
+        vector[ord(text[-1]) % DIMS] = 1.0
+        return vector
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        """One vector per text."""
+        return [self.embed_single(t) for t in texts]
+
+
+class BrokenEmbedder:
+    """An embedder that cannot be built."""
+
+    def __init__(self, **_: Any) -> None:
+        """Fail as a missing model does."""
+        raise RuntimeError("model not found")
+
+
 class StubClient:
-    """A PubMed client answering one page of two records."""
+    """A PubMed client answering pages of records from a PMID pool."""
+
+    pool = ["1", "2"]
 
     def __init__(self, **_: Any) -> None:
         """Ignore the credentials."""
 
-    def search_with_offset(self, **_: Any) -> SearchResult:
-        """Two PMIDs, the whole result set."""
-        return SearchResult(query=MagicMock(), total_count=2, retrieved_count=2, pmids=["1", "2"])
+    def search_with_offset(self, start_offset: int = 0, max_results: int = 100, **_: Any) -> SearchResult:
+        """The page of the pool at the offset."""
+        page = self.pool[start_offset : start_offset + max_results]
+        return SearchResult(
+            query=MagicMock(), total_count=len(self.pool), retrieved_count=len(page), pmids=page
+        )
 
     def fetch_articles(self, pmids: list[str]) -> ArticleFetchResult:
         """One article per PMID, with publication types."""
@@ -71,6 +104,7 @@ def storage(tmp_path: Any) -> LiteStorage:
 def search_worker(monkeypatch: pytest.MonkeyPatch, storage: Any) -> tuple[Any, dict[str, list]]:
     """An incremental search over the stub client, recording its signals."""
     monkeypatch.setattr(pubmed, "PubMedSearchClient", StubClient)
+    monkeypatch.setattr(embeddings, "LiteEmbedder", FakeEmbedder)
     worker = IncrementalSearchWorker(
         question=QUESTION,
         pubmed_query="aspirin AND stroke",
@@ -79,10 +113,11 @@ def search_worker(monkeypatch: pytest.MonkeyPatch, storage: Any) -> tuple[Any, d
         config=LiteConfig(),
         storage=storage,
     )
-    seen: dict[str, list] = {"batch": [], "finished": [], "error": []}
+    seen: dict[str, list] = {"batch": [], "finished": [], "error": [], "progress": []}
     worker.batch_complete.connect(lambda docs: seen["batch"].append(docs))
     worker.finished.connect(lambda docs, shortfalls: seen["finished"].append(docs))
     worker.error.connect(lambda message: seen["error"].append(message))
+    worker.progress.connect(lambda found, target, text: seen["progress"].append(text))
     return worker, seen
 
 
@@ -154,3 +189,113 @@ def test_a_scored_preloaded_document_survives_a_reopen(
     assert [d.id for d in reopened] == ["pmid-1"]
     assert reopened[0].title == "Title 1"
     assert reopened[0].publication_types == TYPES
+
+
+def vector_count(storage: LiteStorage) -> int:
+    """Rows in the document vector table."""
+    with storage._sqlite_connection() as conn:
+        return conn.execute("SELECT COUNT(*) FROM vec_documents").fetchone()[0]
+
+
+def test_incremental_documents_get_vectors_so_semantic_search_finds_them(
+    monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
+) -> None:
+    """The worker embeds what it stores, as the search agent does."""
+    worker, _ = search_worker(monkeypatch, storage)
+
+    worker.run()
+
+    assert vector_count(storage) == 2
+    found = storage.search_documents("Abstract 1", n_results=1, embedding_function=FakeEmbedder())
+    assert [d.id for d in found] == ["pmid-1"]
+
+
+def test_an_embedder_that_cannot_be_built_stores_without_vectors_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
+) -> None:
+    """Documents are kept; the progress text the reader sees names the gap."""
+    worker, seen = search_worker(monkeypatch, storage)
+    monkeypatch.setattr(embeddings, "LiteEmbedder", BrokenEmbedder)
+
+    worker.run()
+
+    assert seen["error"] == []
+    assert storage.get_document("pmid-1") is not None
+    assert vector_count(storage) == 0
+    assert "stored without search vectors" in seen["progress"][-1]
+
+
+def _embedded(storage: LiteStorage) -> LiteDocument:
+    doc = LiteDocument(
+        id="pmid-9", title="Old", abstract="Zebra stripe", pmid="9",
+        source=DocumentSource.PUBMED, publication_types=TYPES,
+    )
+    storage.add_documents([doc], embedding_function=FakeEmbedder())
+    return doc
+
+
+def test_a_re_add_without_an_embedder_keeps_the_vector(storage: LiteStorage) -> None:
+    """Control: re-storing an embedded document does not orphan its vector."""
+    doc = _embedded(storage)
+
+    storage.add_documents(
+        [LiteDocument(id=doc.id, title="New", abstract=doc.abstract, pmid="9", source=doc.source)]
+    )
+
+    found = storage.search_documents("Zebra stripe", n_results=1, embedding_function=FakeEmbedder())
+    assert [d.id for d in found] == ["pmid-9"]
+    assert vector_count(storage) == 1
+
+
+def test_a_re_add_keeps_the_rowid_the_creation_time_and_the_types(storage: LiteStorage) -> None:
+    """The upsert updates the row in place."""
+    doc = _embedded(storage)
+
+    def row() -> tuple:
+        with storage._sqlite_connection() as conn:
+            r = conn.execute(
+                "SELECT rowid, created_at, title, publication_types FROM documents WHERE id=?",
+                (doc.id,),
+            ).fetchone()
+            return tuple(r)
+
+    before = row()
+    changed = LiteDocument(
+        id=doc.id, title="New", abstract="Zebra stripe", pmid="9",
+        source=DocumentSource.PUBMED, publication_types=None,
+    )
+    storage.add_document(changed)
+    storage.add_documents([changed])
+    after = row()
+
+    assert after[:2] == before[:2]
+    assert after[2] == "New"
+    assert after[3] == before[3]
+
+
+def test_a_later_batch_failure_leaves_earlier_batches_stored_and_says_how_many(
+    monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
+) -> None:
+    """The run ends in error; the message counts what was saved."""
+    monkeypatch.setattr(constants, "INCREMENTAL_SEARCH_BATCH_SIZE", 2)
+    monkeypatch.setattr(StubClient, "pool", ["1", "2", "3", "4"])
+    worker, seen = search_worker(monkeypatch, storage)
+    real = storage.add_documents
+    calls = []
+
+    def flaky(documents: Any, embedding_function: Any = None) -> Any:
+        calls.append(1)
+        if len(calls) == 2:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(documents, embedding_function=embedding_function)
+
+    monkeypatch.setattr(storage, "add_documents", flaky)
+
+    worker.run()
+
+    [message] = seen["error"]
+    assert "disk I/O error" in message
+    assert "2 documents found earlier were saved" in message
+    assert seen["finished"] == []
+    assert storage.get_document("pmid-2") is not None
+    assert storage.get_document("pmid-3") is None

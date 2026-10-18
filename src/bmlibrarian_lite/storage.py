@@ -1198,12 +1198,24 @@ class LiteStorage:
                 # Insert document metadata
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO documents
+                    INSERT INTO documents
                     (id, title, abstract, authors, year, journal, doi, pmid,
                      pmc_id, url, mesh_terms, source, publication_types)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                            COALESCE(?, (SELECT publication_types
-                                         FROM documents WHERE id = ?)))
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        title = excluded.title,
+                        abstract = excluded.abstract,
+                        authors = excluded.authors,
+                        year = excluded.year,
+                        journal = excluded.journal,
+                        doi = excluded.doi,
+                        pmid = excluded.pmid,
+                        pmc_id = excluded.pmc_id,
+                        url = excluded.url,
+                        mesh_terms = excluded.mesh_terms,
+                        source = excluded.source,
+                        publication_types = COALESCE(
+                            excluded.publication_types, documents.publication_types)
                     """,
                     (
                         document.id,
@@ -1219,7 +1231,6 @@ class LiteStorage:
                         json.dumps(document.mesh_terms),
                         document.source.value,
                         _types_to_json(document.publication_types),
-                        document.id,
                     ),
                 )
 
@@ -1306,12 +1317,24 @@ class LiteStorage:
                 for doc in documents:
                     conn.execute(
                         """
-                        INSERT OR REPLACE INTO documents
+                        INSERT INTO documents
                         (id, title, abstract, authors, year, journal, doi, pmid,
                          pmc_id, url, mesh_terms, source, publication_types)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                                COALESCE(?, (SELECT publication_types
-                                             FROM documents WHERE id = ?)))
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            title = excluded.title,
+                            abstract = excluded.abstract,
+                            authors = excluded.authors,
+                            year = excluded.year,
+                            journal = excluded.journal,
+                            doi = excluded.doi,
+                            pmid = excluded.pmid,
+                            pmc_id = excluded.pmc_id,
+                            url = excluded.url,
+                            mesh_terms = excluded.mesh_terms,
+                            source = excluded.source,
+                            publication_types = COALESCE(
+                                excluded.publication_types, documents.publication_types)
                         """,
                         (
                             doc.id,
@@ -1327,7 +1350,6 @@ class LiteStorage:
                             json.dumps(doc.mesh_terms),
                             doc.source.value,
                             _types_to_json(doc.publication_types),
-                            doc.id,
                         ),
                     )
                     ids.append(doc.id)

@@ -38,6 +38,7 @@ left its caller waiting for a signal that never came.
 """
 
 import logging
+import sqlite3
 import webbrowser
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
@@ -798,6 +799,30 @@ def unexpected_rerun_error_text(error: str, retrying: int) -> str:
     return f"{error}\n\n{unscored}; re-run the question to retry them."
 
 
+def storage_failure_text(error: str, saved: int, retrying: int) -> str:
+    """What a search that could not store a batch says.
+
+    Args:
+        error: The storage error's text.
+        saved: Documents from earlier batches that were stored and linked.
+        retrying: Documents the rerun was to score again.
+
+    Returns:
+        The error, and how many documents found earlier were kept, so the
+        reader knows the failure lost nothing already saved.
+    """
+    text = unexpected_rerun_error_text(error, retrying)
+    if not saved:
+        return text
+    noun = "document" if saved == 1 else "documents"
+    return f"{text}\n\n{saved} {noun} found earlier {'was' if saved == 1 else 'were'} saved."
+
+
+VECTORS_UNAVAILABLE_NOTE = (
+    " (stored without search vectors: the embedding model could not be loaded)"
+)
+
+
 class IncrementalSearchWorker(SingleOutcome, QThread):
     """
     Background worker for incremental PubMed searches with deduplication.
@@ -913,13 +938,17 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
             MAX_PUBMED_SEARCH_OFFSET,
         )
 
+        from ..exceptions import SQLiteError
+
         stopped = False
+        saved = 0
         try:
             client = PubMedSearchClient(
                 email=self.config.pubmed.email,
                 api_key=self.config.pubmed.api_key,
             )
 
+            embedder, vector_note = self._build_embedder()
             all_new_docs: List["LiteDocument"] = []
             shortfalls: list[RetrievalShortfall] = []
             last_total_count: int | None = None
@@ -1035,21 +1064,20 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                     # Stored and linked before anyone is told of them: a
                     # document found by any route is kept, never only in
                     # memory. A storage failure raises into the handler
-                    # below, so nothing is emitted as if stored. No embedder:
-                    # this worker has none, and add_documents stores without
-                    # vectors when given none.
-                    self.storage.add_documents(batch_new_docs)
+                    # below, so nothing is emitted as if stored.
+                    self.storage.add_documents(batch_new_docs, embedding_function=embedder)
                     self.storage.add_question_documents(
                         question=self.question,
                         document_ids=[d.id for d in batch_new_docs],
                     )
+                    saved += len(batch_new_docs)
                     self.batch_complete.emit(batch_new_docs)
 
                 # Update progress
                 self.progress.emit(
                     len(all_new_docs),
                     self.target_new_docs,
-                    f"Found {len(all_new_docs)} new documents",
+                    f"Found {len(all_new_docs)} new documents{vector_note}",
                 )
 
                 # Move to next batch
@@ -1076,6 +1104,14 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
             else:
                 self._end(self.finished, self.retry_documents + all_new_docs, shortfalls)
 
+        except (sqlite3.Error, SQLiteError) as e:
+            logger.exception("Incremental search could not store its documents")
+            if self._cancelled:
+                self._end(self.cancelled, str(e))
+            else:
+                self._end(
+                    self.error, storage_failure_text(str(e), saved, len(self.retry_documents))
+                )
         except SearchFailedError as e:
             logger.warning(f"Incremental search failed: {e}")
             # Cancelling is not failing -- but the failure is still reported
@@ -1092,6 +1128,22 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                     self.error,
                     unexpected_rerun_error_text(str(e), len(self.retry_documents)),
                 )
+
+    def _build_embedder(self) -> tuple[Any, str]:
+        """Build the embedder the search agent uses, here in the worker thread.
+
+        Returns:
+            The embedder and an empty note, or ``None`` and the note the
+            progress text carries when it could not be built: the documents
+            are then stored without vectors, and the reader is told.
+        """
+        from ..embeddings import LiteEmbedder
+
+        try:
+            return LiteEmbedder(model_name=self.config.embeddings.model), ""
+        except Exception:
+            logger.exception("Embedder unavailable; documents stored without vectors")
+            return None, VECTORS_UNAVAILABLE_NOTE
 
     def _extract_year(self, date_str: Optional[str]) -> Optional[int]:
         """

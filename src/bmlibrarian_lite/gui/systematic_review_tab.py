@@ -451,12 +451,12 @@ class WorkflowWorker(QThread):
             )
             self._checkpoint_id = checkpoint.id
 
-            # Record document-question associations for all documents being scored
             # Backstop for any route that preloads documents it did not
             # store: a scored document must be retrievable on reopen.
             unstored = [d for d in documents if self.storage.get_document(d.id) is None]
             if unstored:
                 self.storage.add_documents(unstored)
+            # Record document-question associations for all documents being scored
             doc_ids = [doc.id for doc in documents]
             self.storage.add_question_documents(
                 question=self.question,
