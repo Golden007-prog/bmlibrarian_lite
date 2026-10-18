@@ -1553,3 +1553,7 @@ CROSSREF_MAX_RETRIES = 3
 # is a truncated or partial download, and its missing retractions would read
 # as "consulted, nothing found", so the old copy is kept instead.
 RETRACTION_WATCH_MIN_KEEP_RATIO = 0.95
+# A decided retraction verdict is reused for a week, then asked again: a new
+# retraction reaches Crossref and the export within days, and a review run is
+# often repeated within one. An unchecked verdict is never reused.
+RETRACTION_CHECK_MAX_AGE_DAYS = 7

@@ -40,16 +40,17 @@ import logging
 import sqlite3
 import struct
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Generator, Optional
 
 import sqlite_vec
 
-from . import rescue_queue_store
+from . import rescue_queue_store, retraction_store
 from .browser_rescue import RescueEntry, RescueRequest, RescueState, RescueVerdict
 from .rescue_queue_store import RecordedVerdict
+from .retraction_store import PaperCheck
 
 # Register adapters/converters for datetime to avoid Python 3.12 deprecation warning
 # The default converter expects space-separated format, but we use ISO format with 'T'
@@ -262,6 +263,8 @@ class LiteStorage:
                 conn.executescript(self._get_sqlite_schema())
                 # The browser rescue queue (#480, stage 2), kept beside its SQL
                 conn.executescript(rescue_queue_store.SCHEMA)
+                # Stored retraction verdicts, kept beside their SQL
+                conn.executescript(retraction_store.SCHEMA)
                 # Create sqlite-vec virtual tables for document and chunk embeddings
                 conn.execute(
                     f"""
@@ -4164,6 +4167,28 @@ class LiteStorage:
         """
         with self._sqlite_connection() as conn:
             return rescue_queue_store.for_document(conn, document_id)
+
+    def retraction_checks(self, keys: Iterable[str]) -> dict[str, PaperCheck]:
+        """The stored retraction checks for some papers.
+
+        Args:
+            keys: Paper keys (``retraction_checks.paper_key``).
+
+        Returns:
+            A check per key with a readable row.
+        """
+        with self._sqlite_connection() as conn:
+            return retraction_store.read(conn, keys)
+
+    def store_retraction_checks(self, checks: Mapping[str, PaperCheck]) -> None:
+        """Store retraction checks, replacing each paper's earlier one.
+
+        Args:
+            checks: Checks by paper key.
+        """
+        with self._sqlite_connection() as conn:
+            retraction_store.upsert(conn, checks)
+            conn.commit()
 
     # =========================================================================
     # Benchmark Run Operations
