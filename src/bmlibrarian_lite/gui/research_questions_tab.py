@@ -28,7 +28,7 @@ The tab provides:
 import logging
 import sqlite3
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QAction
@@ -68,6 +68,9 @@ from ..data_models import (
     RetrievalShortfall,
 )
 from ..exceptions import SQLiteError
+from ..retraction_checks import RetractionChecker, build_retraction_checker
+from ..retraction_screen import UnbuiltChecker
+from ..retraction_text import with_pass_retraction_clause
 from ..search_failures import describe_search_shortfalls
 from ..storage import LiteStorage
 from .workers import (
@@ -370,6 +373,8 @@ class ResearchQuestionsTab(QWidget):
         self._reclassify_worker: Optional[ReclassifyWorker] = None
         self._rescore_worker: Optional[RescoreWorker] = None
         self._transparency_worker: TransparencyReanalysisWorker | None = None
+        # What the running pass's retraction screen left out, for its final line
+        self._retraction_clause = ""
 
         self._setup_ui()
         self._setup_context_menu()
@@ -650,6 +655,49 @@ class ResearchQuestionsTab(QWidget):
             self.questions_table.setItem(
                 row, 4, QTableWidgetItem(str(question.run_count))
             )
+
+    def _retraction_checker(self) -> RetractionChecker | UnbuiltChecker:
+        """A checker for one pass, so retracted papers stay out of it.
+
+        It never downloads the export (only the review and *Check again* do).
+        Building does no I/O, so it runs here on the GUI thread; the check
+        itself runs in the pass's worker.
+
+        Returns:
+            The checker; one that could not be built is a stand-in whose
+            every check fails, so the pass goes on with every paper unchecked.
+        """
+        try:
+            return build_retraction_checker(self.config, self.storage)
+        except Exception as e:
+            # the type only: provider text never reaches the reader or the log
+            logger.warning("Retraction checker not built (%s); every document unchecked", type(e).__name__)
+            return UnbuiltChecker()
+
+    def _watch_retraction_screen(self, worker: Any) -> None:
+        """Say what a pass's retraction screen left out, now and in its final line.
+
+        Connected after the pass's own terminal handlers, so the clause is
+        added to the line they leave.
+
+        Args:
+            worker: A pass worker with ``retractions_screened``.
+        """
+        self._retraction_clause = ""
+        worker.retractions_screened.connect(self._on_retractions_screened)
+        for signal in (worker.finished, worker.error, worker.cancelled):
+            signal.connect(lambda *_args: self._append_retraction_clause())
+
+    def _on_retractions_screened(self, clause: str) -> None:
+        """Keep the screen's clause for the final line, and show it now."""
+        self._retraction_clause = clause
+        if clause:
+            self.progress_label.setText(with_pass_retraction_clause("Retraction check", clause))
+
+    def _append_retraction_clause(self) -> None:
+        """Add the kept clause to the pass's final line, once."""
+        clause, self._retraction_clause = self._retraction_clause, ""
+        self.progress_label.setText(with_pass_retraction_clause(self.progress_label.text(), clause))
 
     def _is_busy(self) -> bool:
         """Whether any of the tab's workers is still held."""
@@ -978,11 +1026,13 @@ class ResearchQuestionsTab(QWidget):
             documents=documents,
             models=benchmark_models,
             reuse_cross_run=True,
+            retraction_checker=self._retraction_checker(),
         )
         self._benchmark_worker.progress.connect(self._on_benchmark_progress)
         self._benchmark_worker.finished.connect(self._on_benchmark_finished)
         self._benchmark_worker.error.connect(self._on_benchmark_error)
         self._benchmark_worker.cancelled.connect(self._on_benchmark_cancelled)
+        self._watch_retraction_screen(self._benchmark_worker)
 
         # The runner is asked before each evaluation, so Cancel stops the
         # benchmark spending rather than only dropping its result (#324)
@@ -1134,11 +1184,13 @@ class ResearchQuestionsTab(QWidget):
             storage=self.storage,
             documents=documents,
             parent=self,
+            retraction_checker=self._retraction_checker(),
         )
         self._reclassify_worker.progress.connect(self._on_reclassify_progress)
         self._reclassify_worker.finished.connect(self._on_reclassify_finished)
         self._reclassify_worker.error.connect(self._on_reclassify_error)
         self._reclassify_worker.cancelled.connect(self._on_reclassify_cancelled)
+        self._watch_retraction_screen(self._reclassify_worker)
 
         # Update UI state
         self._set_busy_state()
@@ -1301,11 +1353,13 @@ class ResearchQuestionsTab(QWidget):
             question=question.question,
             documents=documents,
             parent=self,
+            retraction_checker=self._retraction_checker(),
         )
         self._rescore_worker.progress.connect(self._on_rescore_progress)
         self._rescore_worker.finished.connect(self._on_rescore_finished)
         self._rescore_worker.error.connect(self._on_rescore_error)
         self._rescore_worker.cancelled.connect(self._on_rescore_cancelled)
+        self._watch_retraction_screen(self._rescore_worker)
 
         # Update UI state
         self._set_busy_state()
@@ -1510,6 +1564,7 @@ class ResearchQuestionsTab(QWidget):
             storage=self.storage,
             documents=analysable,
             parent=self,
+            retraction_checker=self._retraction_checker(),
         )
         worker = self._transparency_worker
         # Forwarded, so a badge the Audit Trail shows for this question is
@@ -1520,6 +1575,7 @@ class ResearchQuestionsTab(QWidget):
         worker.finished.connect(self._on_transparency_finished)
         worker.error.connect(self._on_transparency_error)
         worker.cancelled.connect(self._on_transparency_cancelled)
+        self._watch_retraction_screen(worker)
 
         self._set_busy_state()
         self.progress_bar.setVisible(True)

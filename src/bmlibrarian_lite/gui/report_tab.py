@@ -27,6 +27,7 @@ Provides a dedicated full-screen view for systematic review reports with:
 import json
 import logging
 import re
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Mapping, Sequence
@@ -44,12 +45,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
 )
-from PySide6.QtCore import Signal, QUrl
+from PySide6.QtCore import QCoreApplication, Qt, Signal, QUrl
+from bmlib.publications.retraction_status import RetractionStatus
 
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 
 from ..config import LiteConfig
-from ..constants import DEFAULT_MIN_SCORE, SCORE_MAX
+from ..constants import DEFAULT_MIN_SCORE, KEPT_THREAD_EXIT_WAIT_MS, SCORE_MAX
+from ..exceptions import SQLiteError
 from ..storage import LiteStorage
 from ..data_models import (
     Citation,
@@ -61,6 +64,7 @@ from ..data_models import (
 from ..audit_records import (
     EXTRACTION_FAILED_COUNT_KEY,
     DocumentOutcomes,
+    checkpoint_metadata_with_retraction_snapshot,
     classify_document_outcomes,
     excluded_in_snapshot,
     extraction_failure_record,
@@ -69,13 +73,34 @@ from ..audit_records import (
     outcome_summary,
     predates_outcome_split,
     readable_extraction_failures,
+    recorded_retraction_snapshot,
     score_failure_reason,
     without_invented_reason,
 )
 from ..quality import QualityAssessment
 from ..analysis_failures import without_analysis_shortfall_notice
 from ..search_failures import without_search_shortfall_notice
-from ..retraction_text import plain_title, without_retraction_notice
+from ..retraction_checks import build_retraction_checker, stored_checks
+from ..retraction_screen import (
+    RetractionScreen,
+    RetractionSnapshot,
+    UnbuiltChecker,
+    changed_since_snapshot,
+    rechecked_snapshot,
+)
+from ..retraction_text import (
+    CHECK_AGAIN_FAILED,
+    CHECK_AGAIN_LABEL,
+    CHECK_AGAIN_NOT_SAVED,
+    CHECKING_AGAIN_LINE,
+    plain_title,
+    retraction_methods_line,
+    saved_work_warning,
+    without_retraction_notice,
+)
+from .retraction_badge import status_stylesheet
+from .thread_keeper import keep_until_finished
+from .workers import RetractionRecheckWorker
 
 # Directory for auto-saved reports
 REPORTS_DIR = Path.home() / "bmlibrarian_reports" / "LITE"
@@ -97,10 +122,13 @@ class ReportTab(QWidget):
 
     Signals:
         document_requested: Emitted when user clicks a citation (document_id)
+        retraction_rechecked: Emitted with a reopened run's new snapshot rows
+            by document id after *Check again*, for the audit trail
     """
 
     # Emitted when user clicks a citation link in the report
     document_requested = Signal(str)  # document_id
+    retraction_rechecked = Signal(dict)  # snapshot rows by document id
 
     def __init__(
         self,
@@ -143,11 +171,22 @@ class ReportTab(QWidget):
         # The run's retraction snapshot rows by document id; None when the
         # run was not checked
         self._retraction_snapshot: dict[str, dict[str, Any]] | None = None
+        # The reopened run *Check again* updates; None for any other report
+        self._saved_checkpoint_id: str | None = None
+        self._recheck_worker: RetractionRecheckWorker | None = None
+        # The latest checks the warning was computed from, kept so a failed
+        # Check again does not take down a warning already shown
+        self._shown_checks: Mapping[str, Any] = {}
 
         # Ensure reports directory exists
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
         self._setup_ui()
+
+        # Check again may be downloading the export: stop it at quit
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._cancel_at_quit)
 
     def _setup_ui(self) -> None:
         """Set up the user interface."""
@@ -158,6 +197,24 @@ class ReportTab(QWidget):
         # Status label at top
         self.status_label = QLabel("No report loaded")
         layout.addWidget(self.status_label)
+
+        # A reopened run: when its papers were checked, and Check again
+        retraction_row = QHBoxLayout()
+        self.retraction_line = QLabel()
+        self.retraction_line.setTextFormat(Qt.TextFormat.PlainText)
+        retraction_row.addWidget(self.retraction_line, stretch=1)
+        self.check_again_btn = QPushButton(CHECK_AGAIN_LABEL)
+        self.check_again_btn.setToolTip(
+            "Check this run's papers for retractions again; the report is not changed"
+        )
+        self.check_again_btn.clicked.connect(self._check_again)
+        retraction_row.addWidget(self.check_again_btn)
+        layout.addLayout(retraction_row)
+        self.retraction_warning = QLabel()
+        self.retraction_warning.setTextFormat(Qt.TextFormat.PlainText)
+        self.retraction_warning.setWordWrap(True)
+        layout.addWidget(self.retraction_warning)
+        self._hide_saved_retraction()
 
         # Report display - takes most of the space
         self.report_view = QTextBrowser()
@@ -275,6 +332,7 @@ class ReportTab(QWidget):
             else {doc_id: dict(row) for doc_id, row in retraction_snapshot.items()}
         )
         self._loaded_audit_data = None
+        self._hide_saved_retraction()
 
         # Store citations by document ID
         self._citations_by_doc_id.clear()
@@ -307,6 +365,149 @@ class ReportTab(QWidget):
             and not body.startswith(("No documents", "Workflow cancelled"))
         ):
             self._auto_save_report()
+
+    def _hide_saved_retraction(self) -> None:
+        """Hide the reopened run's line, button and warning (any other report)."""
+        self._saved_checkpoint_id = None
+        self.retraction_line.setVisible(False)
+        self.check_again_btn.setVisible(False)
+        self.retraction_warning.clear()
+        self.retraction_warning.setVisible(False)
+
+    def show_saved_retraction(self, checkpoint_id: str) -> None:
+        """Say when a reopened run's papers were checked, and offer *Check again*.
+
+        Called after :meth:`display_report` with the run's snapshot. A cited
+        paper whose shared row is newer and now says retracted or concern is
+        warned of at once, from the store alone: no request is made.
+
+        Args:
+            checkpoint_id: The reopened run, which *Check again* updates.
+        """
+        self._saved_checkpoint_id = checkpoint_id
+        try:
+            current = stored_checks(self.storage, self._used_documents())
+        except (SQLiteError, sqlite3.Error) as e:
+            # Not knowing is not "no change": Check again is still offered
+            logger.warning("Could not read the stored retraction checks (%s)", type(e).__name__)
+            current = {}
+        self._show_saved_retraction(current)
+
+    def _used_documents(self) -> list[LiteDocument]:
+        """The documents the report cites: the only ones whose change warrants a warning."""
+        return list({c.document.id: c.document for c in self._all_citations}.values())
+
+    def _show_saved_retraction(
+        self, current: Mapping[str, Any] | None = None, note: str = ""
+    ) -> None:
+        """Show the snapshot's checked-on line and warn of changes in *current*.
+
+        Args:
+            current: The latest checks by document id; ``None`` keeps the
+                ones last shown.
+            note: A clause to add to the line (a failed *Check again*).
+        """
+        if current is not None:
+            self._shown_checks = current
+        snapshot = self._retraction_snapshot or {}
+        record = RetractionSnapshot.from_rows(snapshot.values())
+        self.retraction_line.setText(retraction_methods_line(record) + note)
+        self.retraction_line.setVisible(True)
+        self.check_again_btn.setVisible(True)
+        # one Check again at a time, even across reopened questions
+        self.check_again_btn.setEnabled(self._recheck_worker is None)
+        used = self._used_documents()
+        changed = changed_since_snapshot(snapshot, self._shown_checks, {doc.id for doc in used})
+        warning = saved_work_warning(changed, {doc.id: doc.title for doc in used})
+        retracted = any(c.verdict.status is RetractionStatus.RETRACTED for _, c in changed)
+        self.retraction_warning.setStyleSheet(
+            status_stylesheet(RetractionStatus.RETRACTED if retracted else RetractionStatus.CONCERN)
+        )
+        self.retraction_warning.setText(warning or "")
+        self.retraction_warning.setVisible(warning is not None)
+
+    def _check_again(self) -> None:
+        """Check every document linked to the question again, in a worker thread."""
+        checkpoint_id = self._saved_checkpoint_id
+        if checkpoint_id is None or self._recheck_worker is not None:
+            return
+        try:
+            documents = self.storage.get_documents(
+                sorted(self.storage.get_document_ids_for_question(self._current_question))
+            )
+        except (SQLiteError, sqlite3.Error, ValueError) as e:
+            logger.warning("Could not read the question's documents (%s)", type(e).__name__)
+            self._show_saved_retraction(note=CHECK_AGAIN_FAILED)
+            return
+        try:
+            checker: Any = build_retraction_checker(self.config, self.storage, refresh_export=True)
+        except Exception as e:
+            # the type only: provider text never reaches the reader or the log
+            logger.warning("Retraction checker not built (%s)", type(e).__name__)
+            checker = UnbuiltChecker()
+        worker = RetractionRecheckWorker(checker, documents, checkpoint_id, self)
+        worker.rechecked.connect(self._on_rechecked)
+        worker.cancelled.connect(self._on_recheck_cancelled)
+        self._recheck_worker = worker
+        self.check_again_btn.setEnabled(False)
+        self.retraction_line.setText(CHECKING_AGAIN_LINE)
+        worker.start()
+        # Reopening another question, or quitting, must not destroy a running thread
+        keep_until_finished(worker)
+
+    def _on_rechecked(self, checkpoint_id: str, screen: RetractionScreen) -> None:
+        """Write *Check again*'s answers into the run's snapshot and warn.
+
+        The checkpoint is read again, since its metadata is replaced whole.
+        The report text is never touched. A failed check leaves the record as
+        it was and says so.
+
+        Args:
+            checkpoint_id: The run checked.
+            screen: The check's screen.
+        """
+        self._recheck_worker = None
+        self.check_again_btn.setEnabled(True)
+        showing = checkpoint_id == self._saved_checkpoint_id
+        if screen.failed:
+            if showing:
+                self._show_saved_retraction(note=CHECK_AGAIN_FAILED)
+            return
+        note = ""
+        try:
+            checkpoint = self.storage.get_checkpoint(checkpoint_id)
+            if checkpoint is None:
+                raise LookupError("checkpoint gone")
+            updated = rechecked_snapshot(recorded_retraction_snapshot(checkpoint.metadata), screen)
+            self.storage.update_checkpoint(
+                checkpoint_id,
+                metadata=checkpoint_metadata_with_retraction_snapshot(checkpoint.metadata, updated),
+            )
+        except (SQLiteError, sqlite3.Error, LookupError) as e:
+            # The shared rows hold the answers; only this run's record missed them
+            logger.warning("Could not save the new retraction status with %s (%s)", checkpoint_id, type(e).__name__)
+            updated = rechecked_snapshot(self._retraction_snapshot or {}, screen)
+            note = CHECK_AGAIN_NOT_SAVED
+        if not showing:
+            return  # the reader moved on; the run's record is still updated
+        rows = RetractionScreen.from_snapshot(updated.to_snapshot())
+        self._retraction_snapshot = rows
+        self._show_saved_retraction(screen.checks, note)
+        self.retraction_rechecked.emit(rows)
+
+    def _on_recheck_cancelled(self, checkpoint_id: str) -> None:
+        """A cancel (at quit) stopped *Check again*: nothing is saved."""
+        self._recheck_worker = None
+        self.check_again_btn.setEnabled(True)
+        if checkpoint_id == self._saved_checkpoint_id:
+            self._show_saved_retraction()
+
+    def _cancel_at_quit(self) -> None:
+        """Cancel a running *Check again* and wait for it a bounded time."""
+        worker = self._recheck_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            worker.wait(KEPT_THREAD_EXIT_WAIT_MS)
 
     def _make_citations_clickable(self, markdown_report: str) -> str:
         """
@@ -641,6 +842,7 @@ class ReportTab(QWidget):
             # Load the markdown report
             report = path.read_text(encoding="utf-8")
             self._current_report = report
+            self._hide_saved_retraction()
 
             # Try to load the accompanying audit file
             audit_path = path.with_name(path.name.replace("_report.md", "_audit.json"))

@@ -51,7 +51,7 @@ from .data_models import (
     LiteDocument,
     ScoredDocument,
 )
-from .retraction_screen import RetractionScreen
+from .retraction_screen import RetractionRecord, RetractionScreen
 
 #: What a failure whose code this build cannot name is recorded as. The count
 #: never degrades, only the reason (the #301 rule); the code itself is kept
@@ -516,7 +516,7 @@ def _retraction_evidence(row: Mapping[str, Any] | None) -> dict[str, Any]:
 
 
 def checkpoint_metadata_with_retraction_snapshot(
-    metadata: Mapping[str, Any], screen: RetractionScreen
+    metadata: Mapping[str, Any], screen: RetractionRecord
 ) -> dict[str, Any]:
     """A checkpoint's metadata with its run's retraction snapshot added.
 
@@ -525,7 +525,7 @@ def checkpoint_metadata_with_retraction_snapshot(
 
     Args:
         metadata: What the checkpoint keeps so far.
-        screen: The run's retraction screen.
+        screen: The run's retraction screen, or a snapshot *Check again* rewrote.
 
     Returns:
         The new metadata: one snapshot row per document the run held.

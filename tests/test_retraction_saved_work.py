@@ -1,0 +1,655 @@
+# BMLibrarian Lite - Biomedical Literature Research Tool
+# Copyright (C) 2024-2026 Dr Horst Herb
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
+"""A reopened question says when it was checked, warns, and can check again.
+
+Also: the Research Questions tab's passes (re-score, re-classify, benchmark,
+transparency re-analysis) leave retracted papers out before they start.
+Fake checkers only; workers are run headless (``run()`` called directly).
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+pytest.importorskip("PySide6")
+
+from bmlib.publications.retraction_status import (  # noqa: E402
+    RetractionEvidence,
+    RetractionKind,
+    RetractionLookup,
+    RetractionSource,
+    RetractionStatus,
+    RetractionVerdict,
+)
+
+from bmlibrarian_lite.audit_records import (  # noqa: E402
+    checkpoint_metadata_with_retraction_snapshot,
+    recorded_retraction_snapshot,
+)
+from bmlibrarian_lite.config import LiteConfig  # noqa: E402
+from bmlibrarian_lite.data_models import (  # noqa: E402
+    Citation,
+    DocumentSource,
+    LiteDocument,
+    ScoredDocument,
+)
+from bmlibrarian_lite.gui import report_tab as report_tab_module  # noqa: E402
+from bmlibrarian_lite.gui import research_questions_tab as questions_module  # noqa: E402
+from bmlibrarian_lite.gui.report_tab import ReportTab  # noqa: E402
+from bmlibrarian_lite.gui.workers import RetractionRecheckWorker  # noqa: E402
+from bmlibrarian_lite.retraction_checks import paper_key  # noqa: E402
+from bmlibrarian_lite.retraction_screen import (  # noqa: E402
+    changed_since_snapshot,
+    rechecked_snapshot,
+    screen_documents,
+)
+from bmlibrarian_lite.retraction_store import PaperCheck  # noqa: E402
+from bmlibrarian_lite.storage import LiteStorage  # noqa: E402
+
+QUESTION = "Does aspirin prevent stroke?"
+RUN = datetime(2026, 10, 1, 9, 0, tzinfo=UTC)
+LATER_RUN = datetime(2026, 10, 15, 9, 0, tzinfo=UTC)
+NOW = datetime(2026, 10, 19, 9, 0, tzinfo=UTC)
+REPORT = "## Findings\n\nAspirin reduced stroke incidence."
+NOTICE = RetractionEvidence(
+    RetractionSource.RETRACTION_WATCH_EXPORT, RetractionKind.RETRACTION, "2026-03-09", "10.9/notice"
+)
+CONCERN = RetractionEvidence(
+    RetractionSource.CROSSREF_PUBLISHER, RetractionKind.EXPRESSION_OF_CONCERN, "2026-04-01", "10.9/eoc"
+)
+
+
+def make_document(pmid: str) -> LiteDocument:
+    """A minimal document with a DOI and a PMID."""
+    return LiteDocument(
+        id=f"pmid-{pmid}",
+        title=f"Aspirin trial {pmid}",
+        abstract="Aspirin and stroke.",
+        doi=f"10.1/{pmid}",
+        pmid=pmid,
+        source=DocumentSource.PUBMED,
+    )
+
+
+CITED, UNCITED, LEFT_OUT = make_document("1"), make_document("2"), make_document("3")
+DOCUMENTS = [CITED, UNCITED, LEFT_OUT]
+
+
+def check(status: RetractionStatus, when: datetime) -> PaperCheck:
+    """A check of one paper at a given time."""
+    deciding = {RetractionStatus.RETRACTED: NOTICE, RetractionStatus.CONCERN: CONCERN}.get(status)
+    unanswered = tuple(RetractionLookup) if status is RetractionStatus.UNCHECKED else ()
+    return PaperCheck(RetractionVerdict(status, deciding, unanswered), when, None, None)
+
+
+def run_checks() -> dict[str, PaperCheck]:
+    """What the run saw: the cited and uncited clear, one retracted and left out."""
+    return {
+        CITED.id: check(RetractionStatus.CLEAR, RUN),
+        UNCITED.id: check(RetractionStatus.CLEAR, LATER_RUN),
+        LEFT_OUT.id: check(RetractionStatus.RETRACTED, LATER_RUN),
+    }
+
+
+def run_snapshot() -> dict[str, dict[str, Any]]:
+    """The run's snapshot rows by document id, as a checkpoint keeps them."""
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, run_checks()))
+    return recorded_retraction_snapshot(json.loads(json.dumps(metadata)))
+
+
+@pytest.fixture
+def qapp() -> Any:
+    """The QApplication the widget tests need."""
+    from PySide6.QtWidgets import QApplication
+
+    return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture
+def storage(tmp_path: Any) -> LiteStorage:
+    """A fresh store holding the question's three documents."""
+    config = LiteConfig()
+    config.storage.data_dir = tmp_path / "store"
+    store = LiteStorage(config)
+    for document in DOCUMENTS:
+        store.add_document(document)
+    store.add_question_documents(QUESTION, [d.id for d in DOCUMENTS])
+    return store
+
+
+def store_rows(storage: LiteStorage, checks: dict[str, PaperCheck]) -> None:
+    """Write shared rows, as a check would, for documents by id."""
+    by_id = {d.id: d for d in DOCUMENTS}
+    storage.store_retraction_checks({paper_key(by_id[i]): c for i, c in checks.items()})
+
+
+def saved_checkpoint(storage: LiteStorage, snapshot_metadata: dict[str, Any]) -> str:
+    """A finished run's checkpoint carrying the metadata; returns its id."""
+    checkpoint = storage.create_checkpoint(QUESTION, metadata=snapshot_metadata)
+    storage.update_checkpoint(checkpoint.id, step="complete", report=REPORT)
+    return checkpoint.id
+
+
+@pytest.fixture
+def tab(qapp: Any, tmp_path: Any, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch) -> ReportTab:
+    """A report tab over the store; no dialogs, no threads kept."""
+    monkeypatch.setattr(report_tab_module, "REPORTS_DIR", tmp_path)
+    dialogs = MagicMock()
+    for kind in ("critical", "warning"):
+        getattr(dialogs, kind).side_effect = lambda _parent, title, text: pytest.fail(
+            f"The report tab showed a dialog: {title}: {text}"
+        )
+    monkeypatch.setattr(report_tab_module, "QMessageBox", dialogs)
+    monkeypatch.setattr(report_tab_module, "keep_until_finished", MagicMock())
+    return ReportTab(config=LiteConfig(), storage=storage)
+
+
+def reopen(tab: ReportTab, snapshot: dict[str, dict[str, Any]] | None, checkpoint_id: str = "cp") -> None:
+    """Show the saved report as the app does on reopening, citing CITED only."""
+    tab.display_report(
+        report=REPORT,
+        question=QUESTION,
+        citations=[Citation(document=CITED, passage="Aspirin reduced stroke.", relevance_score=4)],
+        documents_found=list(DOCUMENTS),
+        all_scored_documents=[
+            ScoredDocument(document=CITED, score=4, explanation="On topic."),
+            ScoredDocument(document=UNCITED, score=2, explanation="Off topic."),
+        ],
+        auto_save=False,
+        retraction_snapshot=snapshot,
+    )
+    tab.show_saved_retraction(checkpoint_id)
+
+
+class NoRequests:
+    """A checker that fails the test if anything asks it."""
+
+    def check(self, *_args: Any, **_kwargs: Any) -> None:
+        """Fail the test."""
+        pytest.fail("a reopen made a request")
+
+    def close(self) -> None:
+        """Nothing to close."""
+
+
+def forbid_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make building a checker, or starting a worker, fail the test."""
+    monkeypatch.setattr(
+        report_tab_module, "build_retraction_checker", lambda *_a, **_k: pytest.fail("checker built")
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pure rules
+# ---------------------------------------------------------------------------
+
+
+def test_changed_since_snapshot_names_used_papers_newly_warned() -> None:
+    """Newer, used, and now retracted or concern; nothing else."""
+    snapshot = run_snapshot()
+    current = {
+        CITED.id: check(RetractionStatus.RETRACTED, NOW),
+        UNCITED.id: check(RetractionStatus.RETRACTED, NOW),
+    }
+    assert changed_since_snapshot(snapshot, current, {CITED.id}) == [(CITED.id, current[CITED.id])]
+    # controls: an older row; a clear one; an unchanged status
+    older = {CITED.id: check(RetractionStatus.RETRACTED, RUN - timedelta(days=1))}
+    assert changed_since_snapshot(snapshot, older, {CITED.id}) == []
+    clear = {CITED.id: check(RetractionStatus.CLEAR, NOW)}
+    assert changed_since_snapshot(snapshot, clear, {CITED.id}) == []
+    concern_run = {**snapshot, CITED.id: {**snapshot[CITED.id], "status": "concern"}}
+    concern = {CITED.id: check(RetractionStatus.CONCERN, NOW)}
+    assert changed_since_snapshot(concern_run, concern, {CITED.id}) == []
+    # a run that never checked the paper: any warning is news
+    assert changed_since_snapshot({}, concern, {CITED.id}) == [(CITED.id, concern[CITED.id])]
+
+
+def test_rechecked_snapshot_keeps_what_the_run_did() -> None:
+    """Status, time and notice rewritten; excluded and the run's status kept; a failed check changes nothing."""
+    snapshot = run_snapshot()
+    screen = screen_documents(
+        DOCUMENTS,
+        {CITED.id: check(RetractionStatus.RETRACTED, NOW), LEFT_OUT.id: check(RetractionStatus.CLEAR, NOW)},
+    )
+    rows = {r["document_id"]: r for r in rechecked_snapshot(snapshot, screen).to_snapshot()}
+    assert rows[CITED.id]["status"] == "retracted"
+    assert rows[CITED.id]["checked_at"] == NOW.isoformat()
+    assert rows[CITED.id]["deciding"]["notice_doi"] == "10.9/notice"
+    assert rows[CITED.id]["excluded"] is False and rows[CITED.id]["run_status"] == "clear"
+    assert rows[LEFT_OUT.id]["status"] == "clear" and rows[LEFT_OUT.id]["excluded"] is True
+    assert rows[UNCITED.id] == snapshot[UNCITED.id]  # not reached: kept as it was
+    failed = screen_documents(DOCUMENTS, {}, failed=True)
+    assert {r["document_id"]: r for r in rechecked_snapshot(snapshot, failed).to_snapshot()} == snapshot
+
+
+# ---------------------------------------------------------------------------
+# The report tab
+# ---------------------------------------------------------------------------
+
+
+def test_reopen_shows_oldest_checked_on_date(tab: ReportTab, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The oldest snapshot time; Check again offered; no request made."""
+    forbid_requests(monkeypatch)
+    reopen(tab, run_snapshot())
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-01"
+    assert not tab.retraction_line.isHidden()
+    assert not tab.check_again_btn.isHidden() and tab.check_again_btn.isEnabled()
+    assert tab.retraction_warning.isHidden()
+    # a run whose check failed says so, never a date
+    failed = {
+        doc_id: {**row, "checked_at": None, "status": "unchecked"} for doc_id, row in run_snapshot().items()
+    }
+    reopen(tab, failed)
+    assert tab.retraction_line.text() == "Retraction status could not be checked"
+
+
+def test_reopen_of_a_pre_feature_run_says_never_checked(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No snapshot: never checked, and Check again is offered."""
+    forbid_requests(monkeypatch)
+    reopen(tab, None)
+    assert tab.retraction_line.text() == "Retraction status never checked"
+    assert not tab.check_again_btn.isHidden() and tab.check_again_btn.isEnabled()
+
+
+def test_a_live_report_shows_no_saved_work_line(tab: ReportTab) -> None:
+    """display_report alone (a live run) hides the reopened run's line and button."""
+    reopen(tab, run_snapshot())
+    tab.display_report(
+        report=REPORT, question=QUESTION, citations=[], documents_found=[], all_scored_documents=[],
+        auto_save=False,
+    )
+    assert tab.retraction_line.isHidden() and tab.check_again_btn.isHidden()
+    assert tab.retraction_warning.isHidden()
+
+
+def test_reopen_warns_at_once_from_a_newer_stored_row(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another run found the cited paper retracted: the warning shows with no request."""
+    forbid_requests(monkeypatch)
+    store_rows(storage, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    reopen(tab, run_snapshot())
+    warning = tab.retraction_warning.text()
+    assert not tab.retraction_warning.isHidden()
+    assert CITED.title in warning and "Retracted on 2026-03-09" in warning
+    assert "re-run the question" in warning
+    assert tab.report_view.toPlainText().startswith("Findings")  # the report is not rewritten
+    # control: a stored row no newer than the snapshot warns of nothing
+    store_rows(storage, {CITED.id: check(RetractionStatus.RETRACTED, RUN - timedelta(days=1))})
+    reopen(tab, run_snapshot())
+    assert tab.retraction_warning.isHidden()
+
+
+def test_an_uncited_change_raises_no_warning(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scored but uncited paper changed nothing the reader sees."""
+    forbid_requests(monkeypatch)
+    store_rows(storage, {UNCITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    reopen(tab, run_snapshot())
+    assert tab.retraction_warning.isHidden()
+
+
+class RecordingChecker:
+    """Answers per document, stores what it decided, records how it was asked."""
+
+    def __init__(self, storage: LiteStorage, answers: dict[str, PaperCheck]) -> None:
+        """Keep the store and the answers."""
+        self.storage, self.answers = storage, answers
+        self.calls: list[tuple[list[str], dict[str, Any]]] = []
+        self.closed = False
+
+    def check(self, documents: Any, **kwargs: Any) -> dict[str, PaperCheck]:
+        """Answer, store the answers, record the call."""
+        self.calls.append((sorted(d.id for d in documents), kwargs))
+        out = {d.id: self.answers[d.id] for d in documents if d.id in self.answers}
+        store_rows(self.storage, out)
+        return out
+
+    def close(self) -> None:
+        """Record the close."""
+        self.closed = True
+
+
+def run_check_again(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch, answers: dict[str, PaperCheck]
+) -> tuple[RecordingChecker, list[dict[str, Any]]]:
+    """Click Check again with the worker run in place; returns the checker and builder kwargs."""
+    checker = RecordingChecker(storage, answers)
+    built: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        report_tab_module,
+        "build_retraction_checker",
+        lambda *_a, **kw: built.append(kw) or checker,
+    )
+    monkeypatch.setattr(RetractionRecheckWorker, "start", RetractionRecheckWorker.run)
+    tab.check_again_btn.click()
+    return checker, built
+
+
+def test_check_again_updates_rows_and_snapshot_and_warns(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every linked paper, refreshed; shared rows and snapshot updated; report text unchanged."""
+    checkpoint_id = saved_checkpoint(
+        storage,
+        checkpoint_metadata_with_retraction_snapshot(
+            {"other": "kept"}, screen_documents(DOCUMENTS, run_checks())
+        ),
+    )
+    reopen(tab, recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata), checkpoint_id)
+    shown_before = tab.report_view.toHtml()
+    rechecked: list[dict[str, Any]] = []
+    tab.retraction_rechecked.connect(rechecked.append)
+
+    checker, built = run_check_again(
+        tab,
+        storage,
+        monkeypatch,
+        {
+            CITED.id: check(RetractionStatus.RETRACTED, NOW),
+            UNCITED.id: check(RetractionStatus.CLEAR, NOW),
+            LEFT_OUT.id: check(RetractionStatus.RETRACTED, NOW),
+        },
+    )
+
+    assert built == [{"refresh_export": True}]
+    [(ids, kwargs)] = checker.calls
+    assert ids == sorted(d.id for d in DOCUMENTS) and checker.closed and kwargs["refresh"] is True
+    assert storage.retraction_checks([paper_key(CITED)])[paper_key(CITED)].verdict.status is (
+        RetractionStatus.RETRACTED
+    )
+    saved = storage.get_checkpoint(checkpoint_id)
+    assert saved.report == REPORT and saved.metadata["other"] == "kept"
+    rows = recorded_retraction_snapshot(saved.metadata)
+    assert rows[CITED.id]["status"] == "retracted"
+    assert rows[CITED.id]["checked_at"] == NOW.isoformat()
+    assert rows[LEFT_OUT.id]["excluded"] is True and rows[CITED.id]["excluded"] is False
+    assert tab.report_view.toHtml() == shown_before
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-19"
+    assert tab.check_again_btn.isEnabled()
+    warning = tab.retraction_warning.text()
+    assert CITED.title in warning and UNCITED.title not in warning and LEFT_OUT.title not in warning
+    assert rechecked and rechecked[-1][CITED.id]["status"] == "retracted"
+    # reopened later, the warning is still there: the snapshot keeps what the run saw
+    reopen(tab, rows, checkpoint_id)
+    assert CITED.title in tab.retraction_warning.text()
+
+
+def test_a_failed_check_again_changes_nothing_and_says_so(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A checker that raises: the run's record stays, the line says so, a shown warning stays."""
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, run_checks()))
+    checkpoint_id = saved_checkpoint(storage, metadata)
+    store_rows(storage, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    assert CITED.title in tab.retraction_warning.text()
+
+    class Down(RecordingChecker):
+        def check(self, documents: Any, **kwargs: Any) -> dict[str, PaperCheck]:
+            raise RuntimeError("down")
+
+    monkeypatch.setattr(report_tab_module, "build_retraction_checker", lambda *_a, **_k: Down(storage, {}))
+    monkeypatch.setattr(RetractionRecheckWorker, "start", RetractionRecheckWorker.run)
+    tab.check_again_btn.click()
+
+    assert storage.get_checkpoint(checkpoint_id).metadata == json.loads(json.dumps(metadata))
+    assert "could not be checked" in tab.retraction_line.text()
+    assert tab.check_again_btn.isEnabled()
+    assert CITED.title in tab.retraction_warning.text() and not tab.retraction_warning.isHidden()
+
+
+def test_a_cancelled_check_again_saves_nothing(qapp: Any) -> None:
+    """Cancelled (at quit): the worker says so instead of a result."""
+    worker = RetractionRecheckWorker(NoRequests(), [], "cp")
+    got: list[Any] = []
+    worker.rechecked.connect(lambda *a: got.append(("rechecked", a)))
+    worker.cancelled.connect(lambda *a: got.append(("cancelled", a)))
+    worker.cancel()
+    worker.checker = RecordingChecker(MagicMock(), {})
+    worker.run()
+    assert got == [("cancelled", ("cp",))]
+
+
+def test_reopen_keeps_excluded_as_excluded(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The left-out paper is reinstated: the reopened audit trail still shows it excluded."""
+    from bmlibrarian_lite.gui.app import LiteMainWindow
+    from bmlibrarian_lite.gui.audit_trail_tab import AuditTrailTab
+
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, run_checks()))
+    checkpoint_id = saved_checkpoint(storage, metadata)
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    run_check_again(
+        tab,
+        storage,
+        monkeypatch,
+        {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS},
+    )
+
+    window = MagicMock()
+    window.storage = storage
+    window.audit_trail_tab = AuditTrailTab(config=MagicMock(), storage=MagicMock())
+    LiteMainWindow._on_question_selected(window, QUESTION, "aspirin")
+
+    card = window.audit_trail_tab.literature_tab.get_card(LEFT_OUT.id)
+    assert card._excluded_label.text().startswith("Excluded: retracted")
+    window.report_tab.show_saved_retraction.assert_called_once_with(checkpoint_id)
+    kwargs = window.report_tab.display_report.call_args.kwargs
+    assert kwargs["retraction_snapshot"][LEFT_OUT.id]["excluded"] is True
+
+
+# ---------------------------------------------------------------------------
+# The Research Questions tab's passes leave retracted papers out
+# ---------------------------------------------------------------------------
+
+
+class ScreeningChecker:
+    """Retracts LEFT_OUT, clears the rest."""
+
+    def __init__(self) -> None:
+        """Not yet closed."""
+        self.closed = False
+
+    def check(self, documents: Any, **_kwargs: Any) -> dict[str, PaperCheck]:
+        """Retract LEFT_OUT, clear the rest."""
+        return {
+            d.id: check(RetractionStatus.RETRACTED if d.id == LEFT_OUT.id else RetractionStatus.CLEAR, NOW)
+            for d in documents
+        }
+
+    def close(self) -> None:
+        """Record the close."""
+        self.closed = True
+
+
+def watch(worker: Any) -> list[str]:
+    """Collect what the worker's screen said."""
+    said: list[str] = []
+    worker.retractions_screened.connect(said.append)
+    return said
+
+
+def test_the_reclassify_worker_leaves_retracted_papers_out(monkeypatch: pytest.MonkeyPatch, qapp: Any) -> None:
+    """The classifier never sees the retracted paper; the count is said."""
+    from bmlibrarian_lite.gui.workers import ReclassifyWorker
+    from bmlibrarian_lite.quality.data_models import StudyClassification, StudyDesign
+
+    seen: list[str] = []
+
+    class Classifier:
+        def __init__(self, config: Any) -> None:
+            pass
+
+        def classify(self, document: LiteDocument) -> StudyClassification:
+            seen.append(document.id)
+            return StudyClassification(study_design=StudyDesign.RCT, confidence=0.9)
+
+    monkeypatch.setattr("bmlibrarian_lite.quality.study_classifier.LiteStudyClassifier", Classifier)
+    checker = ScreeningChecker()
+    worker = ReclassifyWorker(LiteConfig(), MagicMock(), list(DOCUMENTS), retraction_checker=checker)
+    said = watch(worker)
+    worker.run()
+    assert seen == [CITED.id, UNCITED.id] and checker.closed
+    assert said == ["1 retracted paper left out"]
+
+
+def test_the_rescore_worker_leaves_retracted_papers_out(monkeypatch: pytest.MonkeyPatch, qapp: Any) -> None:
+    """The scorer never sees the retracted paper."""
+    from bmlibrarian_lite.gui.workers import RescoreWorker
+
+    seen: list[str] = []
+
+    class Agent:
+        def __init__(self, config: Any) -> None:
+            pass
+
+        def score_document(self, question: str, document: LiteDocument) -> ScoredDocument:
+            seen.append(document.id)
+            return ScoredDocument(document=document, score=3, explanation="ok")
+
+    monkeypatch.setattr("bmlibrarian_lite.agents.scoring_agent.LiteScoringAgent", Agent)
+    worker = RescoreWorker(
+        LiteConfig(), MagicMock(), QUESTION, list(DOCUMENTS), retraction_checker=ScreeningChecker()
+    )
+    said = watch(worker)
+    worker.run()
+    assert seen == [CITED.id, UNCITED.id]
+    assert said == ["1 retracted paper left out"]
+
+
+def test_the_transparency_worker_leaves_retracted_papers_out(
+    monkeypatch: pytest.MonkeyPatch, qapp: Any
+) -> None:
+    """The pending re-analysis never analyses the retracted paper."""
+    from bmlibrarian_lite.gui.workers import TransparencyReanalysisWorker
+    from bmlibrarian_lite.transparency import assessment
+
+    seen: list[str] = []
+
+    def assess(_analyzer: Any, *args: Any) -> Any:
+        seen.append(args[2])
+        raise RuntimeError("not needed")
+
+    monkeypatch.setattr(assessment, "assess_document", assess)
+    monkeypatch.setattr(assessment, "create_background_analyzer", lambda *_a, **_k: MagicMock())
+    worker = TransparencyReanalysisWorker(
+        LiteConfig(), MagicMock(), list(DOCUMENTS), retraction_checker=ScreeningChecker()
+    )
+    said = watch(worker)
+    worker.run()
+    assert seen == [CITED.id, UNCITED.id]
+    assert said == ["1 retracted paper left out"]
+
+
+def test_the_benchmark_worker_leaves_retracted_papers_out(monkeypatch: pytest.MonkeyPatch, qapp: Any) -> None:
+    """The benchmark runner is given the kept papers only."""
+    from bmlibrarian_lite import benchmarking
+    from bmlibrarian_lite.gui.benchmark_dialog import BenchmarkWorker
+
+    given: list[list[str]] = []
+
+    class Runner:
+        def __init__(self, *_a: Any) -> None:
+            pass
+
+        def run_quick_benchmark(self, **kwargs: Any) -> Any:
+            given.append([d.id for d in kwargs["documents"]])
+            return SimpleNamespace(cancellation=None)
+
+    monkeypatch.setattr(benchmarking, "BenchmarkRunner", Runner)
+    worker = BenchmarkWorker(
+        LiteConfig(), MagicMock(), QUESTION, list(DOCUMENTS), ["m"], retraction_checker=ScreeningChecker()
+    )
+    said = watch(worker)
+    worker.run()
+    assert given == [[CITED.id, UNCITED.id]]
+    assert said == ["1 retracted paper left out"]
+
+
+def test_a_worker_without_a_checker_screens_nothing(monkeypatch: pytest.MonkeyPatch, qapp: Any) -> None:
+    """The control: the review's own benchmark (already screened) is not screened again."""
+    from bmlibrarian_lite import benchmarking
+    from bmlibrarian_lite.gui.benchmark_dialog import BenchmarkWorker
+
+    given: list[list[str]] = []
+
+    class Runner:
+        def __init__(self, *_a: Any) -> None:
+            pass
+
+        def run_quick_benchmark(self, **kwargs: Any) -> Any:
+            given.append([d.id for d in kwargs["documents"]])
+            return SimpleNamespace(cancellation=None)
+
+    monkeypatch.setattr(benchmarking, "BenchmarkRunner", Runner)
+    worker = BenchmarkWorker(LiteConfig(), MagicMock(), QUESTION, list(DOCUMENTS), ["m"])
+    said = watch(worker)
+    worker.run()
+    assert given == [[d.id for d in DOCUMENTS]] and said == []
+
+
+@pytest.fixture
+def questions_tab(qapp: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """The Research Questions tab over a stub store, one question selected, workers stood in."""
+    monkeypatch.setattr(questions_module.QTimer, "singleShot", MagicMock())
+    boxes = MagicMock()
+    boxes.Yes = boxes.StandardButton.Yes = boxes.question.return_value = "yes"
+    monkeypatch.setattr(questions_module, "QMessageBox", boxes)
+    built: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        questions_module, "build_retraction_checker", lambda *_a, **kw: built.append(kw) or "checker"
+    )
+    for name in ("BenchmarkWorker", "ReclassifyWorker", "RescoreWorker", "TransparencyReanalysisWorker"):
+        monkeypatch.setattr(questions_module, name, MagicMock())
+    storage = MagicMock()
+    storage.get_document_ids_for_question.return_value = {d.id for d in DOCUMENTS}
+    storage.get_documents_pending_transparency.return_value = [d.id for d in DOCUMENTS]
+    storage.get_documents.return_value = list(DOCUMENTS)
+    config = LiteConfig()
+    config.benchmark.models = [MagicMock(get_model_string=lambda: "m")]
+    widget = questions_module.ResearchQuestionsTab(config=config, storage=storage)
+    widget._get_selected_question = lambda: SimpleNamespace(question=QUESTION)
+    widget.built = built
+    return widget
+
+
+@pytest.mark.parametrize(
+    ("action", "worker_name"),
+    [
+        ("_on_benchmark_clicked", "BenchmarkWorker"),
+        ("_on_reclassify_clicked", "ReclassifyWorker"),
+        ("_on_rescore_clicked", "RescoreWorker"),
+        ("_on_reanalyse_transparency_clicked", "TransparencyReanalysisWorker"),
+    ],
+)
+def test_each_pass_is_given_the_tabs_checker(questions_tab: Any, action: str, worker_name: str) -> None:
+    """A checker that never refreshes the export goes to every pass's worker."""
+    getattr(questions_tab, action)()
+    worker_class = getattr(questions_module, worker_name)
+    worker_class.assert_called_once()
+    assert worker_class.call_args.kwargs["retraction_checker"] == "checker"
+    assert questions_tab.built == [{}]
+    worker_class.return_value.retractions_screened.connect.assert_called()
+
+
+def test_the_tab_says_what_its_pass_left_out(questions_tab: Any) -> None:
+    """The count is added to the pass's final line, once."""
+    questions_tab._on_retractions_screened("1 retracted paper left out")
+    questions_tab.progress_label.setText("Re-scored 2 documents.")
+    questions_tab._append_retraction_clause()
+    assert questions_tab.progress_label.text() == "Re-scored 2 documents; 1 retracted paper left out."
+    questions_tab._append_retraction_clause()
+    assert questions_tab.progress_label.text() == "Re-scored 2 documents; 1 retracted paper left out."

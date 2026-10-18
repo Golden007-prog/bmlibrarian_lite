@@ -10,7 +10,7 @@ No provider text: a failure's cause comes from ``RequestFailure.describe()``.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -186,6 +186,43 @@ def retraction_methods_line(record: RetractionRecord) -> str:
 
 
 _LABEL = " (PubMed's label)"
+
+CHECK_AGAIN_LABEL = "Check again"
+CHECKING_AGAIN_LINE = "Checking retraction status…"
+CHECK_AGAIN_FAILED = "; it could not be checked again, so this is still the run's record"
+CHECK_AGAIN_NOT_SAVED = "; the new status could not be saved with this run"
+
+
+def saved_work_warning(
+    changed: Sequence[tuple[str, PaperCheck]], titles: Mapping[str, str]
+) -> str | None:
+    """Warn that papers a saved report cites are now retracted or under concern.
+
+    Plain text, one paper per line. It suggests re-running the question; it
+    runs nothing, and the report is not rewritten.
+
+    Args:
+        changed: (document id, check) pairs, as ``changed_since_snapshot`` gives them.
+        titles: Titles by document id; a missing one is named by its id.
+
+    Returns:
+        The warning; ``None`` when nothing changed.
+    """
+    if not changed:
+        return None
+    count = len(changed)
+    subject = "1 paper this report cites has" if count == 1 else f"{count:,} papers this report cites have"
+    lines = [f"Since this report was written, {subject} a retraction warning:"]
+    for doc_id, check in changed:
+        title = " ".join(str(titles.get(doc_id) or doc_id).split())
+        lines.append(f"• {title}: {paper_status_line(check)}")
+    lines.append("The report has not been changed; re-run the question to bring it up to date.")
+    return "\n".join(lines)
+
+
+def with_pass_retraction_clause(text: str, clause: str) -> str:
+    """Add a pass's retraction clause (``run_summary_clause``) to its final line."""
+    return f"{text.rstrip().rstrip('.')}; {clause}." if clause else text
 
 
 def paper_status_line(check: PaperCheck) -> str:

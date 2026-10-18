@@ -40,7 +40,7 @@ from .retraction_store import PaperCheck
 from .storage import LiteStorage
 from .transparency.assessment import contact_email
 
-__all__ = ["PaperCheck", "RetractionChecker", "paper_key"]
+__all__ = ["PaperCheck", "RetractionChecker", "paper_key", "stored_checks"]
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +321,24 @@ class RetractionChecker:
             # a verdict that could not be kept is still this run's verdict
             logger.warning("Retraction checks not stored (%s); asked again next time", type(e).__name__)
         return out
+
+
+def stored_checks(storage: LiteStorage, documents: Sequence[LiteDocument]) -> dict[str, PaperCheck]:
+    """The shared rows already stored for the documents; no request is made.
+
+    Args:
+        storage: Where verdicts are stored.
+        documents: The documents.
+
+    Returns:
+        A check per ``LiteDocument.id`` whose paper has a readable row.
+
+    Raises:
+        sqlite3.Error: Reading the rows failed.
+    """
+    keys = {doc.id: paper_key(doc) for doc in documents}
+    stored = storage.retraction_checks(key for key in keys.values() if key)
+    return {doc_id: stored[key] for doc_id, key in keys.items() if key in stored}
 
 
 def build_retraction_checker(

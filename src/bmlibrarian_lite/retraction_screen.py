@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -26,6 +26,9 @@ from .retraction_store import PaperCheck
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_REQUIRED = ("document_id", "status")
+#: The status the run saw, kept in a row once *Check again* rewrites ``status``
+RUN_STATUS_KEY = "run_status"
+_WARNING_STATUSES = (RetractionStatus.RETRACTED, RetractionStatus.CONCERN)
 
 
 def as_utc(moment: datetime) -> datetime:
@@ -307,6 +310,8 @@ def screen_with_fallback(
     checker: Any,
     documents: Sequence[LiteDocument],
     should_cancel: Callable[[], bool] = lambda: False,
+    *,
+    refresh: bool = False,
 ) -> RetractionScreen:
     """Check the documents and leave the retracted ones out; a failed check never raises.
 
@@ -318,12 +323,16 @@ def screen_with_fallback(
         checker: A ``RetractionChecker`` (anything with ``check`` and ``close``).
         documents: The documents.
         should_cancel: Passed to the checker.
+        refresh: Passed to the checker: ask again even for a fresh stored
+            verdict (*Check again*).
 
     Returns:
         The screen; after a cancel, possibly partial.
     """
     try:
-        return screen_documents(documents, checker.check(documents, should_cancel=should_cancel))
+        return screen_documents(
+            documents, checker.check(documents, refresh=refresh, should_cancel=should_cancel)
+        )
     except Exception as e:
         # the type only: provider text never reaches the reader or the log
         logger.warning("Retraction check failed (%s); every document unchecked", type(e).__name__)
@@ -332,6 +341,77 @@ def screen_with_fallback(
         )
     finally:
         checker.close()
+
+
+def changed_since_snapshot(
+    snapshot: Mapping[str, Mapping[str, Any]],
+    current: Mapping[str, PaperCheck],
+    used_ids: Collection[str],
+) -> list[tuple[str, PaperCheck]]:
+    """The used papers whose retraction status changed for the worse since the run.
+
+    A paper counts when its current check is no older than its snapshot row,
+    now says retracted or concern, and the run saw another status: the row's
+    ``run_status`` once *Check again* rewrote it, else its ``status``. A
+    paper without a row, or whose row has no check time, the run never
+    checked, so any warning is news.
+
+    Args:
+        snapshot: The run's snapshot rows by document id.
+        current: The latest checks by document id.
+        used_ids: The documents the run's report cites.
+
+    Returns:
+        (document id, check) pairs in ``current``'s order.
+    """
+    changed = []
+    for doc_id, check in current.items():
+        if doc_id not in used_ids or check.verdict.status not in _WARNING_STATUSES:
+            continue
+        row = snapshot.get(doc_id) or {}
+        stamp = row.get("checked_at")
+        if stamp and as_utc(check.checked_at) < as_utc(datetime.fromisoformat(stamp)):
+            continue
+        if row.get(RUN_STATUS_KEY, row.get("status") if stamp else None) == check.verdict.status.value:
+            continue
+        changed.append((doc_id, check))
+    return changed
+
+
+def rechecked_snapshot(
+    snapshot: Mapping[str, Mapping[str, Any]], screen: RetractionScreen
+) -> RetractionSnapshot:
+    """The run's snapshot with *Check again*'s answers written in.
+
+    Status, check time and deciding notice are the new check's. ``excluded``
+    stays as the run recorded it, and ``run_status`` keeps the status the run
+    saw, so a later reopen still warns. A document the check did not reach
+    keeps its row; a document the run never recorded gets one, not excluded.
+    A failed check changes nothing.
+
+    Args:
+        snapshot: The run's snapshot rows by document id.
+        screen: *Check again*'s screen.
+
+    Returns:
+        The new snapshot.
+    """
+    rows = {doc_id: dict(row) for doc_id, row in snapshot.items()}
+    if not screen.failed:
+        for row in screen.to_snapshot():
+            doc_id = row["document_id"]
+            if doc_id not in screen.checks:
+                continue
+            old = rows.get(doc_id, {})
+            rows[doc_id] = {
+                **row,
+                "excluded": old.get("excluded") is True,
+                RUN_STATUS_KEY: old.get(
+                    RUN_STATUS_KEY,
+                    old.get("status") if old.get("checked_at") else RetractionStatus.UNCHECKED.value,
+                ),
+            }
+    return RetractionSnapshot(tuple(rows.values()))
 
 
 def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:

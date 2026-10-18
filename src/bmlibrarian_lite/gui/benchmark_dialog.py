@@ -23,7 +23,7 @@ Provides dialogs for:
 """
 
 import logging
-from typing import List, Optional, TYPE_CHECKING
+from typing import Any, List, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..storage import LiteStorage
@@ -50,7 +50,7 @@ from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 from ..config import LiteConfig, BenchmarkModelConfig
 from ..data_models import LiteDocument, ScoredDocument
 from ..benchmarking.display import documents_left_to_score, reusable_documents_by_model
-from .workers import SingleOutcome
+from .workers import SingleOutcome, leave_out_retracted
 from ..constants import calculate_cost, get_model_pricing
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ class BenchmarkWorker(SingleOutcome, QThread):
         cancelled: Emitted when a cancel stopped the run, with the partial
             BenchmarkResult (or None, when it stopped before one could be
             computed) and the error that also ended it, or ""
+        retractions_screened: Emitted, before the benchmark starts, with what
+            the retraction screen left out (``leave_out_retracted``); not terminal
     """
 
     progress = Signal(int, int, str)  # current, total, message
@@ -81,6 +83,7 @@ class BenchmarkWorker(SingleOutcome, QThread):
     finished = Signal(object)  # BenchmarkResult
     error = Signal(str)
     cancelled = Signal(object, str)  # partial BenchmarkResult or None, error
+    retractions_screened = Signal(str)  # run_summary_clause, or ""
 
     def __init__(
         self,
@@ -92,6 +95,7 @@ class BenchmarkWorker(SingleOutcome, QThread):
         checkpoint_id: Optional[str] = None,
         existing_scores: Optional[List[ScoredDocument]] = None,
         reuse_cross_run: bool = True,
+        retraction_checker: Any = None,
     ) -> None:
         """
         Initialize the benchmark worker.
@@ -105,6 +109,9 @@ class BenchmarkWorker(SingleOutcome, QThread):
             checkpoint_id: Optional checkpoint ID for storing results
             existing_scores: Pre-existing scores to reuse (e.g., from initial scoring)
             reuse_cross_run: If True, reuse scores from previous runs of same question
+            retraction_checker: Leaves retracted papers out before the
+                benchmark starts; ``None`` (the review's own, already
+                screened documents) screens nothing
         """
         super().__init__()
         self.config = config
@@ -115,6 +122,7 @@ class BenchmarkWorker(SingleOutcome, QThread):
         self.checkpoint_id = checkpoint_id
         self.existing_scores = existing_scores
         self.reuse_cross_run = reuse_cross_run
+        self.retraction_checker = retraction_checker
         self._stopped = False
 
     def run(self) -> None:
@@ -131,6 +139,9 @@ class BenchmarkWorker(SingleOutcome, QThread):
         """
         from ..benchmarking import BenchmarkRunner
 
+        self.documents = leave_out_retracted(
+            self.retraction_checker, self.documents, lambda: self._stopped, self.retractions_screened
+        )
         runner = BenchmarkRunner(self.config, self.storage)
 
         def on_progress(current: int, total: int, message: str) -> None:
