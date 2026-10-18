@@ -1004,7 +1004,9 @@ class ReportTab(QWidget):
     def _restore_saved_retraction(self, report_path: Path, audit_data: Mapping[str, Any]) -> None:
         """Show a loaded report's checked-on line and offer *Check again*.
 
-        Check again covers the papers cited plus those the run left out.
+        Check again covers every paper the snapshot holds, as a reopened
+        question's does; a report without one, the papers cited plus those
+        the run left out.
 
         Args:
             report_path: The loaded report; its audit JSON is what Check again rewrites.
@@ -1014,6 +1016,15 @@ class ReportTab(QWidget):
         rows = record.get("snapshot") if isinstance(record, Mapping) else None
         self._retraction_snapshot = RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}
         documents = [
+            LiteDocument(
+                id=doc_id,
+                title=str(row.get("title") or ""),
+                abstract="",
+                doi=row.get("doi"),
+                pmid=row.get("pmid"),
+            )
+            for doc_id, row in self._retraction_snapshot.items()
+        ] or [
             LiteDocument(
                 id=str(entry[id_key]),
                 title=entry.get(title_key, ""),

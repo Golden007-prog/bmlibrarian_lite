@@ -918,7 +918,7 @@ def test_check_again_on_a_loaded_report_rewrites_only_the_audit_json_snapshot(
     )
 
     [(ids, _kwargs)] = checker.calls
-    assert ids == sorted([CITED.id, LEFT_OUT.id])  # the cited paper and the one the run left out
+    assert ids == sorted(d.id for d in DOCUMENTS)  # every paper the snapshot holds
     assert report_path.read_bytes() == md_before
     after = json.loads(audit_path.read_text(encoding="utf-8"))
     assert {k: v for k, v in after.items() if k != "retraction"} == {
@@ -933,6 +933,37 @@ def test_check_again_on_a_loaded_report_rewrites_only_the_audit_json_snapshot(
     assert storage.retraction_checks([paper_key(CITED)])[paper_key(CITED)].verdict.status is (
         RetractionStatus.RETRACTED
     )
+
+
+def test_a_served_check_again_on_a_file_advances_every_row(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every snapshot row is checked, not just the cited and left out: the line reaches today."""
+    report_path = save_report(tab, run_snapshot())
+    load(tab, report_path, monkeypatch)
+    checker, _ = run_check_again(
+        tab, storage, monkeypatch, {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS}
+    )
+    [(ids, _kwargs)] = checker.calls
+    assert ids == sorted(d.id for d in DOCUMENTS)
+    rows = json.loads(audit_of(report_path).read_text(encoding="utf-8"))["retraction"]["snapshot"]
+    assert {r["checked_at"] for r in rows} == {NOW.isoformat()}
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-19"
+
+
+def test_a_file_without_a_snapshot_checks_its_cited_and_left_out_papers(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fallback: no snapshot, so the citations and retracted_documents name the papers."""
+    report_path = saved_with_left_out(tab, run_snapshot())
+    audit_path = audit_of(report_path)
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    del audit["retraction"]
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    load(tab, report_path, monkeypatch)
+    checker, _ = run_check_again(tab, storage, monkeypatch, {})
+    [(ids, _kwargs)] = checker.calls
+    assert ids == sorted([CITED.id, LEFT_OUT.id])
 
 
 def test_a_files_check_again_leaves_the_audit_trail_tab(
@@ -986,12 +1017,7 @@ def test_check_again_keeps_the_runs_record_of_a_left_out_paper(
     before = json.loads(audit_path.read_text(encoding="utf-8"))
     assert [e["id"] for e in before["retracted_documents"]] == [LEFT_OUT.id]
     load(tab, report_path, monkeypatch)
-    run_check_again(
-        tab,
-        storage,
-        monkeypatch,
-        {CITED.id: check(RetractionStatus.CLEAR, NOW), LEFT_OUT.id: check(RetractionStatus.CLEAR, NOW)},
-    )
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS})
     after = json.loads(audit_path.read_text(encoding="utf-8"))
     assert after["retracted_documents"] == before["retracted_documents"]
     assert after["retracted_documents"][0]["retraction_date"] == "2026-03-09"
@@ -1002,7 +1028,7 @@ def test_check_again_keeps_the_runs_record_of_a_left_out_paper(
     assert row["run_status"] == "retracted" and row["run_deciding"]["notice_doi"] == "10.9/notice"
     assert tab._loaded_audit_data == after
     assert "10.9/notice" in tab._audit_trail_text()
-    assert tab.retraction_line.text() == "Retraction status checked 2026-10-15"
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-19"
 
 
 def test_check_again_keeps_the_runs_counts_and_evidence_on_a_reopened_question(
