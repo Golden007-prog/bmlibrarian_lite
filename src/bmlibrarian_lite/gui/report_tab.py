@@ -87,6 +87,7 @@ from ..retraction_screen import (
     RetractionScreen,
     UnbuiltChecker,
     changed_since_snapshot,
+    latest_checks,
     rechecked_snapshot,
 )
 from ..retraction_text import (
@@ -393,20 +394,21 @@ class ReportTab(QWidget):
         """Say when a reopened run's papers were checked, and offer *Check again*.
 
         Called after :meth:`display_report` with the run's snapshot. A cited
-        paper whose shared row is newer and now says retracted or concern is
-        warned of at once, from the store alone: no request is made.
+        paper now retracted or under concern, by a *Check again* the
+        snapshot records or a shared row no older, is warned of at once: no
+        request is made.
 
         Args:
             checkpoint_id: The reopened run, which *Check again* updates.
         """
         self._saved_checkpoint_id = checkpoint_id
         try:
-            current = stored_checks(self.storage, self._used_documents())
+            stored = stored_checks(self.storage, self._used_documents())
         except (SQLiteError, sqlite3.Error) as e:
-            # Not knowing is not "no change": Check again is still offered
+            # Not knowing is not "no change": the snapshot still warns, Check again is offered
             logger.warning("Could not read the stored retraction checks (%s)", type(e).__name__)
-            current = {}
-        self._show_saved_retraction(current)
+            stored = {}
+        self._show_saved_retraction(latest_checks(self._retraction_snapshot or {}, stored))
 
     def _used_documents(self) -> list[LiteDocument]:
         """The documents the report cites: the only ones whose change warrants a warning."""
@@ -517,7 +519,7 @@ class ReportTab(QWidget):
             return  # the reader moved on; the run's record is still updated
         rows = RetractionScreen.from_snapshot(updated.to_snapshot())
         self._retraction_snapshot = rows
-        self._show_saved_retraction(screen.checks, note)
+        self._show_saved_retraction(latest_checks(rows, screen.checks), note)
         self.retraction_rechecked.emit(rows)
 
     @staticmethod

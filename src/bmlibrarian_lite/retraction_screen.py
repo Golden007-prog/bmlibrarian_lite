@@ -396,6 +396,42 @@ def changed_since_snapshot(
     return changed
 
 
+def latest_checks(
+    snapshot: Mapping[str, Mapping[str, Any]], stored: Mapping[str, PaperCheck]
+) -> dict[str, PaperCheck]:
+    """The latest check of each paper: a *Check again* row's, or the store's when no older.
+
+    A row carrying ``run_status`` holds *Check again*'s answer, so it warns
+    even when the store has no row (another machine, a reset data directory,
+    a failed read). A store row no older replaces it, except an unchecked
+    one over a decided row: an outage is not knowledge.
+
+    Args:
+        snapshot: The run's snapshot rows by document id.
+        stored: Checks by document id (the store's, or *Check again*'s).
+
+    Returns:
+        Checks by document id.
+    """
+    out = {}
+    for doc_id, row in snapshot.items():
+        seed = check_from_snapshot_row(row) if RUN_STATUS_KEY in row else None
+        if seed is not None:
+            out[doc_id] = seed
+    for doc_id, check in stored.items():
+        seed = out.get(doc_id)
+        if seed is not None and (
+            as_utc(check.checked_at) < as_utc(seed.checked_at)
+            or (
+                check.verdict.status is RetractionStatus.UNCHECKED
+                and seed.verdict.status is not RetractionStatus.UNCHECKED
+            )
+        ):
+            continue
+        out[doc_id] = check
+    return out
+
+
 def rechecked_snapshot(
     snapshot: Mapping[str, Mapping[str, Any]], screen: RetractionScreen
 ) -> RetractionSnapshot:

@@ -48,6 +48,7 @@ from bmlibrarian_lite.gui.workers import RetractionRecheckWorker  # noqa: E402
 from bmlibrarian_lite.retraction_checks import paper_key  # noqa: E402
 from bmlibrarian_lite.retraction_screen import (  # noqa: E402
     changed_since_snapshot,
+    latest_checks,
     rechecked_snapshot,
     screen_documents,
 )
@@ -251,6 +252,27 @@ def test_an_outage_never_replaces_a_decided_row() -> None:
     assert rows[CITED.id]["status"] == "clear" and rows[CITED.id]["checked_at"] == NOW.isoformat()
 
 
+def rechecked_retracted() -> dict[str, dict[str, Any]]:
+    """The run's snapshot after a Check again found the cited paper retracted."""
+    screen = screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    return {r["document_id"]: r for r in rechecked_snapshot(run_snapshot(), screen).to_snapshot()}
+
+
+def test_latest_checks_seeds_from_checked_again_rows() -> None:
+    """A Check again row is a check; a store row no older replaces it, unless it is an outage."""
+    rows = rechecked_retracted()
+    seeded = latest_checks(rows, {})
+    assert set(seeded) == {CITED.id} and seeded[CITED.id].verdict.status is RetractionStatus.RETRACTED
+    newer_clear = check(RetractionStatus.CLEAR, NOW + timedelta(days=1))
+    assert latest_checks(rows, {CITED.id: newer_clear})[CITED.id] == newer_clear
+    older_clear = check(RetractionStatus.CLEAR, NOW - timedelta(days=1))
+    assert latest_checks(rows, {CITED.id: older_clear})[CITED.id] == seeded[CITED.id]
+    newer_outage = check(RetractionStatus.UNCHECKED, NOW + timedelta(days=1))
+    assert latest_checks(rows, {CITED.id: newer_outage})[CITED.id] == seeded[CITED.id]
+    # a row the run wrote itself is no news: only the store speaks for it
+    assert latest_checks(run_snapshot(), {}) == {}
+
+
 def test_check_again_writes_only_this_runs_documents() -> None:
     """A document another run linked is checked but not written into this run's snapshot."""
     other = make_document("9")
@@ -341,6 +363,35 @@ def test_reopen_warns_at_once_from_a_newer_stored_row(
     store_rows(storage, {CITED.id: check(RetractionStatus.RETRACTED, RUN - timedelta(days=1))})
     reopen(tab, run_snapshot())
     assert tab.retraction_warning.isHidden()
+
+
+def test_a_checked_again_snapshot_warns_with_an_empty_store(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The store has no row (another machine, a reset, a failed read): the snapshot alone warns."""
+    forbid_requests(monkeypatch)
+    reopen(tab, rechecked_retracted())
+    assert CITED.title in tab.retraction_warning.text() and not tab.retraction_warning.isHidden()
+
+
+def test_a_reloaded_file_that_records_a_cited_retraction_warns_with_an_empty_store(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The saved snapshot already says retracted (run_status clear); nothing is stored: still warned."""
+    report_path = save_report(tab, rechecked_retracted())
+    tab._hide_saved_retraction()
+    forbid_requests(monkeypatch)
+    load(tab, report_path, monkeypatch)
+    assert CITED.title in tab.retraction_warning.text() and not tab.retraction_warning.isHidden()
+
+
+def test_an_outage_during_a_second_check_again_keeps_the_warning(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unchecked answers over a snapshot that records the cited paper retracted: still warned."""
+    reopen(tab, rechecked_retracted())
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.UNCHECKED, NOW) for d in DOCUMENTS})
+    assert CITED.title in tab.retraction_warning.text() and not tab.retraction_warning.isHidden()
 
 
 def test_an_uncited_change_raises_no_warning(
