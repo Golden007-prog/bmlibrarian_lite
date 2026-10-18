@@ -109,7 +109,9 @@ def test_audit_trail_labels_exclusions_and_orders_them_last(qapp: Any) -> None:
     trail.on_retraction_screened(screen)
     cards = trail.literature_tab
     assert cards.get_card("doc-1")._retraction_badge.text() == "RETRACTED"
-    assert cards.get_card("doc-1")._excluded_label.text() == "Excluded: retracted"
+    label = cards.get_card("doc-1")._excluded_label.text()
+    assert label.startswith("Excluded: retracted")
+    assert "2024-05-01" in label and "10.1/notice" in label
     assert cards.get_card("doc-2")._retraction_badge.text() == "CONCERN"
     assert cards.get_card("doc-2")._excluded_label is None
     cards.resort_by_score()
@@ -129,7 +131,7 @@ def test_a_reopened_question_shows_the_snapshot(qapp: Any) -> None:
     trail.show_retraction_snapshot(rows)
     trail.on_documents_found([retracted, kept])
     cards = trail.literature_tab
-    assert cards.get_card("doc-1")._excluded_label.text() == "Excluded: retracted"
+    assert cards.get_card("doc-1")._excluded_label.text().startswith("Excluded: retracted")
     assert cards.get_card("doc-1")._retraction_badge.text() == "RETRACTED"
     assert cards.get_card("doc-2")._retraction_badge.text() == "NOT CHECKED"
 
@@ -167,9 +169,14 @@ def test_loading_a_citation_checks_the_paper_and_ignores_a_stale_result(
     qapp: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The check runs in a worker; a result for an earlier document is dropped."""
+    from tests.test_interrogation_degradation import StubFulltextWorker, StubPdfWorker
+
+    monkeypatch.setattr(tab_module, "FulltextDiscoveryWorker", StubFulltextWorker)
+    monkeypatch.setattr(tab_module, "PDFDiscoveryWorker", StubPdfWorker)
     tab = make_tab(tmp_path, monkeypatch)
     worker_class = MagicMock()
     monkeypatch.setattr(tab_module, "RetractionCheckWorker", worker_class)
+    monkeypatch.setattr(tab_module, "keep_until_finished", MagicMock())
     monkeypatch.setattr(tab_module, "build_retraction_checker", lambda *_: "checker")
     tab.load_from_citation(make_citation())
     worker_class.assert_called_once()
@@ -235,3 +242,76 @@ def test_the_review_tab_forwards_its_workers_screen(qapp: Any) -> None:
     tab.retraction_screened = MagicMock(emit=got.append)
     SystematicReviewTab._on_retraction_screened(tab, screen)
     assert got == [screen]
+
+
+def _stubbed_tab(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> tuple[Any, MagicMock]:
+    """A tab whose discovery and retraction workers are stand-ins."""
+    from tests.test_interrogation_degradation import StubFulltextWorker, StubPdfWorker
+
+    monkeypatch.setattr(tab_module, "FulltextDiscoveryWorker", StubFulltextWorker)
+    monkeypatch.setattr(tab_module, "PDFDiscoveryWorker", StubPdfWorker)
+    tab = make_tab(tmp_path, monkeypatch)
+    worker_class = MagicMock()
+    monkeypatch.setattr(tab_module, "RetractionCheckWorker", worker_class)
+    monkeypatch.setattr(tab_module, "build_retraction_checker", lambda *_: "checker")
+    monkeypatch.setattr(tab_module, "keep_until_finished", MagicMock())
+    return tab, worker_class
+
+
+def test_a_local_file_after_a_retracted_citation_shows_the_unchecked_line(
+    qapp: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A file names no paper: never the previous banner, never blank; a late result is dropped."""
+    tab, _ = _stubbed_tab(tmp_path, monkeypatch)
+    tab.load_from_citation(make_citation())
+    tab._on_retraction_checked("doc-1", make_check(RetractionStatus.RETRACTED))
+    path = tmp_path / "a.txt"
+    path.write_text("some text")
+    monkeypatch.setattr(tab_module.QFileDialog, "getOpenFileName", lambda *_a: (str(path), ""))
+    tab.document_view.load_file.return_value = "some text"
+    tab._load_document()
+    assert tab.retraction_banner.text().startswith("Retraction status not checked")
+    tab._on_retraction_checked("doc-1", make_check(RetractionStatus.RETRACTED))
+    assert tab.retraction_banner.text().startswith("Retraction status not checked")
+
+
+def test_a_typed_identifier_is_checked(qapp: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fetch PDF with a typed PMID checks that paper."""
+    tab, worker_class = _stubbed_tab(tmp_path, monkeypatch)
+    dialog = MagicMock()
+    dialog.return_value.get_identifiers.return_value = (None, "12345")
+    monkeypatch.setattr(tab_module, "IdentifierInputDialog", dialog)
+    monkeypatch.setattr(tab, "_start_pdf_discovery", MagicMock())
+    tab._fetch_pdf_from_identifier()
+    document = worker_class.call_args.args[1]
+    assert document.pmid == "12345"
+    assert tab._retraction_doc_id == document.id
+
+
+def test_a_retry_after_a_wrong_pdf_checks_the_paper_again(
+    qapp: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Retry clears the state, then starts the check for the same identifiers."""
+    tab, worker_class = _stubbed_tab(tmp_path, monkeypatch)
+    tab.load_from_citation(make_citation())
+    worker_class.reset_mock()
+    tab._current_pdf_path = tmp_path / "a.pdf"
+    dialog = MagicMock()
+    dialog.ACTION_RETRY = tab_module.WrongPDFDialog.ACTION_RETRY
+    dialog.return_value.get_action.return_value = dialog.ACTION_RETRY
+    monkeypatch.setattr(tab_module, "WrongPDFDialog", dialog)
+    monkeypatch.setattr(tab, "_delete_pdf", MagicMock())
+    monkeypatch.setattr(tab, "_start_pdf_discovery", MagicMock())
+    tab._handle_wrong_pdf()
+    assert worker_class.call_args.args[1].pmid == "1"
+
+
+def test_a_replaced_check_is_kept_until_it_finishes(qapp: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each check's thread goes to the keeper, so dropping the reference cannot destroy it running."""
+    tab, worker_class = _stubbed_tab(tmp_path, monkeypatch)
+    keeper = MagicMock()
+    monkeypatch.setattr(tab_module, "keep_until_finished", keeper)
+    tab._start_retraction_check(make_doc(1))
+    tab._start_retraction_check(make_doc(2))
+    assert keeper.call_count == 2
+    assert worker_class.call_args.args[2] is tab  # parented to the tab

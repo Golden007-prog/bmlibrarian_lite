@@ -142,6 +142,7 @@ def make(qapp: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     def build(hidden: bool = True, accept_offer: bool = False, citation: Citation | None = None) -> Harness:
         monkeypatch.setattr(tab_module, "LiteInterrogationAgent", MagicMock())
         monkeypatch.setattr(tab_module, "RetractionCheckWorker", MagicMock())
+        monkeypatch.setattr(tab_module, "keep_until_finished", MagicMock())
         monkeypatch.setattr(tab_module, "QMessageBox", MagicMock())
         monkeypatch.setattr(tab_module, "find_existing_fulltext", lambda _m: None)
         monkeypatch.setattr(tab_module, "find_existing_pdf", lambda _m: None)

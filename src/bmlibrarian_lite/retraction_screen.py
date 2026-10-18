@@ -268,7 +268,8 @@ def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:
     """Rebuild a paper's check from a stored snapshot row, for display.
 
     A row does not record which lookups went unanswered, so an unchecked row
-    names every source. ``None`` for a row this build cannot read.
+    names every source (bmlib refuses an unchecked verdict with none
+    unanswered). ``None`` for a row this build cannot read.
     """
     try:
         status = RetractionStatus(row["status"])
@@ -280,6 +281,7 @@ def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:
                 RetractionEvidence.from_dict(deciding) if deciding else None,
                 tuple(RetractionLookup) if status is RetractionStatus.UNCHECKED else (),
             ),
+            # nothing displays checked_at; a row without one gets a stand-in
             as_utc(datetime.fromisoformat(stamp)) if stamp else datetime.now(UTC),
             None,
             None,

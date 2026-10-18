@@ -1418,6 +1418,7 @@ def interrogation_tab(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
 
     monkeypatch.setattr(tab_module, "LiteInterrogationAgent", MagicMock())
     monkeypatch.setattr(tab_module, "RetractionCheckWorker", MagicMock())
+    monkeypatch.setattr(tab_module, "keep_until_finished", MagicMock())
     monkeypatch.setattr(tab_module, "QMessageBox", MagicMock())
     monkeypatch.setattr(tab_module, "find_existing_fulltext", lambda _m: None)
     monkeypatch.setattr(tab_module, "find_existing_pdf", lambda _m: None)

@@ -60,7 +60,7 @@ from ..quality.data_models import QualityAssessment
 from ..transparency import TransparencyResult
 from bmlib.publications.retraction_status import RetractionStatus
 from ..retraction_store import PaperCheck
-from ..retraction_text import EXCLUDED_RETRACTED_LABEL
+from ..retraction_text import EXCLUDED_RETRACTED_LABEL, paper_status_line
 from .retraction_badge import RetractionBadge, status_stylesheet
 from ..audit_records import score_failure_reason
 from .card_utils import (
@@ -817,7 +817,7 @@ class DocumentCard(QFrame):
             self._retraction_badge = RetractionBadge(check)
             title_row.insertWidget(0, self._retraction_badge)
         if excluded:
-            self._excluded_label = QLabel(EXCLUDED_RETRACTED_LABEL)
+            self._excluded_label = QLabel(f"{EXCLUDED_RETRACTED_LABEL}. {paper_status_line(check)}")
             self._excluded_label.setStyleSheet(status_stylesheet(RetractionStatus.RETRACTED))
             header_layout.insertWidget(1, self._excluded_label)
 

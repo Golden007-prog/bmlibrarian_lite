@@ -105,6 +105,7 @@ from .workers import (
     RetractionCheckWorker,
 )
 from .retraction_badge import status_stylesheet
+from .thread_keeper import keep_until_finished
 from ..retraction_checks import build_retraction_checker
 from ..retraction_screen import unchecked_check
 from ..retraction_store import PaperCheck
@@ -331,7 +332,7 @@ class DocumentInterrogationTab(QWidget):
         """Check the one paper in a worker thread; a result for another document is ignored."""
         self._retraction_doc_id = document.id
         try:
-            worker = RetractionCheckWorker(build_retraction_checker(self.config, self.storage), document)
+            worker = RetractionCheckWorker(build_retraction_checker(self.config, self.storage), document, self)
         except Exception as e:
             # the type only: provider text never reaches the reader or the log
             logger.warning("Retraction checker could not be built (%s)", type(e).__name__)
@@ -340,6 +341,29 @@ class DocumentInterrogationTab(QWidget):
         worker.checked.connect(self._on_retraction_checked)
         self._retraction_worker = worker
         worker.start()
+        # Replacing the reference, or closing the app, must not destroy a running thread
+        keep_until_finished(worker)
+
+    def _check_retraction_of(self, metadata: dict[str, Any]) -> None:
+        """Check the paper a metadata dict names; no identifier shows the unchecked line.
+
+        Args:
+            metadata: ``id``, ``doi``, ``pmid``, ``pmc_id`` and ``title`` as the tab holds them.
+        """
+        self._retraction_doc_id = None
+        self.show_retraction_check(None)
+        doi, pmid = metadata.get('doi'), metadata.get('pmid')
+        if not (doi or pmid):
+            self.show_retraction_check(unchecked_check())
+            return
+        self._start_retraction_check(LiteDocument(
+            id=str(metadata.get('id') or (f"pmid-{pmid}" if pmid else f"doi-{doi}")),
+            title=metadata.get('title') or "",
+            abstract="",
+            doi=doi,
+            pmid=pmid,
+            pmc_id=metadata.get('pmc_id'),
+        ))
 
     def _on_retraction_checked(self, doc_id: str, check: PaperCheck) -> None:
         """Show a finished check if it is for the paper now open."""
@@ -516,6 +540,9 @@ class DocumentInterrogationTab(QWidget):
         try:
             self.progress_label.setText("Loading document...")
             self.progress_label.setVisible(True)
+            # A local file names no paper: the previous one's status is not its
+            self._retraction_doc_id = None
+            self.show_retraction_check(None)
             text = self.document_view.load_file(file_path)
             if not text.strip():
                 self.doc_label.setText("Error: Document is empty")
@@ -524,6 +551,7 @@ class DocumentInterrogationTab(QWidget):
 
             self._agent.load_document(text, title=path.name)
             self._set_document_loaded(path.name)
+            self.show_retraction_check(unchecked_check())
             self._add_chat_bubble(f"Document loaded: **{path.name}**\n\nYou can now ask questions about this document.", is_user=False)
             self.status_message.emit(f"Loaded document: {path.name}")
         except Exception as e:
@@ -728,6 +756,8 @@ class DocumentInterrogationTab(QWidget):
                 QMessageBox.warning(self, "Not a PubMed ID", refused)
                 return
 
+        if not self._current_doc_metadata:
+            self._check_retraction_of({'doi': doi, 'pmid': pmid, 'title': title})
         self._start_pdf_discovery({'doi': doi, 'pmid': pmid, 'pmcid': pmcid, 'title': title}, title or f"PDF ({doi or pmid or pmcid})")
 
     def _start_pdf_discovery(self, doc_dict: dict, display_title: str, on_success=None, on_error=None) -> None:
@@ -1561,6 +1591,7 @@ class DocumentInterrogationTab(QWidget):
             self._clear_document()
             if doc_meta:
                 self._add_chat_bubble("Deleted incorrect PDF. Attempting to fetch correct PDF...", is_user=False)
+                self._check_retraction_of(doc_meta)
                 self._start_pdf_discovery(doc_meta, doc_meta.get('title', 'PDF'))
             else:
                 self._add_chat_bubble("Deleted incorrect PDF. Use Fetch PDF button manually.", is_user=False)

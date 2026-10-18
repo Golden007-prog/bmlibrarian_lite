@@ -152,14 +152,17 @@ class RetractionCheckWorker(SingleOutcome, QThread):
 
     checked = Signal(str, object)  # doc_id, PaperCheck
 
-    def __init__(self, checker: Any, document: 'LiteDocument') -> None:
+    def __init__(
+        self, checker: Any, document: 'LiteDocument', parent: QWidget | None = None
+    ) -> None:
         """Keep the checker and the paper.
 
         Args:
             checker: A ``RetractionChecker`` built for this one use.
             document: The paper to check.
+            parent: The tab the worker belongs to.
         """
-        super().__init__()
+        super().__init__(parent)
         self.checker = checker
         self.document = document
 
