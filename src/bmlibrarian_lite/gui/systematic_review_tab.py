@@ -52,12 +52,6 @@ from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 from bmlibrarian_lite.resources.styles.stylesheet_generator import get_stylesheet_generator
 from bmlibrarian_lite.resources.styles.theme_colors import ThemeColors
 
-from bmlib.publications.retraction_status import (
-    RetractionLookup,
-    RetractionStatus,
-    RetractionVerdict,
-)
-
 from ..audit_records import (
     CHECKPOINT_MIN_SCORE_KEY,
     checkpoint_metadata_with_extraction_failures,
@@ -111,10 +105,9 @@ from ..transparency import (
 from ..transparency.assessment import contact_email
 from ..retraction_checks import RetractionChecker
 from ..retraction_crossref import crossref_session
-from ..retraction_screen import RetractionScreen, screen_documents
-from ..retraction_store import PaperCheck
+from ..retraction_screen import RetractionScreen, screen_with_fallback
 from ..retraction_text import run_summary_clause, with_retraction_notice
-from datetime import UTC, datetime
+from datetime import datetime
 
 from .quality_filter_panel import QualityFilterPanel
 from .quality_summary import QualitySummaryWidget
@@ -784,23 +777,7 @@ class WorkflowWorker(QThread):
         Returns:
             The screen; after a cancel, possibly partial (the caller ends).
         """
-        try:
-            checks = checker.check(documents, should_cancel=lambda: self._cancelled)
-        except Exception as e:
-            # the type only: provider text never reaches the reader or the log
-            logger.warning(
-                "Retraction check failed (%s); every document unchecked", type(e).__name__
-            )
-            unchecked = PaperCheck(
-                RetractionVerdict(RetractionStatus.UNCHECKED, None, tuple(RetractionLookup)),
-                datetime.now(UTC),
-                None,
-                None,
-            )
-            checks = {doc.id: unchecked for doc in documents}
-        finally:
-            checker.close()
-        return screen_documents(documents, checks)
+        return screen_with_fallback(checker, documents, lambda: self._cancelled)
 
     def _report_incomplete_search(self, metadata: ReportMetadata) -> None:
         """Tell the tab the review rests on an incomplete search, if it does.

@@ -7,12 +7,16 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from bmlib.publications.retraction_status import RetractionStatus
+from bmlib.publications.retraction_status import (
+    RetractionLookup,
+    RetractionStatus,
+    RetractionVerdict,
+)
 
 from .data_models import LiteDocument
 from .retraction_store import PaperCheck
@@ -216,3 +220,44 @@ def screen_documents(
         retracted = check is not None and check.verdict.status is RetractionStatus.RETRACTED
         (excluded if retracted else kept).append(doc)
     return RetractionScreen(tuple(kept), tuple(excluded), dict(checks))
+
+
+def unchecked_check() -> PaperCheck:
+    """A check saying no lookup answered: the stand-in when checking failed."""
+    return PaperCheck(
+        RetractionVerdict(RetractionStatus.UNCHECKED, None, tuple(RetractionLookup)),
+        datetime.now(UTC),
+        None,
+        None,
+    )
+
+
+def screen_with_fallback(
+    checker: Any,
+    documents: Sequence[LiteDocument],
+    should_cancel: Callable[[], bool] = lambda: False,
+) -> RetractionScreen:
+    """Check the documents and leave the retracted ones out; never raise.
+
+    A check that fails never stops the caller: every document is then
+    unchecked and goes on. The checker is built for one use, so it is closed
+    when the check is done.
+
+    Args:
+        checker: A ``RetractionChecker`` (anything with ``check`` and ``close``).
+        documents: The documents.
+        should_cancel: Passed to the checker.
+
+    Returns:
+        The screen; after a cancel, possibly partial.
+    """
+    try:
+        checks = checker.check(documents, should_cancel=should_cancel)
+    except Exception as e:
+        # the type only: provider text never reaches the reader or the log
+        logger.warning("Retraction check failed (%s); every document unchecked", type(e).__name__)
+        unchecked = unchecked_check()
+        checks = {doc.id: unchecked for doc in documents}
+    finally:
+        checker.close()
+    return screen_documents(documents, checks)
