@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QSpinBox,
 )
-from PySide6.QtCore import Signal, QThread, QTimer
+from PySide6.QtCore import QCoreApplication, Signal, QThread, QTimer
 
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 from bmlibrarian_lite.resources.styles.stylesheet_generator import get_stylesheet_generator
@@ -58,6 +58,7 @@ from ..audit_records import (
     checkpoint_metadata_with_retraction_snapshot,
 )
 from ..config import LiteConfig
+from ..constants import KEPT_THREAD_EXIT_WAIT_MS
 from ..storage import LiteStorage
 from ..data_models import (
     TransparencyAnalysisFailure,
@@ -104,7 +105,7 @@ from ..transparency import (
 )
 from ..transparency.assessment import contact_email
 from ..retraction_checks import RetractionChecker, build_retraction_checker
-from ..retraction_screen import RetractionScreen, screen_with_fallback
+from ..retraction_screen import RetractionScreen, UnbuiltChecker, screen_with_fallback
 from ..retraction_text import run_summary_clause, with_retraction_notice
 from datetime import datetime
 
@@ -185,7 +186,7 @@ class WorkflowWorker(QThread):
         preloaded_documents: Optional[List[LiteDocument]] = None,
         pubmed_query: Optional[str] = None,
         preloaded_search_shortfalls: list[RetrievalShortfall] | None = None,
-        retraction_checker: RetractionChecker | None = None,
+        retraction_checker: RetractionChecker | UnbuiltChecker | None = None,
     ) -> None:
         """
         Initialize the workflow worker.
@@ -761,7 +762,7 @@ class WorkflowWorker(QThread):
             )
 
     def _screen_retractions(
-        self, checker: RetractionChecker, documents: list[LiteDocument]
+        self, checker: RetractionChecker | UnbuiltChecker, documents: list[LiteDocument]
     ) -> RetractionScreen:
         """Check the gathered documents and leave the retracted ones out.
 
@@ -949,6 +950,23 @@ class SystematicReviewTab(QWidget):
         self._preloaded_search_shortfalls: list[RetrievalShortfall] = []
 
         self._setup_ui()
+
+        # Nothing else stops a running review at quit: without this, a run
+        # mid-download keeps its thread past the end and the app aborts
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._cancel_at_quit)
+
+    def _cancel_at_quit(self) -> None:
+        """Cancel a running review and wait for it a bounded time.
+
+        The cancel stops an export download at its next chunk; the wait is
+        the one the thread keeper allows its threads at quit.
+        """
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
+            worker.wait(KEPT_THREAD_EXIT_WAIT_MS)
 
     def _setup_ui(self) -> None:
         """Set up the user interface."""
@@ -1163,13 +1181,24 @@ class SystematicReviewTab(QWidget):
 
         self._worker.start()
 
-    def _retraction_checker(self) -> RetractionChecker:
+    def _retraction_checker(self) -> RetractionChecker | UnbuiltChecker:
         """A checker for one run, so a failed export refresh is tried again next run.
 
+        The review is the one GUI path that may download the export; its
+        Cancel stops the download. Building does no I/O (a session and the
+        configured paths), so it runs here on the GUI thread.
+
         Returns:
-            The checker over this tab's storage and data directory.
+            The checker over this tab's storage and data directory; one that
+            could not be built is a stand-in whose every check fails, so the
+            run goes on with every document unchecked.
         """
-        return build_retraction_checker(self.config, self.storage)
+        try:
+            return build_retraction_checker(self.config, self.storage, refresh_export=True)
+        except Exception as e:
+            # the type only: provider text never reaches the reader or the log
+            logger.warning("Retraction checker not built (%s); every document unchecked", type(e).__name__)
+            return UnbuiltChecker()
 
     def _cancel_workflow(self) -> None:
         """Cancel the running workflow."""

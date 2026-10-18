@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -87,6 +88,26 @@ def _keeps(old: PaperCheck, new: RetractionVerdict) -> bool:
     )
 
 
+def _with_stored_types(
+    storage: LiteStorage, documents: Sequence[LiteDocument]
+) -> list[LiteDocument]:
+    """The documents, each without publication types given the stored record's.
+
+    A caller that names a paper by its identifiers alone carries no label, and
+    deciding without it would clear a paper only the label retracts.
+    """
+    bare = [doc.id for doc in documents if doc.publication_types is None]
+    if not bare:
+        return list(documents)
+    stored = {doc.id: doc.publication_types for doc in storage.get_documents(bare)}
+    return [
+        replace(doc, publication_types=stored[doc.id])
+        if doc.publication_types is None and stored.get(doc.id) is not None
+        else doc
+        for doc in documents
+    ]
+
+
 class RetractionChecker:
     """Decides and stores retraction verdicts for documents."""
 
@@ -98,6 +119,7 @@ class RetractionChecker:
         *,
         mailto: str,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        refresh_export: bool = False,
     ) -> None:
         """Keep the collaborators.
 
@@ -107,12 +129,17 @@ class RetractionChecker:
             session: The session for Crossref and the export download.
             mailto: Contact address for both.
             now: The clock; stored rows' age and the export's day both read it.
+            refresh_export: Whether a copy that is not current is downloaded
+                again (about 68 MB). Only the review and the CLI do; a
+                single-paper check uses the copy it has, or the export is
+                not consulted.
         """
         self._storage = storage
         self._data_dir = data_dir
         self._session = session
         self._mailto = mailto
         self._now = now
+        self._may_refresh = refresh_export
         self._refresh_tried = False
 
     def close(self) -> None:
@@ -122,19 +149,30 @@ class RetractionChecker:
     def _today(self) -> date:
         return self._now().astimezone(UTC).date()
 
-    def ensure_export(self) -> ExportCopy:
+    def ensure_export(self, should_cancel: Callable[[], bool] = lambda: False) -> ExportCopy:
         """The export copy, refreshed once per checker when not current.
+
+        Args:
+            should_cancel: Stops the download; a cancel before it starts
+                never begins one.
 
         Returns:
             The copy's state; a failed refresh is not tried again by this
-            checker.
+            checker, and a checker built without ``refresh_export`` never
+            tries one.
         """
         today = self._today()
         copy = export_copy(self._data_dir, today=today)
-        if copy.consulted or self._refresh_tried:
+        if copy.consulted or self._refresh_tried or not self._may_refresh or should_cancel():
             return copy
         self._refresh_tried = True
-        return refresh_export(self._data_dir, self._session, mailto=self._mailto, today=today)
+        return refresh_export(
+            self._data_dir,
+            self._session,
+            mailto=self._mailto,
+            today=today,
+            should_cancel=should_cancel,
+        )
 
     def check(
         self,
@@ -150,26 +188,30 @@ class RetractionChecker:
         verdict that leaves unanswered a lookup the stored one had answered
         never replaces it: the stored row keeps its ``checked_at`` and is
         asked again next time. Meanwhile a stored retraction or concern is
-        still returned, and a stored clear is not.
+        still returned, and a stored clear is not. A document without
+        publication types is read with its stored record's (one batched
+        read), so a caller that names the paper by identifier alone never
+        loses the PubMed label.
 
         Args:
             documents: The documents.
             refresh: Ask again even for a fresh stored verdict.
-            should_cancel: Passed to the Crossref lookup. A check that is
-                cancelled before it starts does not refresh the export.
+            should_cancel: Passed to the Crossref lookup and the export
+                download, which it stops.
 
         Returns:
             A check per ``LiteDocument.id``. After a cancel, a document whose
             Crossref batch was never asked has none, and none is stored.
 
         Raises:
-            sqlite3.Error: Reading or storing verdicts failed. Nothing is
+            sqlite3.Error: Reading or storing verdicts failed (``SQLiteError``
+                when reading the stored documents did). Nothing is
                 caught here, so the caller marks the documents unchecked.
         """
         now = self._now()
         out: dict[str, PaperCheck] = {}
         papers: dict[str, list[LiteDocument]] = defaultdict(list)
-        for doc in documents:
+        for doc in _with_stored_types(self._storage, documents):
             key = paper_key(doc)
             if key:
                 papers[key].append(doc)
@@ -197,12 +239,7 @@ class RetractionChecker:
         if not due:
             return out
 
-        # a cancel never waits for the export download
-        copy = (
-            export_copy(self._data_dir, today=self._today())
-            if should_cancel()
-            else self.ensure_export()
-        )
+        copy = self.ensure_export(should_cancel)
         today = self._today()
         dois = [doc.doi for docs in due.values() for doc in docs[:1] if doc.doi]
         lookups = lookup_crossref(
@@ -240,17 +277,25 @@ class RetractionChecker:
         return out
 
 
-def build_retraction_checker(config: LiteConfig, storage: LiteStorage) -> RetractionChecker:
+def build_retraction_checker(
+    config: LiteConfig, storage: LiteStorage, *, refresh_export: bool = False
+) -> RetractionChecker:
     """A checker for one use, so a failed export refresh is tried again next time.
 
     Args:
         config: The application's configuration.
         storage: Where verdicts are stored.
+        refresh_export: Whether the checker may download the export (the
+            review does; a single-paper check does not).
 
     Returns:
         A checker over the storage and the configured data directory.
     """
     mailto = contact_email(config)
     return RetractionChecker(
-        storage, config.storage.data_dir, crossref_session(mailto), mailto=mailto
+        storage,
+        config.storage.data_dir,
+        crossref_session(mailto),
+        mailto=mailto,
+        refresh_export=refresh_export,
     )

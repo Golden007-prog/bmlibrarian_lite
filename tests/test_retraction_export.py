@@ -183,3 +183,45 @@ def test_a_gzip_encoded_response_is_not_judged_by_content_length(tmp_path):
     session = _Session(headers={"Content-Encoding": "gzip", "Content-Length": "7"})
     copy = _refresh(tmp_path, session)
     assert copy.state is ExportState.CURRENT and copy.data_as_of == TODAY
+
+
+def test_a_cancel_during_the_download_stops_it_and_keeps_the_old_copy(tmp_path):
+    """The chunk loop honours should_cancel: no more chunks read, no temporaries, old copy kept."""
+    _refresh(tmp_path, _Session(), today=TODAY - timedelta(days=3))
+    before = (tmp_path / "retraction_watch.db").read_bytes()
+    read: list[int] = []
+    cancelled = []
+
+    class _Chunked(_Response):
+        def iter_content(self, size):
+            for i in range(5):
+                read.append(i)
+                if i == 1:
+                    cancelled.append(True)  # Cancel pressed while chunk 1 arrives
+                yield CSV[i * 10 : (i + 1) * 10]
+
+    class _S(_Session):
+        def get(self, url, **kw):
+            return _Chunked(200, b"")
+
+    copy = refresh_export(
+        tmp_path, _S(), mailto="a@b.c", today=TODAY, should_cancel=lambda: bool(cancelled)
+    )
+    assert read == [0, 1]
+    assert copy.data_as_of == TODAY - timedelta(days=3)
+    _assert_untouched(tmp_path, before)
+
+
+def test_a_refresh_leaves_another_refreshs_temporaries_alone(tmp_path):
+    """Temporaries are unique to the call: a concurrent refresh's files are not touched."""
+    theirs = {
+        name: f"{name} in progress".encode()
+        for name in ("retraction_watch.db.part", "retraction_watch.db.new")
+    }
+    for name, body in theirs.items():
+        (tmp_path / name).write_bytes(body)
+    copy = _refresh(tmp_path, _Session())
+    assert copy.state is ExportState.CURRENT
+    for name, body in theirs.items():
+        assert (tmp_path / name).read_bytes() == body
+    assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["retraction_watch.db", *theirs])

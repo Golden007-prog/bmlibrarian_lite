@@ -83,6 +83,9 @@ class StubSession:
             raise result
         return result
 
+    def close(self) -> None:
+        """A checker built for one use closes its session."""
+
 
 def _unreachable(url: str):
     return requests.ConnectionError("down")
@@ -119,8 +122,10 @@ def _doc(doc_id: str, doi: str | None = None, pmid: str | None = None, types=Non
     )
 
 
-def _checker(storage, tmp_path, session, clock=None):
-    return RetractionChecker(storage, tmp_path, session, mailto=MAILTO, now=clock or Clock())
+def _checker(storage, tmp_path, session, clock=None, refresh_export=True):
+    return RetractionChecker(
+        storage, tmp_path, session, mailto=MAILTO, now=clock or Clock(), refresh_export=refresh_export
+    )
 
 
 def test_documents_sharing_a_doi_are_asked_once(storage, tmp_path):
@@ -438,3 +443,107 @@ def test_close_closes_the_session(storage, tmp_path):
     session = MagicMock()
     _checker(storage, tmp_path, session).close()
     session.close.assert_called_once_with()
+
+
+def test_a_label_retraction_survives_a_recheck_without_types(storage, tmp_path):
+    """A stored record's label is read when the checked document carries no types."""
+    _current_export(tmp_path)
+    labelled = _doc("a", doi="10.1/a", types=["Retracted Publication"])
+    storage.add_document(labelled)
+    clock = Clock()
+    first = _checker(storage, tmp_path, StubSession(), clock).check([labelled])["a"]
+    assert first.verdict.status is RetractionStatus.RETRACTED
+    clock.now = START + timedelta(days=8)
+    session = StubSession()
+    bare = _doc("a", doi="10.1/a")  # the MCP and typed-identifier paths carry no types
+    again = _checker(storage, tmp_path, session, clock).check([bare])["a"]
+    assert len(session.crossref_urls) == 1  # asked again: the row was 8 days old
+    assert again.verdict.status is RetractionStatus.RETRACTED
+    row = storage.retraction_checks(["doi:10.1/a"])["doi:10.1/a"]
+    assert row.verdict.status is RetractionStatus.RETRACTED
+    # control: a paper whose stored record has no label is clear
+    storage.add_document(_doc("b", doi="10.1/b"))
+    other = _checker(storage, tmp_path, StubSession(), clock).check([_doc("b", doi="10.1/b")])
+    assert other["b"].verdict.status is RetractionStatus.CLEAR
+
+
+def _stale_export(tmp_path) -> bytes:
+    """An export copy 40 days old; its bytes."""
+    stale_day = (START - timedelta(days=40)).date()
+    copy = refresh_export(tmp_path, StubSession(), mailto=MAILTO, today=stale_day)
+    assert copy.state is ExportState.CURRENT
+    return (tmp_path / "retraction_watch.db").read_bytes()
+
+
+def test_a_single_paper_checker_never_downloads_the_export(storage, tmp_path):
+    """A stale copy is not refreshed by a one-paper check: export not consulted."""
+    _stale_export(tmp_path)
+    session = StubSession()
+    check = _checker(storage, tmp_path, session, refresh_export=False).check(
+        [_doc("a", doi="10.1/a")]
+    )["a"]
+    assert session.export_calls == 0
+    assert check.verdict.status is RetractionStatus.UNCHECKED
+    assert check.verdict.unanswered == (RetractionLookup.RETRACTION_WATCH_EXPORT,)
+    # control: the review's checker refreshes the same stale copy
+    _checker(storage, tmp_path, session, refresh_export=True).check([_doc("a", doi="10.1/a")])
+    assert session.export_calls == 1
+
+
+def test_build_retraction_checker_refreshes_only_when_asked(storage, tmp_path, monkeypatch):
+    """The builder's default is the single-paper checker; the review asks for refresh."""
+    from bmlibrarian_lite import retraction_checks
+
+    _stale_export(tmp_path)
+    session = StubSession()
+    monkeypatch.setattr(retraction_checks, "crossref_session", lambda mailto: session)
+    config = LiteConfig()
+    config.storage.data_dir = tmp_path
+    retraction_checks.build_retraction_checker(config, storage).check([_doc("a", doi="10.1/a")])
+    assert session.export_calls == 0
+    retraction_checks.build_retraction_checker(config, storage, refresh_export=True).check(
+        [_doc("a", doi="10.1/a")]
+    )
+    assert session.export_calls == 1
+
+
+def test_a_refused_download_over_a_stale_copy_leaves_papers_unchecked(storage, tmp_path):
+    """Review Focus (2): the export is not consulted, the papers are unchecked, the old copy stays."""
+    from bmlibrarian_lite.retraction_screen import screen_with_fallback
+    from bmlibrarian_lite.retraction_text import run_summary_clause
+
+    before = _stale_export(tmp_path)
+    session = StubSession(export_status=500)
+    checker = _checker(storage, tmp_path, session, refresh_export=True)
+    screen = screen_with_fallback(checker, [_doc("a", doi="10.1/a"), _doc("b", doi="10.1/b")])
+    assert session.export_calls == 1
+    for check in screen.checks.values():
+        assert check.verdict.status is RetractionStatus.UNCHECKED
+        assert RetractionLookup.RETRACTION_WATCH_EXPORT in check.verdict.unanswered
+        assert check.export_data_as_of is None  # export not consulted
+    assert screen.unchecked_count == 2
+    assert "Retraction Watch copy could not be used" in run_summary_clause(screen)
+    assert (tmp_path / "retraction_watch.db").read_bytes() == before
+
+
+def test_one_throttled_batch_of_120_leaves_exactly_50_unchecked(storage, tmp_path):
+    """Review Focus (4): 120 DOIs are three batches; the second answers 429."""
+    from bmlibrarian_lite.retraction_screen import screen_with_fallback
+    from bmlibrarian_lite.retraction_text import run_summary_clause
+
+    _current_export(tmp_path)
+    calls = []
+
+    def second_throttled(url):
+        calls.append(url)
+        return _Response(429, b"") if len(calls) == 2 else _served(url)
+
+    docs = [_doc(f"d{i}", doi=f"10.5/{i}") for i in range(120)]
+    checker = _checker(storage, tmp_path, StubSession(second_throttled))
+    screen = screen_with_fallback(checker, docs)
+    assert len(calls) == 3
+    assert screen.unchecked_count == 50
+    clause = run_summary_clause(screen)
+    assert clause is not None
+    assert clause.startswith("50 papers' retraction status could not be checked")
+    assert "HTTP 429" in clause

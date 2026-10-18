@@ -10,6 +10,8 @@ from __future__ import annotations
 import logging
 import os
 import sqlite3
+import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import StrEnum
@@ -133,8 +135,10 @@ def export_evidence(
         conn.close()
 
 
-def _download(session: requests.Session, mailto: str, part: Path) -> bool:
-    """Stream the export to ``part``; True only for a complete 200."""
+def _download(
+    session: requests.Session, mailto: str, part: Path, should_cancel: Callable[[], bool]
+) -> bool:
+    """Stream the export to ``part``; True only for a complete 200 not cancelled."""
     response = session.get(
         RETRACTION_WATCH_EXPORT_URL,
         params={"mailto": mailto},
@@ -148,6 +152,9 @@ def _download(session: requests.Session, mailto: str, part: Path) -> bool:
         received = 0
         with open(part, "wb") as handle:
             for chunk in response.iter_content(RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES):
+                if should_cancel():
+                    logger.info("Retraction Watch download cancelled")
+                    return False
                 handle.write(chunk)
                 received += len(chunk)
         declared = response.headers.get("Content-Length")
@@ -198,37 +205,54 @@ def _build(csv_path: Path, target: Path, today: date, existing_count: int | None
         conn.close()
 
 
+def _temporary(final: Path, suffix: str) -> Path:
+    """A new empty file beside ``final``, its name unique to this call."""
+    handle, name = tempfile.mkstemp(dir=final.parent, prefix=final.name + ".", suffix=suffix)
+    os.close(handle)
+    return Path(name)
+
+
 def refresh_export(
-    data_dir: Path, session: requests.Session, *, mailto: str, today: date
+    data_dir: Path,
+    session: requests.Session,
+    *,
+    mailto: str,
+    today: date,
+    should_cancel: Callable[[], bool] = lambda: False,
 ) -> ExportCopy:
     """Download the export and replace the local copy with a freshly built one.
 
     The new file is built beside the old and swapped in with ``os.replace``;
-    on any failure the temporaries are removed and the previous file is left
-    untouched.
+    on any failure or a cancel the temporaries are removed and the previous
+    file is left untouched. The temporaries' names are unique to the call, so
+    concurrent refreshes never share or remove each other's files.
 
     Args:
         data_dir: The data directory holding the copy.
         session: The HTTP session to download with.
         mailto: Contact address sent as the ``mailto`` query parameter.
         today: The current day, recorded as ``data_as_of``.
+        should_cancel: Checked before each downloaded chunk; once true the
+            download stops and the partial file is discarded.
 
     Returns:
         The copy's state after the attempt.
     """
     final = _db_path(data_dir)
-    part = final.with_name(final.name + ".part")
-    building = final.with_name(final.name + ".new")
+    temporaries: list[Path] = []
     try:
         final.parent.mkdir(parents=True, exist_ok=True)
-        if _download(session, mailto, part):
-            building.unlink(missing_ok=True)
+        part = _temporary(final, ".part")
+        temporaries.append(part)
+        if _download(session, mailto, part, should_cancel):
+            building = _temporary(final, ".new")
+            temporaries += [building, building.with_name(building.name + "-journal")]
             _build(part, building, today, _stored_count(final))
             os.replace(building, final)
+            temporaries.remove(building)  # its name is free now: never unlink another's
     except Exception:  # noqa: BLE001 - any failure must keep the old copy
         logger.warning("Retraction Watch refresh failed", exc_info=True)
     finally:
-        part.unlink(missing_ok=True)
-        building.unlink(missing_ok=True)
-        building.with_name(building.name + "-journal").unlink(missing_ok=True)
+        for path in temporaries:
+            path.unlink(missing_ok=True)
     return export_copy(data_dir, today=today)
