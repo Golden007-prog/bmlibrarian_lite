@@ -108,13 +108,64 @@ def test_status_lines():
 
 
 def test_status_lines_carry_no_provider_text():
-    """Test status lines carry no provider text."""
+    """Only RequestFailure.describe() speaks for a failed source."""
     failure = RequestFailure(RequestFailureKind.HTTP_STATUS, 503)
     line = paper_status_line(
-        _check(RetractionStatus.UNCHECKED, unanswered=BOTH, failure=failure)
+        _check(
+            RetractionStatus.UNCHECKED,
+            unanswered=(RetractionLookup.CROSSREF,),
+            failure=failure,
+        )
     )
     assert line == (
-        "Retraction status not checked: Retraction Watch, "
-        f"Crossref ({failure.describe()}); Retraction Watch data as of 2026-10-01"
+        f"Retraction status not checked: Crossref ({failure.describe()}); "
+        "Retraction Watch data as of 2026-10-01"
     )
-    assert "<html" not in line
+
+
+def test_unchecked_export_unanswered_has_no_as_of_clause():
+    """An export that was not consulted has no data date to report."""
+    line = paper_status_line(
+        _check(
+            RetractionStatus.UNCHECKED,
+            unanswered=(RetractionLookup.RETRACTION_WATCH_EXPORT,),
+            asof=None,
+        )
+    )
+    assert line == "Retraction status not checked: Retraction Watch"
+
+
+def test_unchecked_both_unanswered_names_both():
+    """Both sources silent and no failure recorded: names, no cause clause."""
+    line = paper_status_line(_check(RetractionStatus.UNCHECKED, unanswered=BOTH, asof=None))
+    assert line == "Retraction status not checked: Retraction Watch, Crossref"
+
+
+def test_clear_line():
+    """A clear paper says so and still dates the export."""
+    assert (
+        paper_status_line(_check(RetractionStatus.CLEAR))
+        == "No retraction found; Retraction Watch data as of 2026-10-01"
+    )
+
+
+def test_retracted_with_notice_but_no_as_of():
+    """The as-of clause appears only when the export was consulted."""
+    assert (
+        paper_status_line(_check(RetractionStatus.RETRACTED, _evidence(), asof=None))
+        == "Retracted on 2026-03-09 (notice 10.9/n)"
+    )
+
+
+def test_concern_without_a_date():
+    """A concern notice with no date omits the date part."""
+    concern = _evidence(kind=RetractionKind.EXPRESSION_OF_CONCERN, day=None)
+    assert (
+        paper_status_line(_check(RetractionStatus.CONCERN, concern, asof=None))
+        == "Expression of concern (notice 10.9/n)"
+    )
+
+
+def test_checked_on_line_reads_a_naive_datetime_as_utc():
+    """A naive time is read as UTC, not rejected or shifted."""
+    assert checked_on_line(datetime(2026, 10, 18, 23, 59)) == "Retraction status checked 2026-10-18"

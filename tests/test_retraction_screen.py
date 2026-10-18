@@ -98,4 +98,28 @@ def test_snapshot_tolerates_older_rows(caplog):
     """Test snapshot tolerates older rows."""
     got = RetractionScreen.from_snapshot([{"document_id": "x"}, {"document_id": "y", "status": "clear"}])
     assert list(got) == ["y"]
+    assert "Skipping a retraction snapshot row" in caplog.text
     assert "older build" in caplog.text
+
+
+def test_snapshot_covers_a_kept_document_without_a_check():
+    """A document the run held but could not check is an unchecked row."""
+    screen = screen_documents(
+        [_doc("a"), _doc("b")], {"a": _check(RetractionStatus.RETRACTED, _evidence())}
+    )
+    back = RetractionScreen.from_snapshot(screen.to_snapshot())
+    assert set(back) == {"a", "b"}
+    assert back["b"]["status"] == "unchecked"
+    assert back["b"]["checked_at"] is None
+    assert back["b"]["deciding"] is None
+    assert back["b"]["title"] == "Title b"
+
+
+def test_checked_at_treats_a_naive_datetime_as_utc():
+    """A naive time never breaks the oldest-of comparison."""
+    naive = datetime(2026, 1, 2)
+    screen = screen_documents(
+        [_doc("a"), _doc("b")],
+        {"a": _check(RetractionStatus.CLEAR), "b": _check(RetractionStatus.CLEAR, at=naive)},
+    )
+    assert screen.checked_at == naive.replace(tzinfo=UTC)

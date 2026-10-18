@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from bmlib.publications.retraction_status import RetractionStatus
@@ -20,6 +20,11 @@ from .retraction_store import PaperCheck
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_REQUIRED = ("document_id", "status")
+
+
+def as_utc(moment: datetime) -> datetime:
+    """Read a naive datetime as UTC, the zone every stored check is in."""
+    return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
 @dataclass(frozen=True)
@@ -58,28 +63,29 @@ class RetractionScreen:
     @property
     def checked_at(self) -> datetime | None:
         """The oldest ``checked_at`` among the checks; ``None`` without any."""
-        return min((c.checked_at for c in self.checks.values()), default=None)
+        return min((as_utc(c.checked_at) for c in self.checks.values()), default=None)
 
     def to_snapshot(self) -> list[dict[str, Any]]:
-        """Rows for the report and audit trail, one per checked document.
+        """Rows for the report and audit trail, one per held document.
+
+        A document with no check is an unchecked row with ``checked_at`` ``None``.
 
         Returns:
             JSON-safe dicts: document_id, title, doi, pmid, status,
-            checked_at (ISO) and deciding (evidence dict or ``None``).
+            checked_at (ISO or ``None``) and deciding (evidence dict or ``None``).
         """
-        docs = {d.id: d for d in (*self.kept, *self.excluded)}
         rows = []
-        for doc_id, check in self.checks.items():
-            doc = docs.get(doc_id)
-            deciding = check.verdict.deciding
+        for doc in (*self.kept, *self.excluded):
+            check = self.checks.get(doc.id)
+            deciding = check.verdict.deciding if check else None
             rows.append(
                 {
-                    "document_id": doc_id,
-                    "title": doc.title if doc else None,
-                    "doi": doc.doi if doc else None,
-                    "pmid": doc.pmid if doc else None,
-                    "status": check.verdict.status.value,
-                    "checked_at": check.checked_at.isoformat(),
+                    "document_id": doc.id,
+                    "title": doc.title,
+                    "doi": doc.doi,
+                    "pmid": doc.pmid,
+                    "status": (check.verdict.status if check else RetractionStatus.UNCHECKED).value,
+                    "checked_at": as_utc(check.checked_at).isoformat() if check else None,
                     "deciding": deciding.to_dict() if deciding else None,
                 }
             )

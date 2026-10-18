@@ -13,7 +13,7 @@ from datetime import datetime
 
 from bmlib.publications.retraction_status import RetractionLookup, RetractionStatus
 
-from .retraction_screen import RetractionScreen
+from .retraction_screen import RetractionScreen, as_utc
 from .retraction_store import PaperCheck
 
 _NOTICE_OPENING = "> **Retracted papers left out:** "
@@ -73,7 +73,7 @@ def checked_on_line(checked_at: datetime | None) -> str:
     """Say when the status was checked (the UTC date), or that it never was."""
     if checked_at is None:
         return "Retraction status never checked"
-    return f"Retraction status checked {checked_at.date().isoformat()}"
+    return f"Retraction status checked {as_utc(checked_at).date().isoformat()}"
 
 
 def paper_status_line(check: PaperCheck) -> str:
