@@ -83,11 +83,12 @@ jobs:
       - name: Package the build
         run: |
           set -o pipefail
-          # From the unstripped host build the script left behind. --no-format,
-          # so ktlint's presence does not change the bytes.
-          bmlib-checkout/rust/target/release/uniffi-bindgen generate --no-format \
-            --library bmlib-checkout/rust/target/release/libbmlib_ffi.dylib \
-            --language kotlin --out-dir "$RUNNER_TEMP/kt"
+          # From the unstripped host build the script left behind, inside bmlib's
+          # workspace (library mode finds uniffi.toml through cargo metadata).
+          # --no-format, so ktlint's presence does not change the bytes.
+          (cd bmlib-checkout/rust && target/release/uniffi-bindgen generate --no-format \
+            --library target/release/libbmlib_ffi.dylib \
+            --language kotlin --out-dir "$RUNNER_TEMP/kt")
           mkdir "$RUNNER_TEMP/xcf/Kotlin"
           cp "$RUNNER_TEMP/kt/org/bmlib/ffi/bmlib_ffi.kt" "$RUNNER_TEMP/xcf/Kotlin/"
           xcode="$(xcodebuild -version | sed -n 's/^Xcode //p')"
