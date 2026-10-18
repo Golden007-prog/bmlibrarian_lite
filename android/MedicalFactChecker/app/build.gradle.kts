@@ -269,9 +269,18 @@ if (bmlibDir != null) {
         inputs.files(rustInputs)
         outputs.dir(bmlibJniLibs)
         // Through bmlib's wrapper, so the builder's paths are not compiled into
-        // the shipped library (bmlib#490).
+        // the shipped library (bmlib#490). A shell script: macOS and Linux only (#596).
+        val remapWrapper = File(rustWorkspace, "bmlib-ffi/scripts/with-remapped-paths.sh")
+        doFirst {
+            if (!remapWrapper.isFile) {
+                throw GradleException(
+                    "$remapWrapper is missing: this bmlib checkout predates bmlib#490. " +
+                        "Check out the pinned commit."
+                )
+            }
+        }
         commandLine(
-            listOf(File(rustWorkspace, "bmlib-ffi/scripts/with-remapped-paths.sh").absolutePath, "cargo", "ndk") +
+            listOf(remapWrapper.absolutePath, "cargo", "ndk") +
                 bmlibAbis.flatMap { listOf("-t", it) } +
                 listOf(
                     "-p", appMinSdk.toString(),

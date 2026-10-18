@@ -59,11 +59,11 @@ tasks done subagent-driven, every task and each PR whole-branch reviewed).
 
 - **The FFI pin names bmlib `main`** (#583): `f767215`, after bmlib#490
   (path-independent builds via `with-remapped-paths.sh`, Gradle's cargo-ndk
-  too) and #492. `android-tests.yml` builds bmlib at the pin and fails if
+  too) and bmlib#492. `android-tests.yml` builds bmlib at the pin and fails if
   `BmlibJatsFfiTest` skips. **The committed xcframework is
   `bmlib-xcframework.yml`'s own build**, rebuilt and compared on every PR
-  (identity needs the same Apple linker); re-pin from its artifact as its
-  header says. Lodged: #587 (Europe PMC's associated-data `<sec>`).
+  with the committed xcframework and both bindings (identity needs the same
+  Apple linker); re-pin from its artifact as its header says. Lodged: #587 (Europe PMC's associated-data `<sec>`).
 - **The bmlib port set** (PRs #564–#570, #572; Phases 0–2 of the plan).
   **`doc/cross_platform/bmlib_sync/ledger.json` records every bmlib change
   per platform**, pinned to bmlib 0.11.0. A sync is: bump `bmlib_commit`,
@@ -72,8 +72,8 @@ tasks done subagent-driven, every task and each PR whole-branch reviewed).
   `pmid_canonical.json`, `score_values.json` (an unreadable score is a parse
   failure, never 3), `europepmc_free_pdf.json`; desktop `pubmed/record_ids.py`
   and `quality/json_fields.py`; converter **6**, analyser **2.7**. **WP-2:
-  Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet,
-  pin stale (**#583**). Lodged: #573–#581; **#585** (bmlib#485, a blank
+  Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet;
+  the pin names bmlib `main` since #583 (above). Lodged: #573–#581; **#585** (bmlib#485, a blank
   id as a full-text cache name, on bmlib's `main` after 0.11.0).
 - **A download is checked before it is cached** (#560, #561; PR #562); **Android's
   `downloadPdf` never answers from the cache.** Lodged: #563.

@@ -343,14 +343,14 @@ under criterion 4 (Swift).
 3. **Two new bmlib gaps surfaced:** Europe PMC's injected `associated-data` `<sec>`
    (duplicate legends) and the title-only abstract section. Both are lodged on bmlib:
    bmlib#497 and bmlib#498. *At #583's re-pin (bmlib `f767215`)* bmlib drops the
-   associated-data block (#497) and links affiliations, so `BmlibJATSParityTests`
+   associated-data block (bmlib#497) and links affiliations, so `BmlibJATSParityTests`
    compares author names only (BioMedLit has no affiliations, #154) and leaves Swift's
    `>Associated Data` paths out of its section check (#587).
 4. **Digest churn.** Adopting Rust moves `JATSRealCorpusTests`' digests (body sections,
    citation counts). Read each change against the table above; it is a review, not a
    regeneration.
 5. **Binary provenance.** Guarded since #583: CI rebuilds the xcframework from the pin and
-   compares it and the Swift bindings with what is committed.
+   compares it, the committed xcframework, and the Swift and Kotlin bindings with the pin.
 6. **The xcframework is rebuilt for every bmlib bump** (~4 min locally, 5 targets), and
    needs the `x86_64-apple-darwin` target for the universal macOS slice.
 7. **Mobile caches** (WP-4.6) must carry a renderer stamp before a Rust switch ships, or
@@ -359,7 +359,7 @@ under criterion 4 (Swift).
    need a bmlib CHANGELOG entry and bmlib's CI matrix extended with `--no-default-features`.
 9. **Fixed by bmlib #490 (2026-10-18):** builds go through bmlib's
    `with-remapped-paths.sh` (Gradle's cargo-ndk task too), Apple slices link with a fixed
-   install name, and two checkouts build the same bytes. As found at the spike: **the
+   install name, and two checkouts build the same bytes (given the same rustc and Xcode). As found at the spike: **the
    binaries carried the builder's home path, so they were not reproducible.** `strings`
    on the committed `ios-arm64` slice finds 23 `/Users/<builder>/…` panic-location paths
    (`~/.rustup/…/rustlib/src`, `~/.cargo/registry/src/…`). That leaks the developer's home

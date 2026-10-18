@@ -211,6 +211,8 @@ final class BmlibJATSParityTests: XCTestCase {
         XCTAssertEqual(files.count, 7, "the corpus has seven articles")
         var report: [[String: Any]] = []
         var swiftSeconds = 0.0, rustSeconds = 0.0
+        // Authors are compared by name only, so affiliations need their own check.
+        var articlesWithAffiliations = 0
         // The timing loop parses every article 2 × timingRepetitions more
         // times, so it runs only on request (BMLIB_PARITY_TIMING=1); otherwise
         // each article is parsed once by each parser and no time is reported.
@@ -223,6 +225,7 @@ final class BmlibJATSParityTests: XCTestCase {
 
             let swift = try JATSXMLParser(data: data).parseToArticle()
             let rust = try BmlibJATS.parse(data: data)
+            if rust.authors.contains(where: { !$0.affiliations.isEmpty }) { articlesWithAffiliations += 1 }
 
             // bmlib keeps an abstract section deposited as a title alone (BMJ's
             // `<sec><title> Abstract</title></sec>`); BioMedLit drops it.
@@ -242,6 +245,11 @@ final class BmlibJATSParityTests: XCTestCase {
             let missing = Set(swiftReport.sectionPaths.filter { !$0.hasPrefix(">Associated Data") })
                 .subtracting(rustReport.sectionPaths)
             XCTAssertTrue(missing.isEmpty, "\(name): sections only Swift has: \(missing.sorted())")
+            // The exemption holds only while bmlib really drops the block.
+            XCTAssertFalse(
+                rustReport.sectionPaths.contains { $0.hasPrefix(">Associated Data") },
+                "\(name): bmlib kept the associated-data block; drop the exemption above"
+            )
 
             var entry: [String: Any] = [
                 "article": name,
@@ -278,6 +286,7 @@ final class BmlibJATSParityTests: XCTestCase {
             print("[bmlib-parity] \(line)")
             report.append(entry)
         }
+        XCTAssertGreaterThan(articlesWithAffiliations, 0, "bmlib linked no affiliations in the corpus")
         if timed {
             print(String(format: "[bmlib-parity] corpus total (mean of %d runs): swift %.2f ms, rust %.2f ms",
                          repetitions, swiftSeconds * 1000, rustSeconds * 1000))

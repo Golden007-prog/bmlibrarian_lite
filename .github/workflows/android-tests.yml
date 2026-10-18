@@ -19,6 +19,10 @@ concurrency:
   group: android-tests-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # In the cache key too, so a bump is not shadowed by a cached older binary.
+  CARGO_NDK_VERSION: 3.5.4
+
 jobs:
   unit-tests:
     name: Gradle unit tests
@@ -67,7 +71,7 @@ jobs:
             ~/.cargo/bin/cargo-ndk
             ~/.cargo/registry
             bmlib-checkout/rust/target
-          key: bmlib-android-${{ steps.pin.outputs.commit }}-${{ steps.pin.outputs.rustc }}
+          key: bmlib-android-${{ steps.pin.outputs.commit }}-${{ steps.pin.outputs.rustc }}-ndk${{ env.CARGO_NDK_VERSION }}
 
       - name: Install the pinned Rust and cargo-ndk
         working-directory: .
@@ -75,7 +79,7 @@ jobs:
           rustup toolchain install "${{ steps.pin.outputs.rustc }}" --profile minimal \
             --target aarch64-linux-android,x86_64-linux-android
           rustup override set "${{ steps.pin.outputs.rustc }}" --path bmlib-checkout/rust
-          command -v cargo-ndk || cargo install cargo-ndk --version 3.5.4 --locked
+          command -v cargo-ndk || cargo install cargo-ndk --version "$CARGO_NDK_VERSION" --locked
 
       - name: Run unit tests
         env:

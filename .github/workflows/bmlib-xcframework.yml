@@ -3,20 +3,22 @@ name: bmlib xcframework
 permissions:
   contents: read
 
-# Rebuilds BmlibFFI.xcframework and its Swift bindings from the bmlib commit
-# BmlibFFI.pin.json names, and fails unless they match what is committed
-# (#583). A committed binary is checked, not trusted.
+# Rebuilds BmlibFFI.xcframework and its Swift and Kotlin bindings from the bmlib
+# commit BmlibFFI.pin.json names, and fails unless they and the committed
+# xcframework match the pin (#583). A committed binary is checked, not trusted.
 #
 # The committed copy is this job's own build. Byte-identity needs the same
 # rustc *and* the same Apple linker, so a copy built on a developer's Mac never
 # matches a runner's. To re-pin:
 #   1. set bmlibCommit (and rustc, if it moves) in the pin, on a PR branch;
 #   2. this workflow's run on that PR fails and uploads `bmlib-xcframework`;
-#   3. unpack its xcframework.tgz into Packages/BioMedLit/Frameworks (the
-#      xcframework) and Packages/BioMedLit/Sources/BmlibCore (bmlib_ffi.swift),
-#      and copy treeSha256 and xcode from its build.json into the pin.
+#   3. unpack its xcframework.tgz: BmlibFFI.xcframework into
+#      Packages/BioMedLit/Frameworks, Swift/bmlib_ffi.swift into
+#      Packages/BioMedLit/Sources/BmlibCore, Kotlin/bmlib_ffi.kt into
+#      android/MedicalFactChecker/app/src/main/java/org/bmlib/ffi; copy
+#      treeSha256 and xcode from its build.json into the pin.
 # When a runner image moves to another Xcode, this fails on an unchanged pin;
-# the log names both Xcode versions, and the same three steps re-pin.
+# the log names both Xcode versions, and steps 2 and 3 re-pin.
 #
 # Deliberately NOT filtered by `paths:` (HANDOVER: no job gains one). No
 # workflow_dispatch: a manual run would build the pinned code with the default
@@ -80,6 +82,14 @@ jobs:
 
       - name: Package the build
         run: |
+          set -o pipefail
+          # From the unstripped host build the script left behind. --no-format,
+          # so ktlint's presence does not change the bytes.
+          bmlib-checkout/rust/target/release/uniffi-bindgen generate --no-format \
+            --library bmlib-checkout/rust/target/release/libbmlib_ffi.dylib \
+            --language kotlin --out-dir "$RUNNER_TEMP/kt"
+          mkdir "$RUNNER_TEMP/xcf/Kotlin"
+          cp "$RUNNER_TEMP/kt/org/bmlib/ffi/bmlib_ffi.kt" "$RUNNER_TEMP/xcf/Kotlin/"
           xcode="$(xcodebuild -version | sed -n 's/^Xcode //p')"
           hash="$(python3 .github/scripts/xcframework_tree_sha256.py "$RUNNER_TEMP/xcf/BmlibFFI.xcframework")"
           printf '{"treeSha256": "%s", "xcode": "%s"}\n' "$hash" "$xcode" > "$RUNNER_TEMP/xcf/build.json"
@@ -98,8 +108,14 @@ jobs:
           status=0
           python3 .github/scripts/xcframework_tree_sha256.py \
             "$RUNNER_TEMP/xcf/BmlibFFI.xcframework" --check "$PIN" || status=1
+          python3 .github/scripts/xcframework_tree_sha256.py \
+            Packages/BioMedLit/Frameworks/BmlibFFI.xcframework --check "$PIN" || status=1
           diff -u Packages/BioMedLit/Sources/BmlibCore/bmlib_ffi.swift \
             "$RUNNER_TEMP/xcf/Swift/bmlib_ffi.swift" || status=1
+          # UniFFI's checksums leave out record fields, so a stale .kt can pass
+          # Android's FFI test and misread a record at runtime.
+          diff -u android/MedicalFactChecker/app/src/main/java/org/bmlib/ffi/bmlib_ffi.kt \
+            "$RUNNER_TEMP/xcf/Kotlin/bmlib_ffi.kt" || status=1
           if [ "$status" != 0 ]; then
             echo "::error::The rebuild differs from what is committed. The pin was built with Xcode" \
               "${{ steps.pin.outputs.xcode }}, this runner has $(xcodebuild -version | sed -n 1p)." \
