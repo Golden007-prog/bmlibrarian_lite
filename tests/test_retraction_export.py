@@ -26,7 +26,8 @@ TODAY = date(2026, 10, 18)
 
 
 class _Response:
-    def __init__(self, status: int, body: bytes) -> None:
+    def __init__(self, status: int, body: bytes, headers: dict | None = None) -> None:
+        self.headers = headers or {}
         self.status_code = status
         self._body = body
 
@@ -38,12 +39,12 @@ class _Response:
 
 
 class _Session:
-    def __init__(self, status: int = 200, body: bytes = CSV) -> None:
-        self.status, self.body, self.calls = status, body, []
+    def __init__(self, status: int = 200, body: bytes = CSV, headers: dict | None = None) -> None:
+        self.status, self.body, self.headers, self.calls = status, body, headers, []
 
     def get(self, url, **kwargs):
         self.calls.append((url, kwargs))
-        return _Response(self.status, self.body)
+        return _Response(self.status, self.body, self.headers)
 
 
 def _refresh(tmp_path, session, today=TODAY):
@@ -53,10 +54,10 @@ def _refresh(tmp_path, session, today=TODAY):
 def test_refresh_builds_a_current_copy(tmp_path):
     """A refresh yields a current, queryable copy."""
     session = _Session()
-    copy = _refresh(tmp_path, session, today=date.today())
-    assert copy.state is ExportState.CURRENT and copy.data_as_of == date.today()
+    copy = _refresh(tmp_path, session, today=TODAY)
+    assert copy.state is ExportState.CURRENT and copy.data_as_of == TODAY
     assert session.calls[0][1]["params"] == {"mailto": "a@b.c"}
-    evidence = export_evidence(tmp_path, doi="10.1/paper", pmid=None)
+    evidence = export_evidence(tmp_path, doi="10.1/paper", pmid=None, today=TODAY)
     assert evidence
     assert not list(tmp_path.glob("*.part")) and not list(tmp_path.glob("*.new"))
 
@@ -87,28 +88,91 @@ def test_a_copy_older_than_35_days_is_stale_and_not_consulted(tmp_path):
     assert export_copy(tmp_path, today=TODAY + timedelta(days=35)).state is ExportState.CURRENT
     stale = export_copy(tmp_path, today=TODAY + timedelta(days=36))
     assert stale.state is ExportState.STALE and not stale.consulted
-    _refresh(tmp_path, _Session(), today=date.today() - timedelta(days=36))
-    assert export_evidence(tmp_path, doi="10.1/paper", pmid=None) is None
+    _refresh(tmp_path, _Session(), today=TODAY - timedelta(days=36))
+    assert export_evidence(tmp_path, doi="10.1/paper", pmid=None, today=TODAY) is None
 
 
 def test_missing_and_unreadable_copies_are_not_consulted(tmp_path):
     """A missing or garbage file is never consulted."""
     assert export_copy(tmp_path, today=TODAY).state is ExportState.MISSING
-    assert export_evidence(tmp_path, doi="10.1/paper", pmid=None) is None
+    assert export_evidence(tmp_path, doi="10.1/paper", pmid=None, today=TODAY) is None
     (tmp_path / "retraction_watch.db").write_bytes(b"garbage" * 100)
     copy = export_copy(tmp_path, today=TODAY)
     assert copy.state is ExportState.UNREADABLE and not copy.consulted
-    assert export_evidence(tmp_path, doi="10.1/paper", pmid=None) is None
+    assert export_evidence(tmp_path, doi="10.1/paper", pmid=None, today=TODAY) is None
 
 
 def test_no_identifier_is_not_consulted(tmp_path):
     """No usable identifier reads as not consulted."""
-    _refresh(tmp_path, _Session(), today=date.today())
-    assert export_evidence(tmp_path, doi=None, pmid=None) is None
-    assert export_evidence(tmp_path, doi=None, pmid="abc") is None
+    _refresh(tmp_path, _Session(), today=TODAY)
+    assert export_evidence(tmp_path, doi=None, pmid=None, today=TODAY) is None
+    assert export_evidence(tmp_path, doi=None, pmid="abc", today=TODAY) is None
 
 
 def test_a_found_nothing_lookup_is_consulted(tmp_path):
     """An export that knows nothing of the paper answers an empty list."""
-    _refresh(tmp_path, _Session(), today=date.today())
-    assert export_evidence(tmp_path, doi="10.9/other", pmid=None) == []
+    _refresh(tmp_path, _Session(), today=TODAY)
+    assert export_evidence(tmp_path, doi="10.9/other", pmid=None, today=TODAY) == []
+
+
+def _rows(n: int) -> bytes:
+    return (_HEADER + "".join(
+        _ROW.replace("10.1/paper", f"10.1/p{i}").replace("12345678", str(1000 + i)).replace("1,A", f"{i},A", 1)
+        for i in range(n)
+    )).encode()
+
+
+def _assert_untouched(tmp_path, before):
+    assert (tmp_path / "retraction_watch.db").read_bytes() == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["retraction_watch.db"]
+
+
+def test_a_content_length_mismatch_is_refused(tmp_path):
+    """A download shorter than it declared never replaces the copy."""
+    _refresh(tmp_path, _Session(), today=TODAY - timedelta(days=3))
+    before = (tmp_path / "retraction_watch.db").read_bytes()
+    _refresh(tmp_path, _Session(headers={"Content-Length": str(len(CSV) + 10)}))
+    _assert_untouched(tmp_path, before)
+
+
+@pytest.mark.parametrize("kept,accepted", [(90, False), (96, True)])
+def test_a_shrunken_export_is_refused_but_a_slightly_smaller_one_is_not(tmp_path, kept, accepted):
+    """Under 95% of the held notices is a partial download; 96% is accepted."""
+    _refresh(tmp_path, _Session(body=_rows(100)), today=TODAY - timedelta(days=3))
+    before = (tmp_path / "retraction_watch.db").read_bytes()
+    copy = _refresh(tmp_path, _Session(body=_rows(kept)))
+    if accepted:
+        assert copy.data_as_of == TODAY
+    else:
+        _assert_untouched(tmp_path, before)
+
+
+def test_a_failure_mid_stream_keeps_the_previous_copy(tmp_path):
+    """A connection dropped mid-body leaves the old file and no temporaries."""
+    _refresh(tmp_path, _Session(), today=TODAY - timedelta(days=3))
+    before = (tmp_path / "retraction_watch.db").read_bytes()
+
+    class _Dropped(_Response):
+        def iter_content(self, size):
+            yield CSV[:50]
+            raise OSError("connection reset")
+
+    class _S(_Session):
+        def get(self, url, **kw):
+            return _Dropped(200, b"")
+
+    _refresh(tmp_path, _S())
+    _assert_untouched(tmp_path, before)
+
+
+def test_a_store_error_keeps_the_previous_copy(tmp_path, monkeypatch):
+    """An error while storing leaves the old file and no temporaries."""
+    _refresh(tmp_path, _Session(), today=TODAY - timedelta(days=3))
+    before = (tmp_path / "retraction_watch.db").read_bytes()
+
+    def boom(conn, notices):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr("bmlibrarian_lite.retraction_export.store_retraction_notices", boom)
+    _refresh(tmp_path, _Session())
+    _assert_untouched(tmp_path, before)

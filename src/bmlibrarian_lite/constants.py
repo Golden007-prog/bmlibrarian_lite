@@ -1542,3 +1542,7 @@ RETRACTION_WATCH_MAX_AGE_DAYS = 35
 RETRACTION_WATCH_DOWNLOAD_TIMEOUT_SECONDS = 120
 # Streaming chunk size for the download, so the file never sits in memory.
 RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+# Monthly exports only grow; a new copy under 95% of the notices already held
+# is a truncated or partial download, and its missing retractions would read
+# as "consulted, nothing found", so the old copy is kept instead.
+RETRACTION_WATCH_MIN_KEEP_RATIO = 0.95

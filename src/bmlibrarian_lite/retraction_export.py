@@ -31,6 +31,7 @@ from .constants import (
     RETRACTION_WATCH_DOWNLOAD_TIMEOUT_SECONDS,
     RETRACTION_WATCH_EXPORT_URL,
     RETRACTION_WATCH_MAX_AGE_DAYS,
+    RETRACTION_WATCH_MIN_KEEP_RATIO,
 )
 
 logger = logging.getLogger(__name__)
@@ -97,7 +98,7 @@ def export_copy(data_dir: Path, *, today: date) -> ExportCopy:
 
 
 def export_evidence(
-    data_dir: Path, *, doi: str | None, pmid: str | None
+    data_dir: Path, *, doi: str | None, pmid: str | None, today: date
 ) -> list[RetractionEvidence] | None:
     """Look one paper up in the local copy.
 
@@ -105,17 +106,20 @@ def export_evidence(
         data_dir: The data directory holding the copy.
         doi: The paper's DOI, if known.
         pmid: The paper's PMID, if known.
+        today: The current day (injected; decides whether the copy is current).
 
     Returns:
         The evidence (empty when the export holds nothing), or ``None`` when
         the export was not consulted: copy not current, or no usable
         identifier.
     """
-    if not export_copy(data_dir, today=date.today()).consulted:
+    if not export_copy(data_dir, today=today).consulted:
         return None
     try:
-        conn = connect_sqlite(_db_path(data_dir), wal_mode=False)
-    except Exception:  # noqa: BLE001 - an unopenable copy is "not consulted"
+        # read-only: never creates the file if it vanished
+        conn = sqlite3.connect(f"file:{_db_path(data_dir)}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+    except sqlite3.Error:
         logger.warning("Retraction Watch copy could not be opened", exc_info=True)
         return None
     try:
@@ -141,24 +145,44 @@ def _download(session: requests.Session, mailto: str, part: Path) -> bool:
         if response.status_code != 200:
             logger.warning("Retraction Watch export refused: HTTP %s", response.status_code)
             return False
+        received = 0
         with open(part, "wb") as handle:
             for chunk in response.iter_content(RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES):
                 handle.write(chunk)
+                received += len(chunk)
+        declared = response.headers.get("Content-Length")
+        if declared is not None and int(declared) != received:
+            logger.warning("Retraction Watch export cut short: %s of %s bytes", received, declared)
+            return False
         return True
     finally:
         response.close()
 
 
-def _build(csv_path: Path, target: Path, today: date) -> None:
-    """Build a fresh SQLite copy at ``target``; raise if nothing was stored."""
-    notices = list(parse_retraction_watch_csv(csv_path))
-    if not notices:
-        raise ValueError("the export parsed to no notices")
+def _stored_count(path: Path) -> int | None:
+    """Notice count of an existing copy, or None if absent or unreadable."""
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            return int(conn.execute("SELECT COUNT(*) FROM retraction_notices").fetchone()[0])
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+
+
+def _build(csv_path: Path, target: Path, today: date, existing_count: int | None) -> None:
+    """Build a fresh SQLite copy at ``target``; raise if it is empty or shrank."""
     # rollback journal, not WAL: the copy must be one self-contained file
     conn = connect_sqlite(target, wal_mode=False)
     try:
         ensure_schema(conn)
-        store_retraction_notices(conn, notices)
+        store_retraction_notices(conn, parse_retraction_watch_csv(csv_path))
+        stored = int(conn.execute("SELECT COUNT(*) FROM retraction_notices").fetchone()[0])
+        if not stored:
+            raise ValueError("the export parsed to no notices")
+        if existing_count and stored < existing_count * RETRACTION_WATCH_MIN_KEEP_RATIO:
+            raise ValueError(f"the export shrank from {existing_count} to {stored} notices")
         conn.execute(
             f"CREATE TABLE {_META_TABLE} (key TEXT PRIMARY KEY, value TEXT)"
         )
@@ -196,11 +220,12 @@ def refresh_export(
         final.parent.mkdir(parents=True, exist_ok=True)
         if _download(session, mailto, part):
             building.unlink(missing_ok=True)
-            _build(part, building, today)
+            _build(part, building, today, _stored_count(final))
             os.replace(building, final)
     except Exception:  # noqa: BLE001 - any failure must keep the old copy
         logger.warning("Retraction Watch refresh failed", exc_info=True)
     finally:
         part.unlink(missing_ok=True)
         building.unlink(missing_ok=True)
+        building.with_name(building.name + "-journal").unlink(missing_ok=True)
     return export_copy(data_dir, today=today)
