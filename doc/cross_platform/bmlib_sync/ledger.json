@@ -657,7 +657,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "WP 7."
+      "note": "WP 7. Spec docs/superpowers/specs/2026-10-18-retraction-checking-design.md; waits on bmlib#504 (rule over the export, Crossref updated-by and the PubMed label, in Python and Rust)."
     },
     {
       "id": "bmlib:0.8.0-citation-styles",
