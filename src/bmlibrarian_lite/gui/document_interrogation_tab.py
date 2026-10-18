@@ -756,7 +756,9 @@ class DocumentInterrogationTab(QWidget):
                 QMessageBox.warning(self, "Not a PubMed ID", refused)
                 return
 
-        if not self._current_doc_metadata:
+        known = self._current_doc_metadata or {}
+        if not (known.get('doi') or known.get('pmid')):
+            # The identifiers were typed (or there are none): nothing has checked them yet
             self._check_retraction_of({'doi': doi, 'pmid': pmid, 'title': title})
         self._start_pdf_discovery({'doi': doi, 'pmid': pmid, 'pmcid': pmcid, 'title': title}, title or f"PDF ({doi or pmid or pmcid})")
 

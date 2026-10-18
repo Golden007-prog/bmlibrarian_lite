@@ -243,6 +243,11 @@ def cmd_retractions_update(args: argparse.Namespace) -> int:
     from . import LiteConfig
     from .polite_session import mount_politely
     from .retraction_export import ExportState, export_copy, refresh_export
+    from .retraction_text import (
+        export_not_refreshed_line,
+        export_refreshed_line,
+        refresh_failed_line,
+    )
     from .transparency.assessment import contact_email
 
     config = LiteConfig.load()
@@ -252,21 +257,15 @@ def cmd_retractions_update(args: argparse.Namespace) -> int:
     try:
         copy = refresh_export(data_dir, session, mailto=contact_email(config), today=today)
     except Exception as e:  # noqa: BLE001 - only the exception's type is reported
-        print(f"Refresh failed: {type(e).__name__}.")
+        print(refresh_failed_line(e))
         copy = export_copy(data_dir, today=today)
     finally:
         session.close()
 
     if copy.state is ExportState.CURRENT and copy.data_as_of == today:
-        print(f"Retraction Watch copy refreshed; data as of {today.isoformat()}.")
+        print(export_refreshed_line(copy))
         return 0
-    if copy.data_as_of is None:
-        print(f"Refresh did not produce a new copy; there is no copy to keep (state: {copy.state.value}).")
-    else:
-        print(
-            f"Refresh did not produce a new copy; kept copy is {copy.state.value}, "
-            f"data as of {copy.data_as_of.isoformat()}."
-        )
+    print(export_not_refreshed_line(copy))
     return 1
 
 

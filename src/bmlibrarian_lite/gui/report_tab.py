@@ -75,6 +75,7 @@ from ..audit_records import (
 from ..quality import QualityAssessment
 from ..analysis_failures import without_analysis_shortfall_notice
 from ..search_failures import without_search_shortfall_notice
+from ..retraction_text import plain_title
 
 # Directory for auto-saved reports
 REPORTS_DIR = Path.home() / "bmlibrarian_reports" / "LITE"
@@ -991,7 +992,7 @@ class ReportTab(QWidget):
                 detail += f" {entry['retraction_date']}"
             if entry.get("notice_doi"):
                 detail += f"; notice {entry['notice_doi']}"
-            lines.append(f"- {entry.get('title', '')} — {detail}")
+            lines.append(f"- {plain_title(entry.get('title', ''))} — {detail}")
         return lines
 
     @staticmethod

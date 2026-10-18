@@ -1,6 +1,7 @@
 """``bmll retractions-update``: refresh the local Retraction Watch copy."""
 
-from datetime import UTC, date, datetime
+from collections.abc import Callable
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -8,9 +9,6 @@ import pytest
 from bmlibrarian_lite import LiteConfig, retraction_export
 from bmlibrarian_lite.cli import create_parser
 from bmlibrarian_lite.retraction_export import ExportCopy, ExportState
-
-TODAY = datetime.now(UTC).date()
-YESTERDAY = date.fromordinal(TODAY.toordinal() - 1)
 
 
 def _config(tmp_path: Path) -> LiteConfig:
@@ -26,13 +24,18 @@ def _run(*argv: str) -> int:
     return int(args.func(args))
 
 
-def _stub_refresh(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, copy: ExportCopy) -> list[date]:
-    """Stub the refresh (never the network) and the configuration; return the days it was asked for."""
+def _stub_refresh(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, copy: Callable[[date], ExportCopy]
+) -> list[date]:
+    """Stub the refresh (never the network) and the configuration; return the days it was asked for.
+
+    The copy is built from the day the handler asked with, so a run across midnight cannot fail.
+    """
     asked: list[date] = []
 
     def fake_refresh(data_dir: Path, session: object, *, mailto: str, today: date) -> ExportCopy:
         asked.append(today)
-        return copy
+        return copy(today)
 
     monkeypatch.setattr(retraction_export, "refresh_export", fake_refresh)
     monkeypatch.setattr(LiteConfig, "load", classmethod(lambda cls, config_path=None: _config(tmp_path)))
@@ -43,24 +46,26 @@ def test_update_refreshes_and_reports_the_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A fresh current copy exits 0 and names its data_as_of."""
-    asked = _stub_refresh(monkeypatch, tmp_path, ExportCopy(ExportState.CURRENT, TODAY))
+    asked = _stub_refresh(monkeypatch, tmp_path, lambda today: ExportCopy(ExportState.CURRENT, today))
 
     assert _run("retractions-update") == 0
 
-    assert asked == [TODAY]
-    assert TODAY.isoformat() in capsys.readouterr().out
+    assert len(asked) == 1
+    assert asked[0].isoformat() in capsys.readouterr().out
 
 
 def test_update_failure_exits_1_and_names_the_kept_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A refresh that kept the old copy exits 1, names its date, and leaks no provider text."""
-    _stub_refresh(monkeypatch, tmp_path, ExportCopy(ExportState.CURRENT, YESTERDAY))
+    asked = _stub_refresh(
+        monkeypatch, tmp_path, lambda today: ExportCopy(ExportState.CURRENT, today - timedelta(days=1))
+    )
 
     assert _run("retractions-update") == 1
 
     out = capsys.readouterr()
-    assert YESTERDAY.isoformat() in out.out
+    assert (asked[0] - timedelta(days=1)).isoformat() in out.out
     assert out.err == ""
 
 
@@ -68,8 +73,34 @@ def test_update_failure_without_any_copy_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """No copy to keep: exits 1 and says there is none."""
-    _stub_refresh(monkeypatch, tmp_path, ExportCopy(ExportState.MISSING, None))
+    _stub_refresh(monkeypatch, tmp_path, lambda _today: ExportCopy(ExportState.MISSING, None))
 
     assert _run("retractions-update") == 1
 
-    assert "no copy" in capsys.readouterr().out.lower()
+    out = capsys.readouterr().out
+    assert "no copy" in out.lower()
+    assert "missing" in out
+
+
+@pytest.mark.parametrize(
+    ("state", "word"),
+    [(ExportState.STALE, "out of date"), (ExportState.UNREADABLE, "unreadable")],
+)
+def test_update_names_the_kept_copys_state_in_words(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    state: ExportState,
+    word: str,
+) -> None:
+    """The reader reads "out of date", never the enum value "stale"."""
+    stale = state is ExportState.STALE  # an unreadable copy has no date
+    _stub_refresh(
+        monkeypatch, tmp_path, lambda today: ExportCopy(state, today - timedelta(days=40) if stale else None)
+    )
+
+    assert _run("retractions-update") == 1
+
+    out = capsys.readouterr().out
+    assert word in out
+    assert "stale" not in out

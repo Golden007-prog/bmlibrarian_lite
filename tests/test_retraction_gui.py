@@ -315,3 +315,68 @@ def test_a_replaced_check_is_kept_until_it_finishes(qapp: Any, tmp_path: Any, mo
     tab._start_retraction_check(make_doc(2))
     assert keeper.call_count == 2
     assert worker_class.call_args.args[2] is tab  # parented to the tab
+
+
+def test_a_typed_identifier_is_checked_when_the_metadata_names_none(
+    qapp: Any, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Metadata with a title but no DOI or PMID still has the typed PMID checked."""
+    tab, worker_class = _stubbed_tab(tmp_path, monkeypatch)
+    tab._current_doc_metadata = {"title": "Only a title"}
+    dialog = MagicMock()
+    dialog.return_value.get_identifiers.return_value = (None, "12345")
+    monkeypatch.setattr(tab_module, "IdentifierInputDialog", dialog)
+    monkeypatch.setattr(tab, "_start_pdf_discovery", MagicMock())
+    tab._fetch_pdf_from_identifier()
+    worker_class.assert_called_once()
+    assert worker_class.call_args.args[1].pmid == "12345"
+
+
+def test_a_review_checker_that_cannot_be_built_leaves_every_document_unchecked(
+    qapp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run goes on: the stand-in's every check fails, so every document is unchecked."""
+    from types import SimpleNamespace
+
+    from bmlibrarian_lite.gui import systematic_review_tab as review_module
+    from bmlibrarian_lite.retraction_screen import screen_with_fallback
+
+    def broken(*_args: Any, **_kw: Any) -> None:
+        raise OSError("secret provider text")
+
+    monkeypatch.setattr(review_module, "build_retraction_checker", broken)
+    tab = SimpleNamespace(config=MagicMock(), storage=MagicMock())
+    checker = review_module.SystematicReviewTab._retraction_checker(tab)
+    screen = screen_with_fallback(checker, [make_doc(1), make_doc(2)])
+    assert screen.unchecked_count == 2 and screen.failed
+    # control: the review's own checker is asked to refresh the export
+    seen: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        review_module, "build_retraction_checker", lambda *_a, **kw: seen.append(kw) or "checker"
+    )
+    assert review_module.SystematicReviewTab._retraction_checker(tab) == "checker"
+    assert seen == [{"refresh_export": True}]
+
+
+def test_quitting_cancels_a_running_review_and_waits_for_it(qapp: Any) -> None:
+    """At quit the review's should_cancel turns true, so an export download stops."""
+    from types import SimpleNamespace
+
+    from bmlibrarian_lite.constants import KEPT_THREAD_EXIT_WAIT_MS
+    from bmlibrarian_lite.gui.systematic_review_tab import SystematicReviewTab
+
+    worker = MagicMock()
+    worker.isRunning.return_value = True
+    SystematicReviewTab._cancel_at_quit(SimpleNamespace(_worker=worker))
+    worker.cancel.assert_called_once_with()
+    worker.wait.assert_called_once_with(KEPT_THREAD_EXIT_WAIT_MS)
+    # control: nothing running, nothing to do
+    SystematicReviewTab._cancel_at_quit(SimpleNamespace(_worker=None))
+
+
+def test_the_records_retracted_lines_escape_titles(qapp: Any) -> None:
+    """A title's markdown specials are escaped, as the report's section does."""
+    from bmlibrarian_lite.gui.report_tab import ReportTab
+
+    lines = ReportTab._retracted_lines([{"title": "A *bold*\n[claim]", "retraction_date": "2024"}])
+    assert lines == ["- A \\*bold\\* \\[claim\\] — retracted 2024"]
