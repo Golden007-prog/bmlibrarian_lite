@@ -1542,6 +1542,9 @@ RETRACTION_WATCH_MAX_AGE_DAYS = 35
 RETRACTION_WATCH_DOWNLOAD_TIMEOUT_SECONDS = 120
 # Streaming chunk size for the download, so the file never sits in memory.
 RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+# A Crossref batch of up to 50 DOIs is one request; same ceiling as the
+# transparency analyzer's CrossRefClient so a slow day fails both alike.
+CROSSREF_REQUEST_TIMEOUT_SECONDS = 30
 # Monthly exports only grow; a new copy under 95% of the notices already held
 # is a truncated or partial download, and its missing retractions would read
 # as "consulted, nothing found", so the old copy is kept instead.
