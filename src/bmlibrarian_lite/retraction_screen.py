@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol
 
 from bmlib.publications.retraction_status import RetractionStatus
 
@@ -25,6 +25,29 @@ _SNAPSHOT_REQUIRED = ("document_id", "status")
 def as_utc(moment: datetime) -> datetime:
     """Read a naive datetime as UTC, the zone every stored check is in."""
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
+class RetractionRecord(Protocol):
+    """What the report reads of a run's retraction check, live or restored."""
+
+    @property
+    def excluded(self) -> Sequence[Any]:
+        """The papers left out."""
+        ...
+
+    @property
+    def unchecked_count(self) -> int:
+        """Kept papers whose status could not be checked."""
+        ...
+
+    @property
+    def checked_at(self) -> datetime | None:
+        """The oldest check time; ``None`` without any."""
+        ...
+
+    def to_snapshot(self) -> list[dict[str, Any]]:
+        """One row per held document."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -108,6 +131,13 @@ class RetractionScreen:
             if not isinstance(row, Mapping) or any(k not in row for k in _SNAPSHOT_REQUIRED):
                 logger.warning("Skipping a retraction snapshot row from an older build")
                 continue
+            stamp = row.get("checked_at")
+            if stamp is not None:
+                try:
+                    datetime.fromisoformat(stamp)
+                except (TypeError, ValueError):
+                    logger.warning("Skipping a retraction snapshot row with an unreadable time")
+                    continue
             out[str(row["document_id"])] = dict(row)
         return out
 
@@ -155,6 +185,16 @@ class RetractionSnapshot:
     def from_rows(cls, rows: Iterable[Mapping[str, Any]]) -> RetractionSnapshot:
         """Build from stored rows, skipping any an older build wrote short."""
         return cls(tuple(RetractionScreen.from_snapshot(rows).values()))
+
+    @classmethod
+    def from_stored(cls, stored: Any) -> RetractionSnapshot | None:
+        """Read a stored value: ``None`` for none, or for one that is not a list."""
+        if stored is None:
+            return None
+        if not isinstance(stored, list):
+            logger.warning("Ignoring a stored retraction_screen that is not a list")
+            return None
+        return cls.from_rows(stored)
 
 
 def screen_documents(

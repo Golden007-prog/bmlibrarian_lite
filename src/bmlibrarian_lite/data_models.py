@@ -42,6 +42,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from .quality.data_models import QualityAssessment
+    from .retraction_screen import RetractionRecord
 
 
 class SearchProvider(Enum):
@@ -2484,7 +2485,7 @@ class ReportMetadata:
 
     # What the retraction check left out (a RetractionScreen, or a
     # RetractionSnapshot once read back); None when no check ran
-    retraction_screen: Any = None
+    retraction_screen: "RetractionRecord | None" = None
 
     # LLM configuration by task
     model_configs: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -2536,7 +2537,9 @@ class ReportMetadata:
             "transparency_limited_count": self.transparency_limited_count,
             "transparency_provisional_count": self.transparency_provisional_count,
             "retraction_screen": (
-                self.retraction_screen.to_snapshot() if self.retraction_screen else None
+                self.retraction_screen.to_snapshot()
+                if self.retraction_screen is not None
+                else None
             ),
             "model_configs": self.model_configs,
             "citations_extracted": self.citations_extracted,
@@ -2568,11 +2571,9 @@ class ReportMetadata:
             raise ValueError("analysis_shortfalls must be a list")
 
         stored_screen = data.get("retraction_screen")
-        screen = None
-        if stored_screen is not None:
-            from .retraction_screen import RetractionSnapshot  # circular at import time
+        from .retraction_screen import RetractionSnapshot  # circular at import time
 
-            screen = RetractionSnapshot.from_rows(stored_screen)
+        screen = RetractionSnapshot.from_stored(stored_screen)
 
         return cls(
             retraction_screen=screen,

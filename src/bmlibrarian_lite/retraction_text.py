@@ -9,13 +9,14 @@ No provider text: a failure's cause comes from ``RequestFailure.describe()``.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
 from bmlib.publications.retraction_status import RetractionLookup, RetractionStatus
 
-from .retraction_screen import RetractionScreen, as_utc
+from .retraction_screen import RetractionRecord, as_utc
 from .retraction_store import PaperCheck
 
 _NOTICE_OPENING = "> **Retracted papers left out:** "
@@ -28,7 +29,7 @@ _SOURCE_NAMES = {
 }
 
 
-def run_summary_clause(screen: RetractionScreen) -> str | None:
+def run_summary_clause(screen: RetractionRecord) -> str | None:
     """Summarise a screen for a run's summary line.
 
     Returns:
@@ -47,7 +48,7 @@ def run_summary_clause(screen: RetractionScreen) -> str | None:
     return "; ".join(parts) or None
 
 
-def format_retraction_notice(screen: RetractionScreen) -> str | None:
+def format_retraction_notice(screen: RetractionRecord) -> str | None:
     """Build the notice for a report; ``None`` when there is nothing to say."""
     clause = run_summary_clause(screen)
     if clause is None:
@@ -55,7 +56,7 @@ def format_retraction_notice(screen: RetractionScreen) -> str | None:
     return f"{_NOTICE_OPENING}{clause}."
 
 
-def with_retraction_notice(text: str, screen: RetractionScreen) -> str:
+def with_retraction_notice(text: str, screen: RetractionRecord) -> str:
     """Put the retraction notice in front of text; idempotent."""
     notice = format_retraction_notice(screen)
     if notice is None or text.startswith(_NOTICE_OPENING):
@@ -119,7 +120,15 @@ def _evidence_parts(row: Mapping[str, Any]) -> tuple[str | None, str | None]:
     return deciding.get("date"), deciding.get("notice_doi")
 
 
-def format_retracted_section(screen: Any) -> str:
+_MARKDOWN_SPECIALS = re.compile(r"([\\`*_\[\]<>])")
+
+
+def _plain_title(title: str) -> str:
+    """A title safe inside one markdown line: whitespace collapsed, specials escaped."""
+    return _MARKDOWN_SPECIALS.sub(r"\\\1", " ".join(str(title).split()))
+
+
+def format_retracted_section(screen: RetractionRecord) -> str:
     """List the papers a run left out, from the screen's snapshot rows.
 
     Returns:
@@ -131,7 +140,7 @@ def format_retracted_section(screen: Any) -> str:
         if not row.get("excluded"):
             continue
         when, notice = _evidence_parts(row)
-        line = f"- {row['title']}. Retracted"
+        line = f"- {_plain_title(row['title'])}. Retracted"
         line += f" {when}" if when else " (PubMed's label)" if notice is None else ""
         line += f"; notice {notice}" if notice else ""
         lines.append(line)
