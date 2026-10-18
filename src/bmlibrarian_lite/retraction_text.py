@@ -270,9 +270,16 @@ def with_pass_retraction_clause(text: str, clause: str) -> str:
 PASS_LEFT_OUT_SENTENCE = "Retracted papers are left out before the work starts."
 
 
-def pass_retraction_note(clause: str) -> str:
-    """A pass's retraction clause as a dialog's closing paragraph; "" without one."""
-    return f"\n\nRetraction check: {clause}." if clause else ""
+def retraction_check_line(clause: str) -> str:
+    """A screen's clause as a line of its own, e.g. "Retraction check: 2 retracted papers left out."."""
+    return f"Retraction check: {clause}."
+
+
+def pass_retraction_note(clause: str, titles: Sequence[str] = ()) -> str:
+    """A pass's retraction clause as a dialog's closing paragraph, naming the papers left out; "" without one."""
+    if not clause:
+        return ""
+    return "\n\n" + "\n".join([retraction_check_line(clause), *(f"• {' '.join(t.split())}" for t in titles)])
 
 
 def paper_status_line(check: PaperCheck) -> str:

@@ -201,8 +201,9 @@ def leave_out_retracted(
             (a caller whose documents are already screened).
         documents: The pass's documents.
         should_cancel: Passed to the checker.
-        said: Emitted with the screen's ``run_summary_clause``, or "" when
-            there is nothing to say; not emitted without a checker.
+        said: Emitted with the screen's ``run_summary_clause`` (or "" when
+            there is nothing to say) and the left-out papers' titles; not
+            emitted without a checker.
 
     Returns:
         The documents to work on, in order.
@@ -210,7 +211,7 @@ def leave_out_retracted(
     if checker is None:
         return documents
     screen = screen_with_fallback(checker, documents, should_cancel)
-    said.emit(run_summary_clause(screen) or "")
+    said.emit(run_summary_clause(screen) or "", [doc.title for doc in screen.excluded])
     return list(screen.kept)
 
 
@@ -1377,7 +1378,7 @@ class ReclassifyWorker(SingleOutcome, QThread):
     finished = Signal(object)  # PassOutcome
     error = Signal(str)
     cancelled = Signal(object, str)  # PassOutcome, error
-    retractions_screened = Signal(str)  # run_summary_clause, or ""
+    retractions_screened = Signal(str, list)  # run_summary_clause or "", left-out titles
 
     def __init__(
         self,
@@ -1549,7 +1550,7 @@ class RescoreWorker(SingleOutcome, QThread):
     finished = Signal(object)  # PassOutcome
     error = Signal(str)
     cancelled = Signal(object, str)  # PassOutcome, error
-    retractions_screened = Signal(str)  # run_summary_clause, or ""
+    retractions_screened = Signal(str, list)  # run_summary_clause or "", left-out titles
 
     def __init__(
         self,
@@ -1734,7 +1735,7 @@ class TransparencyReanalysisWorker(SingleOutcome, QThread):
     finished = Signal(object)  # PassOutcome
     error = Signal(str)
     cancelled = Signal(object, str)  # PassOutcome, error
-    retractions_screened = Signal(str)  # run_summary_clause, or ""
+    retractions_screened = Signal(str, list)  # run_summary_clause or "", left-out titles
 
     def __init__(
         self,

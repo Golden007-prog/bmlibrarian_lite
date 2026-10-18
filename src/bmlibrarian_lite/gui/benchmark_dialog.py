@@ -83,7 +83,7 @@ class BenchmarkWorker(SingleOutcome, QThread):
     finished = Signal(object)  # BenchmarkResult
     error = Signal(str)
     cancelled = Signal(object, str)  # partial BenchmarkResult or None, error
-    retractions_screened = Signal(str)  # run_summary_clause, or ""
+    retractions_screened = Signal(str, list)  # run_summary_clause or "", left-out titles
 
     def __init__(
         self,

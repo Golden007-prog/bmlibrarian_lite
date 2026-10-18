@@ -641,9 +641,14 @@ class ScreeningChecker:
 
 
 def watch(worker: Any) -> list[str]:
-    """Collect what the worker's screen said."""
+    """Collect what the worker's screen said; the titles it named must be the left-out paper's."""
     said: list[str] = []
-    worker.retractions_screened.connect(said.append)
+
+    def heard(clause: str, titles: list[str]) -> None:
+        assert titles == [LEFT_OUT.title]
+        said.append(clause)
+
+    worker.retractions_screened.connect(heard)
     return said
 
 
@@ -815,22 +820,27 @@ def test_a_pass_dialog_and_line_say_what_was_left_out(questions_tab: Any) -> Non
     from bmlibrarian_lite.data_models import PassOutcome
 
     boxes = questions_module.QMessageBox
-    questions_tab._on_retractions_screened("1 retracted paper left out")
+    note = "Retraction check: 1 retracted paper left out.\n• Aspirin trial 3"
+    questions_tab._on_retractions_screened("1 retracted paper left out", [" Aspirin \n trial 3"])
+    assert questions_tab.progress_label.text() == "Retraction check: 1 retracted paper left out."
     questions_tab._on_rescore_finished(PassOutcome(succeeded=2, total=2))
-    assert questions_tab.progress_label.text().endswith("; 1 retracted paper left out.")
-    assert boxes.information.call_args.args[2].endswith("Retraction check: 1 retracted paper left out.")
+    assert questions_tab.progress_label.text().endswith("; 1 retracted paper left out.")  # the count only
+    assert boxes.information.call_args.args[2].endswith(note)
     questions_tab._on_reclassify_error("The model timed out.")
     assert questions_tab.progress_label.text().endswith("; 1 retracted paper left out.")
-    assert boxes.warning.call_args.args[2].endswith("Retraction check: 1 retracted paper left out.")
+    assert boxes.warning.call_args.args[2].endswith(note)
     # control: a pass whose screen left nothing out says nothing of it
-    questions_tab._on_retractions_screened("")
+    questions_tab._on_retractions_screened("", [])
     questions_tab._on_rescore_finished(PassOutcome(succeeded=2, total=2))
     assert "Retraction check" not in boxes.information.call_args.args[2]
 
 
-def test_the_transparency_offer_says_retracted_papers_are_left_out(questions_tab: Any) -> None:
-    """The scope counts pending papers before the screen, so the offer says what the screen does."""
-    questions_tab._on_reanalyse_transparency_clicked()
+@pytest.mark.parametrize(
+    "action", ["_on_reanalyse_transparency_clicked", "_on_reclassify_clicked", "_on_rescore_clicked"]
+)
+def test_each_pass_offer_says_retracted_papers_are_left_out(questions_tab: Any, action: str) -> None:
+    """The offer counts papers before the screen, so it says what the screen does."""
+    getattr(questions_tab, action)()
     text = questions_module.QMessageBox.question.call_args.args[2]
     assert "Retracted papers are left out before the work starts." in text
 

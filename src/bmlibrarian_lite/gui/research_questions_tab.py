@@ -73,6 +73,7 @@ from ..retraction_screen import UnbuiltChecker
 from ..retraction_text import (
     PASS_LEFT_OUT_SENTENCE,
     pass_retraction_note,
+    retraction_check_line,
     with_pass_retraction_clause,
 )
 from ..search_failures import describe_search_shortfalls
@@ -377,8 +378,10 @@ class ResearchQuestionsTab(QWidget):
         self._reclassify_worker: Optional[ReclassifyWorker] = None
         self._rescore_worker: Optional[RescoreWorker] = None
         self._transparency_worker: TransparencyReanalysisWorker | None = None
-        # What the running pass's retraction screen left out, for its final line
+        # What the running pass's retraction screen left out: the clause for its
+        # final line, the titles for its dialog
         self._retraction_clause = ""
+        self._retraction_titles: list[str] = []
 
         self._setup_ui()
         self._setup_context_menu()
@@ -691,13 +694,15 @@ class ResearchQuestionsTab(QWidget):
             worker: A pass worker with ``retractions_screened``.
         """
         self._retraction_clause = ""
+        self._retraction_titles: list[str] = []
         worker.retractions_screened.connect(self._on_retractions_screened)
 
-    def _on_retractions_screened(self, clause: str) -> None:
-        """Keep the screen's clause for the pass's end, and show it now."""
+    def _on_retractions_screened(self, clause: str, titles: list[str]) -> None:
+        """Keep the screen's clause (for the line) and titles (for the dialog), and show the clause now."""
         self._retraction_clause = clause
+        self._retraction_titles = list(titles)
         if clause:
-            self.progress_label.setText(with_pass_retraction_clause("Retraction check", clause))
+            self.progress_label.setText(retraction_check_line(clause))
 
     def _left_out(self, text: str) -> str:
         """A pass's final line with what its retraction screen left out."""
@@ -705,7 +710,7 @@ class ResearchQuestionsTab(QWidget):
 
     def _left_out_note(self) -> str:
         """The same, as a closing paragraph for the pass's dialog."""
-        return pass_retraction_note(self._retraction_clause)
+        return pass_retraction_note(self._retraction_clause, self._retraction_titles)
 
     def _is_busy(self) -> bool:
         """Whether any of the tab's workers is still held."""
@@ -1178,7 +1183,7 @@ class ResearchQuestionsTab(QWidget):
         reply = QMessageBox.question(
             self,
             "Re-classify Documents",
-            f"Re-run study design classification for {len(documents)} documents?\n\n"
+            f"Re-run study design classification for {len(documents)} documents? {PASS_LEFT_OUT_SENTENCE}\n\n"
             "This will update the study type (RCT, cohort, etc.) for each document.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -1346,7 +1351,7 @@ class ResearchQuestionsTab(QWidget):
         reply = QMessageBox.question(
             self,
             "Re-score Documents",
-            f"Re-run relevance scoring for {len(documents)} documents?\n\n"
+            f"Re-run relevance scoring for {len(documents)} documents? {PASS_LEFT_OUT_SENTENCE}\n\n"
             "This will update the relevance score (1-5) for each document.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
