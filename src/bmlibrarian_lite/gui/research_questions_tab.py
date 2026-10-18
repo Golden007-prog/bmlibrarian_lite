@@ -694,7 +694,7 @@ class ResearchQuestionsTab(QWidget):
             worker: A pass worker with ``retractions_screened``.
         """
         self._retraction_clause = ""
-        self._retraction_titles: list[str] = []
+        self._retraction_titles = []
         worker.retractions_screened.connect(self._on_retractions_screened)
 
     def _on_retractions_screened(self, clause: str, titles: list[str]) -> None:
