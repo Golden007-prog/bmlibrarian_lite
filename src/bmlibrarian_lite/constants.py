@@ -1545,6 +1545,10 @@ RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
 # A Crossref batch of up to 50 DOIs is one request; same ceiling as the
 # transparency analyzer's CrossRefClient so a slow day fails both alike.
 CROSSREF_REQUEST_TIMEOUT_SECONDS = 30
+# Retries for a Crossref 429 or 5xx: the retraction lookup has no retry loop
+# of its own, so the polite adapter's single budget is all that stands between
+# one hiccup and a whole 50-DOI batch reading as unreachable.
+CROSSREF_MAX_RETRIES = 3
 # Monthly exports only grow; a new copy under 95% of the notices already held
 # is a truncated or partial download, and its missing retractions would read
 # as "consulted, nothing found", so the old copy is kept instead.

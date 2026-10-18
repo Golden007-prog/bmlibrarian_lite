@@ -19,14 +19,16 @@ from bmlib.publications.retraction_status import (
 from urllib3.util.retry import Retry
 
 from . import __version__
-from .constants import CROSSREF_REQUEST_TIMEOUT_SECONDS
+from .constants import (
+    CROSSREF_MAX_RETRIES,
+    CROSSREF_REQUEST_TIMEOUT_SECONDS,
+    RETRYABLE_HTTP_STATUSES,
+)
 from .data_models import RequestFailure, RequestFailureKind
 from .polite_session import mount_politely
 from .search_failures import request_failure_from_exception
 
 _HTTP_OK = 200
-# The polite adapter owns pacing and retries; a second layer would double them.
-_ADAPTER_OWNS_RETRIES = 0
 
 
 @dataclass(frozen=True)
@@ -53,9 +55,16 @@ def crossref_session(mailto: str) -> requests.Session:
     Returns:
         The session.
     """
-    session = mount_politely(
-        requests.Session(), retry=Retry(total=_ADAPTER_OWNS_RETRIES)
+    # The lookup has no retry loop of its own, so the polite adapter's one
+    # budget retries a 429/5xx (pausing for Retry-After) before a batch fails.
+    retry = Retry(
+        total=CROSSREF_MAX_RETRIES,
+        backoff_factor=1,
+        status_forcelist=list(RETRYABLE_HTTP_STATUSES),
+        allowed_methods=["GET"],
+        raise_on_status=False,
     )
+    session = mount_politely(requests.Session(), retry=retry)
     session.headers["User-Agent"] = f"bmlibrarian-lite/{__version__} (mailto:{mailto})"
     return session
 
