@@ -100,7 +100,8 @@ final class BmlibJATSParityTests: XCTestCase {
         return Agreed(
             pmcId: a.pmcId, doi: a.doi, pmid: a.pmid, journal: a.journal, year: a.year,
             volume: a.volume, issue: a.issue, pages: a.pages, title: a.title,
-            authors: a.authors.map { "\($0.fullName)|\($0.affiliations.count)" },
+            // Names only: BioMedLit captures no affiliations (#154), bmlib does.
+            authors: a.authors.map(\.fullName),
             figures: a.figures.map {
                 "\($0.label)|\($0.caption)|\($0.graphicURL ?? "<nil>")|\($0.footnotes.joined(separator: "¶"))"
             },
@@ -235,7 +236,11 @@ final class BmlibJATSParityTests: XCTestCase {
             // Nothing BioMedLit titles is lost: every section path the Swift
             // parser produces also exists in bmlib's tree.
             let swiftReport = Self.reported(swift), rustReport = Self.reported(rust)
-            let missing = Set(swiftReport.sectionPaths).subtracting(rustReport.sectionPaths)
+            // Except Europe PMC's injected associated-data block, a copy of the
+            // supplementary legends and the data statement, which bmlib drops
+            // (bmlib#497) and BioMedLit still prints (#587).
+            let missing = Set(swiftReport.sectionPaths.filter { !$0.hasPrefix(">Associated Data") })
+                .subtracting(rustReport.sectionPaths)
             XCTAssertTrue(missing.isEmpty, "\(name): sections only Swift has: \(missing.sorted())")
 
             var entry: [String: Any] = [

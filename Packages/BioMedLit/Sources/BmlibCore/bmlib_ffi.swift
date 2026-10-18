@@ -460,13 +460,7 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
-// Magic number for the Rust proxy to call using the same mechanism as every other method,
-// to free the callback once it's dropped by Rust.
-private let IDX_CALLBACK_FREE: Int32 = 0
-// Callback return codes
-private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
-private let UNIFFI_CALLBACK_ERROR: Int32 = 1
-private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
+
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -592,25 +586,38 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
- * bmlib's full-text tier chain over the app's transport. SKETCH: only the
- * constructor and the cheap `fetch_status` probe are exposed, to prove the
- * callback interface crosses the boundary in both directions.
+ * The Retraction Watch export as one file the app stores.
  */
-public protocol BmlibFullTextServiceProtocol: AnyObject, Sendable {
+public protocol RetractionIndexProtocol: AnyObject, Sendable {
     
     /**
-     * GET `url` through bmlib's side of the bridge and return the status:
-     * Rust → foreign transport → Rust. A probe for the round trip, nothing more.
+     * The date given when the index was built.
      */
-    func fetchStatus(url: String) throws  -> UInt16
+    func dataAsOf()  -> String
+    
+    /**
+     * Every notice about one paper, by DOI **or** PMID. `None` when neither
+     * is usable, or when a PMID is given that is not ASCII digits: the export
+     * was then not consulted for this paper. Pass the result straight to
+     * [`retraction_status`]'s `export`.
+     */
+    func lookup(doi: String?, pmid: String?)  -> [RetractionEvidence]?
+    
+    /**
+     * The number of notices indexed.
+     */
+    func noticeCount()  -> UInt64
+    
+    /**
+     * The bytes to store.
+     */
+    func toBytes()  -> Data
     
 }
 /**
- * bmlib's full-text tier chain over the app's transport. SKETCH: only the
- * constructor and the cheap `fetch_status` probe are exposed, to prove the
- * callback interface crosses the boundary in both directions.
+ * The Retraction Watch export as one file the app stores.
  */
-open class BmlibFullTextService: BmlibFullTextServiceProtocol, @unchecked Sendable {
+open class RetractionIndex: RetractionIndexProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
 
     /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
@@ -647,170 +654,7 @@ open class BmlibFullTextService: BmlibFullTextServiceProtocol, @unchecked Sendab
     @_documentation(visibility: private)
 #endif
     public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_bmlib_ffi_fn_clone_bmlibfulltextservice(self.handle, $0) }
-    }
-    /**
-     * Build the service over the app's transport.
-     */
-public convenience init(client: ForeignHttpClient, email: String) {
-    let handle =
-        try! rustCall() {
-        uniffiCallStatus in
-    uniffi_bmlib_ffi_fn_constructor_bmlibfulltextservice_new(
-        FfiConverterTypeForeignHttpClient_lower(client),
-        FfiConverterString.lower(email),uniffiCallStatus
-    )
-}
-    self.init(unsafeFromHandle: handle)
-}
-
-    deinit {
-        if handle == 0 {
-            // Mock objects have handle=0 don't try to free them
-            return
-        }
-
-        try! rustCall { uniffi_bmlib_ffi_fn_free_bmlibfulltextservice(handle, $0) }
-    }
-
-    
-
-    
-    /**
-     * GET `url` through bmlib's side of the bridge and return the status:
-     * Rust → foreign transport → Rust. A probe for the round trip, nothing more.
-     */
-open func fetchStatus(url: String)throws  -> UInt16  {
-    return try  FfiConverterUInt16.lift(try rustCallWithError(FfiConverterTypeForeignHttpError_lift) {
-        uniffiCallStatus in
-    uniffi_bmlib_ffi_fn_method_bmlibfulltextservice_fetch_status(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(url),uniffiCallStatus
-    )
-})
-}
-    
-
-    
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public struct FfiConverterTypeBmlibFullTextService: FfiConverter {
-    typealias FfiType = UInt64
-    typealias SwiftType = BmlibFullTextService
-
-    public static func lift(_ handle: UInt64) throws -> BmlibFullTextService {
-        return BmlibFullTextService(unsafeFromHandle: handle)
-    }
-
-    public static func lower(_ value: BmlibFullTextService) -> UInt64 {
-        return value.uniffiCloneHandle()
-    }
-
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BmlibFullTextService {
-        let handle: UInt64 = try readInt(&buf)
-        return try lift(handle)
-    }
-
-    public static func write(_ value: BmlibFullTextService, into buf: inout [UInt8]) {
-        writeInt(&buf, lower(value))
-    }
-}
-
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeBmlibFullTextService_lift(_ handle: UInt64) throws -> BmlibFullTextService {
-    return try FfiConverterTypeBmlibFullTextService.lift(handle)
-}
-
-#if swift(>=5.8)
-@_documentation(visibility: private)
-#endif
-public func FfiConverterTypeBmlibFullTextService_lower(_ value: BmlibFullTextService) -> UInt64 {
-    return FfiConverterTypeBmlibFullTextService.lower(value)
-}
-
-
-
-
-
-
-/**
- * The app's HTTP transport, implemented in Swift (`URLSession`) or Kotlin
- * (`OkHttp`). bmlib's polite pacing, retries and the 429 handling the apps
- * already own stay on the app side.
- *
- * Blocking by design: bmlib's `HttpClient` is synchronous, so the foreign
- * implementation is called on whatever thread called into Rust and must block
- * that thread (Swift: a semaphore around a `URLSession` task; Kotlin:
- * `OkHttp`'s `execute()`). Call into Rust off the main thread.
- */
-public protocol ForeignHttpClient: AnyObject, Sendable {
-    
-    /**
-     * GET `url`.
-     */
-    func get(url: String) throws  -> ForeignHttpResponse
-    
-    /**
-     * POST a JSON body.
-     */
-    func postJson(url: String, bodyJson: String, headers: [String: String]) throws  -> ForeignHttpResponse
-    
-}
-/**
- * The app's HTTP transport, implemented in Swift (`URLSession`) or Kotlin
- * (`OkHttp`). bmlib's polite pacing, retries and the 429 handling the apps
- * already own stay on the app side.
- *
- * Blocking by design: bmlib's `HttpClient` is synchronous, so the foreign
- * implementation is called on whatever thread called into Rust and must block
- * that thread (Swift: a semaphore around a `URLSession` task; Kotlin:
- * `OkHttp`'s `execute()`). Call into Rust off the main thread.
- */
-open class ForeignHttpClientImpl: ForeignHttpClient, @unchecked Sendable {
-    fileprivate let handle: UInt64
-
-    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public struct NoHandle {
-        public init() {}
-    }
-
-    // TODO: We'd like this to be `private` but for Swifty reasons,
-    // we can't implement `FfiConverter` without making this `required` and we can't
-    // make it `required` without making it `public`.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    required public init(unsafeFromHandle handle: UInt64) {
-        self.handle = handle
-    }
-
-    // This constructor can be used to instantiate a fake object.
-    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
-    //
-    // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public init(noHandle: NoHandle) {
-        self.handle = 0
-    }
-
-#if swift(>=5.8)
-    @_documentation(visibility: private)
-#endif
-    public func uniffiCloneHandle() -> UInt64 {
-        return try! rustCall { uniffi_bmlib_ffi_fn_clone_foreignhttpclient(self.handle, $0) }
+        return try! rustCall { uniffi_bmlib_ffi_fn_clone_retractionindex(self.handle, $0) }
     }
     // No primary constructor declared for this class.
 
@@ -820,177 +664,109 @@ open class ForeignHttpClientImpl: ForeignHttpClient, @unchecked Sendable {
             return
         }
 
-        try! rustCall { uniffi_bmlib_ffi_fn_free_foreignhttpclient(handle, $0) }
+        try! rustCall { uniffi_bmlib_ffi_fn_free_retractionindex(handle, $0) }
     }
 
     
-
-    
     /**
-     * GET `url`.
+     * Reopen a stored index.
+     *
+     * # Errors
+     *
+     * Not an index, another format version, empty, or holding an entry no
+     * lookup could find: rebuild it, and until then treat the export as not
+     * consulted.
      */
-open func get(url: String)throws  -> ForeignHttpResponse  {
-    return try  FfiConverterTypeForeignHttpResponse_lift(try rustCallWithError(FfiConverterTypeForeignHttpError_lift) {
+public static func fromBytes(bytes: Data)throws  -> RetractionIndex  {
+    return try  FfiConverterTypeRetractionIndex_lift(try rustCallWithError(FfiConverterTypeRetractionIndexError_lift) {
         uniffiCallStatus in
-    uniffi_bmlib_ffi_fn_method_foreignhttpclient_get(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(url),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * POST a JSON body.
-     */
-open func postJson(url: String, bodyJson: String, headers: [String: String])throws  -> ForeignHttpResponse  {
-    return try  FfiConverterTypeForeignHttpResponse_lift(try rustCallWithError(FfiConverterTypeForeignHttpError_lift) {
-        uniffiCallStatus in
-    uniffi_bmlib_ffi_fn_method_foreignhttpclient_post_json(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(url),
-        FfiConverterString.lower(bodyJson),
-        FfiConverterDictionaryStringString.lower(headers),uniffiCallStatus
+    uniffi_bmlib_ffi_fn_constructor_retractionindex_from_bytes(
+        FfiConverterData.lower(bytes),uniffiCallStatus
     )
 })
 }
     
 
     
-}
-
-
-
-// Put the implementation in a struct so we don't pollute the top-level namespace
-fileprivate struct UniffiCallbackInterfaceForeignHttpClient {
-
-    // Create the VTable using a series of closures.
-    // Swift automatically converts these into C callback functions.
-    //
-    // Store the vtable directly.
-    static let vtable: UniffiVTableCallbackInterfaceForeignHttpClient = UniffiVTableCallbackInterfaceForeignHttpClient(
-        uniffiFree: { (uniffiHandle: UInt64) -> () in
-            do {
-                try FfiConverterTypeForeignHttpClient.handleMap.remove(handle: uniffiHandle)
-            } catch {
-                print("Uniffi callback interface ForeignHttpClient: handle missing in uniffiFree")
-            }
-        },
-        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
-            do {
-                return try FfiConverterTypeForeignHttpClient.handleMap.clone(handle: uniffiHandle)
-            } catch {
-                fatalError("Uniffi callback interface ForeignHttpClient: handle missing in uniffiClone")
-            }
-        },
-        get: { (
-            uniffiHandle: UInt64,
-            url: RustBuffer,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> ForeignHttpResponse in
-                guard let uniffiObj = try? FfiConverterTypeForeignHttpClient.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.get(
-                     url: try FfiConverterString.lift(url)
-                )
-            }
-
-            
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeForeignHttpResponse_lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeForeignHttpError_lower
-            )
-        },
-        postJson: { (
-            uniffiHandle: UInt64,
-            url: RustBuffer,
-            bodyJson: RustBuffer,
-            headers: RustBuffer,
-            uniffiOutReturn: UnsafeMutablePointer<RustBuffer>,
-            uniffiCallStatus: UnsafeMutablePointer<RustCallStatus>
-        ) in
-            let makeCall = {
-                () throws -> ForeignHttpResponse in
-                guard let uniffiObj = try? FfiConverterTypeForeignHttpClient.handleMap.get(handle: uniffiHandle) else {
-                    throw UniffiInternalError.unexpectedStaleHandle
-                }
-                return try uniffiObj.postJson(
-                     url: try FfiConverterString.lift(url),
-                     bodyJson: try FfiConverterString.lift(bodyJson),
-                     headers: try FfiConverterDictionaryStringString.lift(headers)
-                )
-            }
-
-            
-            let writeReturn = { uniffiOutReturn.pointee = FfiConverterTypeForeignHttpResponse_lower($0) }
-            uniffiTraitInterfaceCallWithError(
-                callStatus: uniffiCallStatus,
-                makeCall: makeCall,
-                writeReturn: writeReturn,
-                lowerError: FfiConverterTypeForeignHttpError_lower
-            )
-        }
+    /**
+     * The date given when the index was built.
+     */
+open func dataAsOf() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_method_retractionindex_data_as_of(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
+})
+}
+    
+    /**
+     * Every notice about one paper, by DOI **or** PMID. `None` when neither
+     * is usable, or when a PMID is given that is not ASCII digits: the export
+     * was then not consulted for this paper. Pass the result straight to
+     * [`retraction_status`]'s `export`.
+     */
+open func lookup(doi: String?, pmid: String?) -> [RetractionEvidence]?  {
+    return try!  FfiConverterOptionSequenceTypeRetractionEvidence.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_method_retractionindex_lookup(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(doi),
+        FfiConverterOptionString.lower(pmid),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The number of notices indexed.
+     */
+open func noticeCount() -> UInt64  {
+    return try!  FfiConverterUInt64.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_method_retractionindex_notice_count(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The bytes to store.
+     */
+open func toBytes() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_method_retractionindex_to_bytes(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
 
-    // Rust stores this pointer for future callback invocations, so it must live
-    // for the process lifetime (not just for the init function call).
-    //
-    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
-    // This is safe because the pointee is initialized once during static init
-    // and never mutated by either side of the FFI.  Its fields are C function pointers.
-    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfaceForeignHttpClient> = {
-        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfaceForeignHttpClient>.allocate(capacity: 1)
-        ptr.initialize(to: vtable)
-        return UnsafePointer(ptr)
-    }()
+    
 }
 
-private func uniffiCallbackInitForeignHttpClient() {
-    uniffi_bmlib_ffi_fn_init_callback_vtable_foreignhttpclient(UniffiCallbackInterfaceForeignHttpClient.vtablePtr)
-}
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeForeignHttpClient: FfiConverter {
-    fileprivate static let handleMap = UniffiHandleMap<ForeignHttpClient>()
-
+public struct FfiConverterTypeRetractionIndex: FfiConverter {
     typealias FfiType = UInt64
-    typealias SwiftType = ForeignHttpClient
+    typealias SwiftType = RetractionIndex
 
-    public static func lift(_ handle: UInt64) throws -> ForeignHttpClient {
-        if ((handle & 1) == 0) {
-            // Rust-generated handle, construct a new class that uses the handle to implement the
-            // interface
-            return ForeignHttpClientImpl(unsafeFromHandle: handle)
-        } else {
-            // Swift-generated handle, get the object from the handle map
-            return try handleMap.remove(handle: handle)
-        }
+    public static func lift(_ handle: UInt64) throws -> RetractionIndex {
+        return RetractionIndex(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: ForeignHttpClient) -> UInt64 {
-         if let rustImpl = value as? ForeignHttpClientImpl {
-             // Rust-implemented object.  Clone the handle and return it
-            return rustImpl.uniffiCloneHandle()
-         } else {
-            // Swift object, generate a new vtable handle and return that.
-            return handleMap.insert(obj: value)
-         }
+    public static func lower(_ value: RetractionIndex) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ForeignHttpClient {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionIndex {
         let handle: UInt64 = try readInt(&buf)
         return try lift(handle)
     }
 
-    public static func write(_ value: ForeignHttpClient, into buf: inout [UInt8]) {
+    public static func write(_ value: RetractionIndex, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -999,44 +775,46 @@ public struct FfiConverterTypeForeignHttpClient: FfiConverter {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeForeignHttpClient_lift(_ handle: UInt64) throws -> ForeignHttpClient {
-    return try FfiConverterTypeForeignHttpClient.lift(handle)
+public func FfiConverterTypeRetractionIndex_lift(_ handle: UInt64) throws -> RetractionIndex {
+    return try FfiConverterTypeRetractionIndex.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeForeignHttpClient_lower(_ value: ForeignHttpClient) -> UInt64 {
-    return FfiConverterTypeForeignHttpClient.lower(value)
+public func FfiConverterTypeRetractionIndex_lower(_ value: RetractionIndex) -> UInt64 {
+    return FfiConverterTypeRetractionIndex.lower(value)
 }
 
 
 
 
 /**
- * A response from the app's transport.
+ * One request URL and the DOIs it asks about.
  */
-public struct ForeignHttpResponse: Equatable, Hashable {
+public struct CrossrefBatch: Equatable, Hashable {
     /**
-     * HTTP status.
+     * The URL to GET, with your own User-Agent (it carries `mailto` only if
+     * you passed one).
      */
-    public let status: UInt16
+    public let url: String
     /**
-     * Raw body bytes (a PDF is not a string).
+     * The normalised DOIs to hand back to [`parse_crossref_retraction_response`].
      */
-    public let body: Data
+    public let dois: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
     public init(
         /**
-         * HTTP status.
-         */status: UInt16, 
+         * The URL to GET, with your own User-Agent (it carries `mailto` only if
+         * you passed one).
+         */url: String, 
         /**
-         * Raw body bytes (a PDF is not a string).
-         */body: Data) {
-        self.status = status
-        self.body = body
+         * The normalised DOIs to hand back to [`parse_crossref_retraction_response`].
+         */dois: [String]) {
+        self.url = url
+        self.dois = dois
     }
 
     
@@ -1045,24 +823,24 @@ public struct ForeignHttpResponse: Equatable, Hashable {
 }
 
 #if compiler(>=6)
-extension ForeignHttpResponse: Sendable {}
+extension CrossrefBatch: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeForeignHttpResponse: FfiConverterRustBuffer {
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ForeignHttpResponse {
+public struct FfiConverterTypeCrossrefBatch: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CrossrefBatch {
         return
-            try ForeignHttpResponse(
-                status: FfiConverterUInt16.read(from: &buf), 
-                body: FfiConverterData.read(from: &buf)
+            try CrossrefBatch(
+                url: FfiConverterString.read(from: &buf), 
+                dois: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
-    public static func write(_ value: ForeignHttpResponse, into buf: inout [UInt8]) {
-        FfiConverterUInt16.write(value.status, into: &buf)
-        FfiConverterData.write(value.body, into: &buf)
+    public static func write(_ value: CrossrefBatch, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.url, into: &buf)
+        FfiConverterSequenceString.write(value.dois, into: &buf)
     }
 }
 
@@ -1070,15 +848,86 @@ public struct FfiConverterTypeForeignHttpResponse: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeForeignHttpResponse_lift(_ buf: RustBuffer) throws -> ForeignHttpResponse {
-    return try FfiConverterTypeForeignHttpResponse.lift(buf)
+public func FfiConverterTypeCrossrefBatch_lift(_ buf: RustBuffer) throws -> CrossrefBatch {
+    return try FfiConverterTypeCrossrefBatch.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeForeignHttpResponse_lower(_ value: ForeignHttpResponse) -> RustBuffer {
-    return FfiConverterTypeForeignHttpResponse.lower(value)
+public func FfiConverterTypeCrossrefBatch_lower(_ value: CrossrefBatch) -> RustBuffer {
+    return FfiConverterTypeCrossrefBatch.lower(value)
+}
+
+
+/**
+ * The batches to send, and the DOIs no batch can carry.
+ */
+public struct CrossrefRequests: Equatable, Hashable {
+    /**
+     * The requests.
+     */
+    public let batches: [CrossrefBatch]
+    /**
+     * DOIs containing a comma, which a filter list cannot carry. Crossref has
+     * not answered for them: pass `None` as their Crossref result.
+     */
+    public let unsendable: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The requests.
+         */batches: [CrossrefBatch], 
+        /**
+         * DOIs containing a comma, which a filter list cannot carry. Crossref has
+         * not answered for them: pass `None` as their Crossref result.
+         */unsendable: [String]) {
+        self.batches = batches
+        self.unsendable = unsendable
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension CrossrefRequests: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCrossrefRequests: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CrossrefRequests {
+        return
+            try CrossrefRequests(
+                batches: FfiConverterSequenceTypeCrossrefBatch.read(from: &buf), 
+                unsendable: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: CrossrefRequests, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeCrossrefBatch.write(value.batches, into: &buf)
+        FfiConverterSequenceString.write(value.unsendable, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCrossrefRequests_lift(_ buf: RustBuffer) throws -> CrossrefRequests {
+    return try FfiConverterTypeCrossrefRequests.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeCrossrefRequests_lower(_ value: CrossrefRequests) -> RustBuffer {
+    return FfiConverterTypeCrossrefRequests.lower(value)
 }
 
 
@@ -1087,11 +936,11 @@ public func FfiConverterTypeForeignHttpResponse_lower(_ value: ForeignHttpRespon
  */
 public struct JatsAbstractSection: Equatable, Hashable {
     /**
-     * Section title; empty for an unstructured abstract with no `<title>`.
+     * The heading the abstract deposited; empty for an unstructured abstract.
      */
     public let title: String
     /**
-     * The section's text.
+     * The section's prose.
      */
     public let content: String
 
@@ -1099,10 +948,10 @@ public struct JatsAbstractSection: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * Section title; empty for an unstructured abstract with no `<title>`.
+         * The heading the abstract deposited; empty for an unstructured abstract.
          */title: String, 
         /**
-         * The section's text.
+         * The section's prose.
          */content: String) {
         self.title = title
         self.content = content
@@ -1152,7 +1001,7 @@ public func FfiConverterTypeJatsAbstractSection_lower(_ value: JatsAbstractSecti
 
 
 /**
- * A parsed JATS article.
+ * A parsed JATS article. Field order follows bmlib's `JATSArticle`.
  */
 public struct JatsArticle: Equatable, Hashable {
     /**
@@ -1176,7 +1025,8 @@ public struct JatsArticle: Equatable, Hashable {
      */
     public let issue: String
     /**
-     * `fpage-lpage`.
+     * The page range as deposited: `fpage-lpage`, `fpage` alone, or empty —
+     * an article located by `elocation_id` usually has no pages.
      */
     public let pages: String
     /**
@@ -1188,7 +1038,9 @@ public struct JatsArticle: Equatable, Hashable {
      */
     public let doi: String
     /**
-     * PMC id, `PMC`-prefixed.
+     * PMC id. A `known_pmc_id` passed to [`parse_jats_audited`] is
+     * `PMC`-prefixed when given bare and wins over the document's own; a value
+     * read from the document is stored as deposited; empty when neither.
      */
     public let pmcId: String
     /**
@@ -1196,15 +1048,11 @@ public struct JatsArticle: Equatable, Hashable {
      */
     public let pmid: String
     /**
-     * `<elocation-id>`.
-     */
-    public let elocationId: String
-    /**
      * Abstract sections.
      */
     public let abstractSections: [JatsAbstractSection]
     /**
-     * Body and back-matter sections.
+     * Front matter, body and back matter sections, in document order.
      */
     public let bodySections: [JatsBodySection]
     /**
@@ -1220,13 +1068,24 @@ public struct JatsArticle: Equatable, Hashable {
      */
     public let references: [JatsReference]
     /**
-     * Did the article have a `<body>` at all?
+     * Did body prose survive parsing — at least one non-empty `<p>` in
+     * `<body>`? **Not** "was there a `<body>`": a document of `<front>` and
+     * `<back>` only (medRxiv serves some) is `false` even though
+     * `body_sections` may carry its front and back matter. This is the field
+     * that says whether the article is full text.
      */
     public let hasBody: Bool
     /**
-     * Nested `<article>`s whose content was suppressed.
+     * How many `<sub-article>`/`<response>` regions were skipped (a nested one
+     * counted separately) — peer-review rounds, translations. Their prose is
+     * in no field; this is the one field that says they were there.
      */
     public let suppressedNestedArticles: UInt64
+    /**
+     * The article's own `<elocation-id>`, the electronic locator deposited in
+     * place of a page range.
+     */
+    public let elocationId: String
     /**
      * `<funding-statement>` texts.
      */
@@ -1255,7 +1114,8 @@ public struct JatsArticle: Equatable, Hashable {
          * Issue.
          */issue: String, 
         /**
-         * `fpage-lpage`.
+         * The page range as deposited: `fpage-lpage`, `fpage` alone, or empty —
+         * an article located by `elocation_id` usually has no pages.
          */pages: String, 
         /**
          * Publication year.
@@ -1264,19 +1124,18 @@ public struct JatsArticle: Equatable, Hashable {
          * DOI.
          */doi: String, 
         /**
-         * PMC id, `PMC`-prefixed.
+         * PMC id. A `known_pmc_id` passed to [`parse_jats_audited`] is
+         * `PMC`-prefixed when given bare and wins over the document's own; a value
+         * read from the document is stored as deposited; empty when neither.
          */pmcId: String, 
         /**
          * PMID.
          */pmid: String, 
         /**
-         * `<elocation-id>`.
-         */elocationId: String, 
-        /**
          * Abstract sections.
          */abstractSections: [JatsAbstractSection], 
         /**
-         * Body and back-matter sections.
+         * Front matter, body and back matter sections, in document order.
          */bodySections: [JatsBodySection], 
         /**
          * Figures.
@@ -1288,11 +1147,21 @@ public struct JatsArticle: Equatable, Hashable {
          * References.
          */references: [JatsReference], 
         /**
-         * Did the article have a `<body>` at all?
+         * Did body prose survive parsing — at least one non-empty `<p>` in
+         * `<body>`? **Not** "was there a `<body>`": a document of `<front>` and
+         * `<back>` only (medRxiv serves some) is `false` even though
+         * `body_sections` may carry its front and back matter. This is the field
+         * that says whether the article is full text.
          */hasBody: Bool, 
         /**
-         * Nested `<article>`s whose content was suppressed.
+         * How many `<sub-article>`/`<response>` regions were skipped (a nested one
+         * counted separately) — peer-review rounds, translations. Their prose is
+         * in no field; this is the one field that says they were there.
          */suppressedNestedArticles: UInt64, 
+        /**
+         * The article's own `<elocation-id>`, the electronic locator deposited in
+         * place of a page range.
+         */elocationId: String, 
         /**
          * `<funding-statement>` texts.
          */fundingStatements: [String], 
@@ -1309,7 +1178,6 @@ public struct JatsArticle: Equatable, Hashable {
         self.doi = doi
         self.pmcId = pmcId
         self.pmid = pmid
-        self.elocationId = elocationId
         self.abstractSections = abstractSections
         self.bodySections = bodySections
         self.figures = figures
@@ -1317,6 +1185,7 @@ public struct JatsArticle: Equatable, Hashable {
         self.references = references
         self.hasBody = hasBody
         self.suppressedNestedArticles = suppressedNestedArticles
+        self.elocationId = elocationId
         self.fundingStatements = fundingStatements
         self.fundingAwards = fundingAwards
     }
@@ -1347,7 +1216,6 @@ public struct FfiConverterTypeJatsArticle: FfiConverterRustBuffer {
                 doi: FfiConverterString.read(from: &buf), 
                 pmcId: FfiConverterString.read(from: &buf), 
                 pmid: FfiConverterString.read(from: &buf), 
-                elocationId: FfiConverterString.read(from: &buf), 
                 abstractSections: FfiConverterSequenceTypeJatsAbstractSection.read(from: &buf), 
                 bodySections: FfiConverterSequenceTypeJatsBodySection.read(from: &buf), 
                 figures: FfiConverterSequenceTypeJatsFigure.read(from: &buf), 
@@ -1355,6 +1223,7 @@ public struct FfiConverterTypeJatsArticle: FfiConverterRustBuffer {
                 references: FfiConverterSequenceTypeJatsReference.read(from: &buf), 
                 hasBody: FfiConverterBool.read(from: &buf), 
                 suppressedNestedArticles: FfiConverterUInt64.read(from: &buf), 
+                elocationId: FfiConverterString.read(from: &buf), 
                 fundingStatements: FfiConverterSequenceString.read(from: &buf), 
                 fundingAwards: FfiConverterSequenceTypeJatsFundingAward.read(from: &buf)
         )
@@ -1371,7 +1240,6 @@ public struct FfiConverterTypeJatsArticle: FfiConverterRustBuffer {
         FfiConverterString.write(value.doi, into: &buf)
         FfiConverterString.write(value.pmcId, into: &buf)
         FfiConverterString.write(value.pmid, into: &buf)
-        FfiConverterString.write(value.elocationId, into: &buf)
         FfiConverterSequenceTypeJatsAbstractSection.write(value.abstractSections, into: &buf)
         FfiConverterSequenceTypeJatsBodySection.write(value.bodySections, into: &buf)
         FfiConverterSequenceTypeJatsFigure.write(value.figures, into: &buf)
@@ -1379,6 +1247,7 @@ public struct FfiConverterTypeJatsArticle: FfiConverterRustBuffer {
         FfiConverterSequenceTypeJatsReference.write(value.references, into: &buf)
         FfiConverterBool.write(value.hasBody, into: &buf)
         FfiConverterUInt64.write(value.suppressedNestedArticles, into: &buf)
+        FfiConverterString.write(value.elocationId, into: &buf)
         FfiConverterSequenceString.write(value.fundingStatements, into: &buf)
         FfiConverterSequenceTypeJatsFundingAward.write(value.fundingAwards, into: &buf)
     }
@@ -1401,32 +1270,38 @@ public func FfiConverterTypeJatsArticle_lower(_ value: JatsArticle) -> RustBuffe
 
 
 /**
- * One contributor. `full_name` is bmlib's `author_full_name`, precomputed so
- * the apps do not re-derive the structured-name-wins rule.
+ * One contributor. Every author a parse returns carries some spelling of a
+ * name, so `full_name` is never blank.
  */
 public struct JatsAuthor: Equatable, Hashable {
     /**
-     * `<surname>`.
+     * The structured surname of a `<name>` deposit. Empty where the contributor
+     * is named only as a `collab` or a `string_name`, so sorting or indexing
+     * by it must handle the empty case.
      */
     public let surname: String
     /**
-     * `<given-names>`.
+     * The given names of a `<name>` deposit; empty where it gave none.
      */
     public let givenNames: String
     /**
-     * Resolved affiliation texts.
+     * **Always empty from this reader**: the Rust port has no `<aff>` handler
+     * yet (Python bmlib resolves affiliations since its issue #145). Do not
+     * read the empty list as "this contributor declared no affiliation".
      */
     public let affiliations: [String]
     /**
-     * `<collab>` — a group author.
+     * A collaboration's name (`<collab>`) — a group, not a person.
      */
     public let collab: String
     /**
-     * `<string-name>` — an undivided name.
+     * An undivided personal name, exactly as deposited (`<string-name>`).
      */
     public let stringName: String
     /**
-     * bmlib's `author_full_name`.
+     * bmlib's `author_full_name`, precomputed so the apps do not re-derive the
+     * rule: a structured name wins over both undivided spellings, then
+     * `collab`, then `string_name`.
      */
     public let fullName: String
 
@@ -1434,22 +1309,28 @@ public struct JatsAuthor: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * `<surname>`.
+         * The structured surname of a `<name>` deposit. Empty where the contributor
+         * is named only as a `collab` or a `string_name`, so sorting or indexing
+         * by it must handle the empty case.
          */surname: String, 
         /**
-         * `<given-names>`.
+         * The given names of a `<name>` deposit; empty where it gave none.
          */givenNames: String, 
         /**
-         * Resolved affiliation texts.
+         * **Always empty from this reader**: the Rust port has no `<aff>` handler
+         * yet (Python bmlib resolves affiliations since its issue #145). Do not
+         * read the empty list as "this contributor declared no affiliation".
          */affiliations: [String], 
         /**
-         * `<collab>` — a group author.
+         * A collaboration's name (`<collab>`) — a group, not a person.
          */collab: String, 
         /**
-         * `<string-name>` — an undivided name.
+         * An undivided personal name, exactly as deposited (`<string-name>`).
          */stringName: String, 
         /**
-         * bmlib's `author_full_name`.
+         * bmlib's `author_full_name`, precomputed so the apps do not re-derive the
+         * rule: a structured name wins over both undivided spellings, then
+         * `collab`, then `string_name`.
          */fullName: String) {
         self.surname = surname
         self.givenNames = givenNames
@@ -1511,15 +1392,18 @@ public func FfiConverterTypeJatsAuthor_lower(_ value: JatsAuthor) -> RustBuffer 
 
 
 /**
- * One body (or back-matter) section, recursively.
+ * One section, recursively: front matter, body and back matter, in document
+ * order. [`JatsArticle::has_body`] — not this list being non-empty — says
+ * whether the article has a body.
  */
 public struct JatsBodySection: Equatable, Hashable {
     /**
-     * Section title; empty for untitled content.
+     * The heading the document deposited; empty for prose it heads with
+     * nothing. Two untitled sections may be adjacent.
      */
     public let title: String
     /**
-     * Paragraph texts.
+     * Paragraph texts. A paragraph may be the empty string.
      */
     public let paragraphs: [String]
     /**
@@ -1531,10 +1415,11 @@ public struct JatsBodySection: Equatable, Hashable {
     // declare one manually.
     public init(
         /**
-         * Section title; empty for untitled content.
+         * The heading the document deposited; empty for prose it heads with
+         * nothing. Two untitled sections may be adjacent.
          */title: String, 
         /**
-         * Paragraph texts.
+         * Paragraph texts. A paragraph may be the empty string.
          */paragraphs: [String], 
         /**
          * Nested sections.
@@ -1598,7 +1483,8 @@ public struct JatsFigure: Equatable, Hashable {
      */
     public let id: String
     /**
-     * `<label>`.
+     * The figure's own `<label>`, as deposited; empty when it carries none —
+     * no number is invented from its position.
      */
     public let label: String
     /**
@@ -1606,11 +1492,15 @@ public struct JatsFigure: Equatable, Hashable {
      */
     public let caption: String
     /**
-     * The best-ranked `<graphic>` href, if any.
+     * The best-ranked `<graphic>` href, as deposited — usually relative (e.g.
+     * `pone.0123.g001`), so not a URL to open as it stands.
      */
     public let graphicUrl: String?
     /**
-     * Footnotes, marker joined.
+     * The figure's notes, in document order. A marked note's marker is folded
+     * in as `"a — text"`; an attribution carries no marker. Splitting on
+     * `" — "` does **not** reliably recover the marker: a definition list in
+     * the notes uses the same separator and carries no marker at all.
      */
     public let footnotes: [String]
 
@@ -1621,16 +1511,21 @@ public struct JatsFigure: Equatable, Hashable {
          * `@id`.
          */id: String, 
         /**
-         * `<label>`.
+         * The figure's own `<label>`, as deposited; empty when it carries none —
+         * no number is invented from its position.
          */label: String, 
         /**
          * Caption text.
          */caption: String, 
         /**
-         * The best-ranked `<graphic>` href, if any.
+         * The best-ranked `<graphic>` href, as deposited — usually relative (e.g.
+         * `pone.0123.g001`), so not a URL to open as it stands.
          */graphicUrl: String?, 
         /**
-         * Footnotes, marker joined.
+         * The figure's notes, in document order. A marked note's marker is folded
+         * in as `"a — text"`; an attribution carries no marker. Splitting on
+         * `" — "` does **not** reliably recover the marker: a definition list in
+         * the notes uses the same separator and carries no marker at all.
          */footnotes: [String]) {
         self.id = id
         self.label = label
@@ -1766,7 +1661,9 @@ public struct JatsFundingSource: Equatable, Hashable {
      */
     public let name: String
     /**
-     * Funder identifier (e.g. a FundRef DOI).
+     * The funder's `<institution-id>`, verbatim: a Funder Registry DOI arrives
+     * both bare (`10.13039/…`) and wrapped in a `doi.org` URL, and sometimes
+     * as the literal `NA`. Fold the two spellings before matching.
      */
     public let identifier: String
 
@@ -1777,7 +1674,9 @@ public struct JatsFundingSource: Equatable, Hashable {
          * Funder name.
          */name: String, 
         /**
-         * Funder identifier (e.g. a FundRef DOI).
+         * The funder's `<institution-id>`, verbatim: a Funder Registry DOI arrives
+         * both bare (`10.13039/…`) and wrapped in a `doi.org` URL, and sometimes
+         * as the literal `NA`. Fold the two spellings before matching.
          */identifier: String) {
         self.name = name
         self.identifier = identifier
@@ -1836,13 +1735,18 @@ public struct JatsParseReport: Equatable, Hashable {
      */
     public let article: JatsArticle
     /**
+     * How the article names itself (its identifiers), for prefixing the lines
+     * below in an app's log — the lines themselves do not name the article.
+     */
+    public let articleLabel: String
+    /**
+     * Reader-defect diagnostics: each is a claim that bmlib is wrong.
+     */
+    public let diagnostics: [String]
+    /**
      * Counted losses that are the publisher's deposit.
      */
     public let warnings: [String]
-    /**
-     * Reader-defect diagnostics.
-     */
-    public let diagnostics: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1851,14 +1755,19 @@ public struct JatsParseReport: Equatable, Hashable {
          * The article.
          */article: JatsArticle, 
         /**
-         * Counted losses that are the publisher's deposit.
-         */warnings: [String], 
+         * How the article names itself (its identifiers), for prefixing the lines
+         * below in an app's log — the lines themselves do not name the article.
+         */articleLabel: String, 
         /**
-         * Reader-defect diagnostics.
-         */diagnostics: [String]) {
+         * Reader-defect diagnostics: each is a claim that bmlib is wrong.
+         */diagnostics: [String], 
+        /**
+         * Counted losses that are the publisher's deposit.
+         */warnings: [String]) {
         self.article = article
-        self.warnings = warnings
+        self.articleLabel = articleLabel
         self.diagnostics = diagnostics
+        self.warnings = warnings
     }
 
     
@@ -1878,15 +1787,17 @@ public struct FfiConverterTypeJatsParseReport: FfiConverterRustBuffer {
         return
             try JatsParseReport(
                 article: FfiConverterTypeJatsArticle.read(from: &buf), 
-                warnings: FfiConverterSequenceString.read(from: &buf), 
-                diagnostics: FfiConverterSequenceString.read(from: &buf)
+                articleLabel: FfiConverterString.read(from: &buf), 
+                diagnostics: FfiConverterSequenceString.read(from: &buf), 
+                warnings: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
     public static func write(_ value: JatsParseReport, into buf: inout [UInt8]) {
         FfiConverterTypeJatsArticle.write(value.article, into: &buf)
-        FfiConverterSequenceString.write(value.warnings, into: &buf)
+        FfiConverterString.write(value.articleLabel, into: &buf)
         FfiConverterSequenceString.write(value.diagnostics, into: &buf)
+        FfiConverterSequenceString.write(value.warnings, into: &buf)
     }
 }
 
@@ -1915,11 +1826,15 @@ public struct JatsReference: Equatable, Hashable {
      */
     public let id: String
     /**
-     * `<label>`.
+     * The reference's own `<label>`; empty when it carries none.
      */
     public let label: String
     /**
-     * The rendered citation text.
+     * The text the deposit typeset — a `<mixed-citation>` or a typeset NLM
+     * `<citation>` — **not** a formatted reference. Empty for an element-only
+     * citation (`<element-citation>`), whose structured fields below are then
+     * all there is; read empty as "build the citation from the fields", not
+     * as "no citation".
      */
     public let citation: String
     /**
@@ -1974,10 +1889,14 @@ public struct JatsReference: Equatable, Hashable {
          * `@id`.
          */id: String, 
         /**
-         * `<label>`.
+         * The reference's own `<label>`; empty when it carries none.
          */label: String, 
         /**
-         * The rendered citation text.
+         * The text the deposit typeset — a `<mixed-citation>` or a typeset NLM
+         * `<citation>` — **not** a formatted reference. Empty for an element-only
+         * citation (`<element-citation>`), whose structured fields below are then
+         * all there is; read empty as "build the citation from the fields", not
+         * as "no citation".
          */citation: String, 
         /**
          * Author names.
@@ -2097,7 +2016,8 @@ public func FfiConverterTypeJatsReference_lower(_ value: JatsReference) -> RustB
 
 /**
  * A table. bmlib carries the table as HTML; the apps' markdown rendering is
- * **not** produced here (see the spike record).
+ * **not** produced here (see bmlibrarian_lite's
+ * `doc/cross_platform/bmlib_sync/uniffi_spike.md`).
  */
 public struct JatsTable: Equatable, Hashable {
     /**
@@ -2105,7 +2025,7 @@ public struct JatsTable: Equatable, Hashable {
      */
     public let id: String
     /**
-     * `<label>`.
+     * The table's own `<label>`, as deposited; empty when it carries none.
      */
     public let label: String
     /**
@@ -2113,15 +2033,17 @@ public struct JatsTable: Equatable, Hashable {
      */
     public let caption: String
     /**
-     * The table body as HTML.
+     * The table body as HTML; empty for a table deposited only as an image.
      */
     public let htmlContent: String
     /**
-     * A table deposited as an image.
+     * The table's own `<graphic>` href, best-ranked. It may be set beside a
+     * non-empty `html_content` (a table deposited both ways), not only for a
+     * table deposited as an image.
      */
     public let graphicUrl: String?
     /**
-     * Footnotes, marker joined.
+     * The table's notes; see [`JatsFigure::footnotes`] for the marker rule.
      */
     public let footnotes: [String]
 
@@ -2132,19 +2054,21 @@ public struct JatsTable: Equatable, Hashable {
          * `@id`.
          */id: String, 
         /**
-         * `<label>`.
+         * The table's own `<label>`, as deposited; empty when it carries none.
          */label: String, 
         /**
          * Caption text.
          */caption: String, 
         /**
-         * The table body as HTML.
+         * The table body as HTML; empty for a table deposited only as an image.
          */htmlContent: String, 
         /**
-         * A table deposited as an image.
+         * The table's own `<graphic>` href, best-ranked. It may be set beside a
+         * non-empty `html_content` (a table deposited both ways), not only for a
+         * table deposited as an image.
          */graphicUrl: String?, 
         /**
-         * Footnotes, marker joined.
+         * The table's notes; see [`JatsFigure::footnotes`] for the marker rule.
          */footnotes: [String]) {
         self.id = id
         self.label = label
@@ -2206,68 +2130,367 @@ public func FfiConverterTypeJatsTable_lower(_ value: JatsTable) -> RustBuffer {
 
 
 /**
- * A request that never completed (no connection, TLS, timeout). A non-2xx
- * status is **not** this — it is a [`ForeignHttpResponse`], as in bmlib.
+ * One source's statement about one paper.
  */
-public 
-enum ForeignHttpError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
-
-    
-    
+public struct RetractionEvidence: Equatable, Hashable {
     /**
-     * The transport failed.
+     * Where it came from.
      */
-    case Transport(
+    public let source: RetractionSource
+    /**
+     * What it says.
+     */
+    public let kind: RetractionKind
+    /**
+     * ISO date, as precise as deposited (`yyyy-mm-dd`, `yyyy-mm` or `yyyy`).
+     * Undated is `None`; a `""` is read as undated too.
+     */
+    public let date: String?
+    /**
+     * The notice's DOI, normalised — show it beside a retraction.
+     */
+    public let noticeDoi: String?
+    /**
+     * Retraction Watch's record ID.
+     */
+    public let recordId: String?
+    /**
+     * The source's own spelling of the kind.
+     */
+    public let rawKind: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
         /**
-         * The transport's message (see [`JatsError::Xml`] on the name).
-         */reason: String
-    )
-
-    
-
-    
-
-    
-    public var errorDescription: String? {
-        String(reflecting: self)
+         * Where it came from.
+         */source: RetractionSource, 
+        /**
+         * What it says.
+         */kind: RetractionKind, 
+        /**
+         * ISO date, as precise as deposited (`yyyy-mm-dd`, `yyyy-mm` or `yyyy`).
+         * Undated is `None`; a `""` is read as undated too.
+         */date: String?, 
+        /**
+         * The notice's DOI, normalised — show it beside a retraction.
+         */noticeDoi: String?, 
+        /**
+         * Retraction Watch's record ID.
+         */recordId: String?, 
+        /**
+         * The source's own spelling of the kind.
+         */rawKind: String?) {
+        self.source = source
+        self.kind = kind
+        self.date = date
+        self.noticeDoi = noticeDoi
+        self.recordId = recordId
+        self.rawKind = rawKind
     }
+
+    
+
     
 }
 
 #if compiler(>=6)
-extension ForeignHttpError: Sendable {}
+extension RetractionEvidence: Sendable {}
 #endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public struct FfiConverterTypeForeignHttpError: FfiConverterRustBuffer {
-    typealias SwiftType = ForeignHttpError
+public struct FfiConverterTypeRetractionEvidence: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionEvidence {
+        return
+            try RetractionEvidence(
+                source: FfiConverterTypeRetractionSource.read(from: &buf), 
+                kind: FfiConverterTypeRetractionKind.read(from: &buf), 
+                date: FfiConverterOptionString.read(from: &buf), 
+                noticeDoi: FfiConverterOptionString.read(from: &buf), 
+                recordId: FfiConverterOptionString.read(from: &buf), 
+                rawKind: FfiConverterOptionString.read(from: &buf)
+        )
+    }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ForeignHttpError {
+    public static func write(_ value: RetractionEvidence, into buf: inout [UInt8]) {
+        FfiConverterTypeRetractionSource.write(value.source, into: &buf)
+        FfiConverterTypeRetractionKind.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.date, into: &buf)
+        FfiConverterOptionString.write(value.noticeDoi, into: &buf)
+        FfiConverterOptionString.write(value.recordId, into: &buf)
+        FfiConverterOptionString.write(value.rawKind, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionEvidence_lift(_ buf: RustBuffer) throws -> RetractionEvidence {
+    return try FfiConverterTypeRetractionEvidence.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionEvidence_lower(_ value: RetractionEvidence) -> RustBuffer {
+    return FfiConverterTypeRetractionEvidence.lower(value)
+}
+
+
+/**
+ * What [`build_retraction_index`] produced and what it left out.
+ */
+public struct RetractionIndexBuild {
+    /**
+     * The index. Store [`RetractionIndex::to_bytes`].
+     */
+    public let index: RetractionIndex
+    /**
+     * Rows skipped: malformed, no record ID, or no usable identifier for the
+     * paper.
+     */
+    public let skippedRows: UInt64
+    /**
+     * Nature strings this version could not map. Non-empty means Retraction
+     * Watch's vocabulary moved: report it, since those notices decide nothing.
+     */
+    public let unknownNatures: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The index. Store [`RetractionIndex::to_bytes`].
+         */index: RetractionIndex, 
+        /**
+         * Rows skipped: malformed, no record ID, or no usable identifier for the
+         * paper.
+         */skippedRows: UInt64, 
+        /**
+         * Nature strings this version could not map. Non-empty means Retraction
+         * Watch's vocabulary moved: report it, since those notices decide nothing.
+         */unknownNatures: [String]) {
+        self.index = index
+        self.skippedRows = skippedRows
+        self.unknownNatures = unknownNatures
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RetractionIndexBuild: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRetractionIndexBuild: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionIndexBuild {
+        return
+            try RetractionIndexBuild(
+                index: FfiConverterTypeRetractionIndex.read(from: &buf), 
+                skippedRows: FfiConverterUInt64.read(from: &buf), 
+                unknownNatures: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RetractionIndexBuild, into buf: inout [UInt8]) {
+        FfiConverterTypeRetractionIndex.write(value.index, into: &buf)
+        FfiConverterUInt64.write(value.skippedRows, into: &buf)
+        FfiConverterSequenceString.write(value.unknownNatures, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionIndexBuild_lift(_ buf: RustBuffer) throws -> RetractionIndexBuild {
+    return try FfiConverterTypeRetractionIndexBuild.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionIndexBuild_lower(_ value: RetractionIndexBuild) -> RustBuffer {
+    return FfiConverterTypeRetractionIndexBuild.lower(value)
+}
+
+
+/**
+ * What [`retraction_status`] decided, and on what.
+ */
+public struct RetractionVerdict: Equatable, Hashable {
+    /**
+     * The status.
+     */
+    public let status: RetractionStatus
+    /**
+     * The newest retraction (`Retracted`), the newest concern (`Concern`),
+     * otherwise the newest reinstatement, if any.
+     */
+    public let deciding: RetractionEvidence?
+    /**
+     * Every lookup that did not answer — beside any status, since a concern
+     * found while Crossref was down may yet be a retraction.
+     */
+    public let unanswered: [RetractionLookup]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The status.
+         */status: RetractionStatus, 
+        /**
+         * The newest retraction (`Retracted`), the newest concern (`Concern`),
+         * otherwise the newest reinstatement, if any.
+         */deciding: RetractionEvidence?, 
+        /**
+         * Every lookup that did not answer — beside any status, since a concern
+         * found while Crossref was down may yet be a retraction.
+         */unanswered: [RetractionLookup]) {
+        self.status = status
+        self.deciding = deciding
+        self.unanswered = unanswered
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension RetractionVerdict: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRetractionVerdict: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionVerdict {
+        return
+            try RetractionVerdict(
+                status: FfiConverterTypeRetractionStatus.read(from: &buf), 
+                deciding: FfiConverterOptionTypeRetractionEvidence.read(from: &buf), 
+                unanswered: FfiConverterSequenceTypeRetractionLookup.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: RetractionVerdict, into buf: inout [UInt8]) {
+        FfiConverterTypeRetractionStatus.write(value.status, into: &buf)
+        FfiConverterOptionTypeRetractionEvidence.write(value.deciding, into: &buf)
+        FfiConverterSequenceTypeRetractionLookup.write(value.unanswered, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionVerdict_lift(_ buf: RustBuffer) throws -> RetractionVerdict {
+    return try FfiConverterTypeRetractionVerdict.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionVerdict_lower(_ value: RetractionVerdict) -> RustBuffer {
+    return FfiConverterTypeRetractionVerdict.lower(value)
+}
+
+
+/**
+ * Crossref's answer about one DOI.
+ */
+
+public enum CrossrefResult: Equatable, Hashable {
+    
+    /**
+     * Crossref served the record. Pass it to [`retraction_status`] for the
+     * paper with this DOI: for any other paper it is no answer (#508).
+     */
+    case served(
+        /**
+         * The record's own DOI, normalised.
+         */doi: String, 
+        /**
+         * Its `updated-by` relations.
+         */evidence: [RetractionEvidence], 
+        /**
+         * The DOIs its own retraction-family `update-to` names.
+         */retractionTargets: [String]
+    )
+    /**
+     * Absent from a successful answer: Crossref does not know this DOI, and
+     * asking again will not change it. The paper is unchecked, not clear.
+     */
+    case notKnown
+    /**
+     * The batch failed, or this DOI's relations could not be read. Retry by
+     * your own pacing; never read it as "not known".
+     */
+    case unreachable(
+        /**
+         * Why, for a log line; the wording is not part of the contract.
+         */reason: String
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension CrossrefResult: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeCrossrefResult: FfiConverterRustBuffer {
+    typealias SwiftType = CrossrefResult
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> CrossrefResult {
         let variant: Int32 = try readInt(&buf)
         switch variant {
-
         
-
+        case 1: return .served(doi: try FfiConverterString.read(from: &buf), evidence: try FfiConverterSequenceTypeRetractionEvidence.read(from: &buf), retractionTargets: try FfiConverterSequenceString.read(from: &buf)
+        )
         
-        case 1: return .Transport(
-            reason: try FfiConverterString.read(from: &buf)
-            )
-
-         default: throw UniffiInternalError.unexpectedEnumCase
+        case 2: return .notKnown
+        
+        case 3: return .unreachable(reason: try FfiConverterString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
 
-    public static func write(_ value: ForeignHttpError, into buf: inout [UInt8]) {
+    public static func write(_ value: CrossrefResult, into buf: inout [UInt8]) {
         switch value {
-
-        
-
         
         
-        case let .Transport(reason):
+        case let .served(doi,evidence,retractionTargets):
             writeInt(&buf, Int32(1))
+            FfiConverterString.write(doi, into: &buf)
+            FfiConverterSequenceTypeRetractionEvidence.write(evidence, into: &buf)
+            FfiConverterSequenceString.write(retractionTargets, into: &buf)
+            
+        
+        case .notKnown:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .unreachable(reason):
+            writeInt(&buf, Int32(3))
             FfiConverterString.write(reason, into: &buf)
             
         }
@@ -2278,16 +2501,17 @@ public struct FfiConverterTypeForeignHttpError: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeForeignHttpError_lift(_ buf: RustBuffer) throws -> ForeignHttpError {
-    return try FfiConverterTypeForeignHttpError.lift(buf)
+public func FfiConverterTypeCrossrefResult_lift(_ buf: RustBuffer) throws -> CrossrefResult {
+    return try FfiConverterTypeCrossrefResult.lift(buf)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeForeignHttpError_lower(_ value: ForeignHttpError) -> RustBuffer {
-    return FfiConverterTypeForeignHttpError.lower(value)
+public func FfiConverterTypeCrossrefResult_lower(_ value: CrossrefResult) -> RustBuffer {
+    return FfiConverterTypeCrossrefResult.lower(value)
 }
+
 
 
 /**
@@ -2299,12 +2523,36 @@ enum JatsError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
     
     
     /**
-     * The bytes are not well-formed XML.
+     * The document is not well-formed XML.
      */
     case Xml(
         /**
          * The XML reader's message. Not `message`: Kotlin exceptions inherit
          * `Throwable.message`, and a field of that name does not compile.
+         */reason: String
+    )
+    /**
+     * The document nests elements deeper than [`MAX_NESTING_DEPTH`] and was
+     * refused before parsing. The reader recurses once per level, and a stack
+     * overflow is not a panic — it would kill the app, which no error type can
+     * report.
+     */
+    case NestingTooDeep(
+        /**
+         * The depth the pre-scan counted: exact for a document without an
+         * internal DTD subset, an upper bound for one declaring entities.
+         */depth: UInt64, 
+        /**
+         * The limit it exceeded.
+         */limit: UInt64
+    )
+    /**
+     * The parse could not start: the system refused the thread it runs on.
+     * Nothing is wrong with the document; a later call may succeed.
+     */
+    case Resource(
+        /**
+         * The system's message.
          */reason: String
     )
 
@@ -2339,6 +2587,13 @@ public struct FfiConverterTypeJatsError: FfiConverterRustBuffer {
         case 1: return .Xml(
             reason: try FfiConverterString.read(from: &buf)
             )
+        case 2: return .NestingTooDeep(
+            depth: try FfiConverterUInt64.read(from: &buf), 
+            limit: try FfiConverterUInt64.read(from: &buf)
+            )
+        case 3: return .Resource(
+            reason: try FfiConverterString.read(from: &buf)
+            )
 
          default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -2353,6 +2608,17 @@ public struct FfiConverterTypeJatsError: FfiConverterRustBuffer {
         
         case let .Xml(reason):
             writeInt(&buf, Int32(1))
+            FfiConverterString.write(reason, into: &buf)
+            
+        
+        case let .NestingTooDeep(depth,limit):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(depth, into: &buf)
+            FfiConverterUInt64.write(limit, into: &buf)
+            
+        
+        case let .Resource(reason):
+            writeInt(&buf, Int32(3))
             FfiConverterString.write(reason, into: &buf)
             
         }
@@ -2373,6 +2639,552 @@ public func FfiConverterTypeJatsError_lift(_ buf: RustBuffer) throws -> JatsErro
 public func FfiConverterTypeJatsError_lower(_ value: JatsError) -> RustBuffer {
     return FfiConverterTypeJatsError.lower(value)
 }
+
+
+/**
+ * Why a Retraction Watch index could not be built or opened. Either way the
+ * export was **not consulted**: pass `None` as `export`, never `[]`.
+ */
+public 
+enum RetractionIndexError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
+
+    
+    
+    /**
+     * The CSV or the stored index is unusable.
+     */
+    case Unusable(
+        /**
+         * Why. Not `message`, which collides with Kotlin's `Throwable.message`.
+         */reason: String
+    )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
+}
+
+#if compiler(>=6)
+extension RetractionIndexError: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRetractionIndexError: FfiConverterRustBuffer {
+    typealias SwiftType = RetractionIndexError
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionIndexError {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+
+        
+
+        
+        case 1: return .Unusable(
+            reason: try FfiConverterString.read(from: &buf)
+            )
+
+         default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RetractionIndexError, into buf: inout [UInt8]) {
+        switch value {
+
+        
+
+        
+        
+        case let .Unusable(reason):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(reason, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionIndexError_lift(_ buf: RustBuffer) throws -> RetractionIndexError {
+    return try FfiConverterTypeRetractionIndexError.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionIndexError_lower(_ value: RetractionIndexError) -> RustBuffer {
+    return FfiConverterTypeRetractionIndexError.lower(value)
+}
+
+
+/**
+ * What a notice says about the paper.
+ */
+
+public enum RetractionKind: Equatable, Hashable {
+    
+    /**
+     * Retracted.
+     */
+    case retraction
+    /**
+     * Withdrawn (retracts).
+     */
+    case withdrawal
+    /**
+     * Removed (retracts).
+     */
+    case removal
+    /**
+     * Partly retracted (a concern).
+     */
+    case partialRetraction
+    /**
+     * An expression of concern.
+     */
+    case expressionOfConcern
+    /**
+     * A correction (evidence of nothing).
+     */
+    case correction
+    /**
+     * An erratum (evidence of nothing).
+     */
+    case erratum
+    /**
+     * A corrigendum (evidence of nothing).
+     */
+    case corrigendum
+    /**
+     * An addendum (evidence of nothing).
+     */
+    case addendum
+    /**
+     * A clarification (evidence of nothing).
+     */
+    case clarification
+    /**
+     * A new version (evidence of nothing).
+     */
+    case newVersion
+    /**
+     * A new edition (evidence of nothing).
+     */
+    case newEdition
+    /**
+     * Reinstated: undoes a retraction, lifts a concern.
+     */
+    case reinstatement
+    /**
+     * Outside the vocabulary; `raw_kind` keeps the original. The lookup that
+     * returned it has not answered, so the paper cannot be clear.
+     */
+    case other
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RetractionKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRetractionKind: FfiConverterRustBuffer {
+    typealias SwiftType = RetractionKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .retraction
+        
+        case 2: return .withdrawal
+        
+        case 3: return .removal
+        
+        case 4: return .partialRetraction
+        
+        case 5: return .expressionOfConcern
+        
+        case 6: return .correction
+        
+        case 7: return .erratum
+        
+        case 8: return .corrigendum
+        
+        case 9: return .addendum
+        
+        case 10: return .clarification
+        
+        case 11: return .newVersion
+        
+        case 12: return .newEdition
+        
+        case 13: return .reinstatement
+        
+        case 14: return .other
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RetractionKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .retraction:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .withdrawal:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .removal:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .partialRetraction:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .expressionOfConcern:
+            writeInt(&buf, Int32(5))
+        
+        
+        case .correction:
+            writeInt(&buf, Int32(6))
+        
+        
+        case .erratum:
+            writeInt(&buf, Int32(7))
+        
+        
+        case .corrigendum:
+            writeInt(&buf, Int32(8))
+        
+        
+        case .addendum:
+            writeInt(&buf, Int32(9))
+        
+        
+        case .clarification:
+            writeInt(&buf, Int32(10))
+        
+        
+        case .newVersion:
+            writeInt(&buf, Int32(11))
+        
+        
+        case .newEdition:
+            writeInt(&buf, Int32(12))
+        
+        
+        case .reinstatement:
+            writeInt(&buf, Int32(13))
+        
+        
+        case .other:
+            writeInt(&buf, Int32(14))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionKind_lift(_ buf: RustBuffer) throws -> RetractionKind {
+    return try FfiConverterTypeRetractionKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionKind_lower(_ value: RetractionKind) -> RustBuffer {
+    return FfiConverterTypeRetractionKind.lower(value)
+}
+
+
+
+/**
+ * A lookup that has to answer before a paper can be called clear.
+ */
+
+public enum RetractionLookup: Equatable, Hashable {
+    
+    /**
+     * The Retraction Watch export lookup.
+     */
+    case retractionWatchExport
+    /**
+     * Crossref's answer for this DOI.
+     */
+    case crossref
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RetractionLookup: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRetractionLookup: FfiConverterRustBuffer {
+    typealias SwiftType = RetractionLookup
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionLookup {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .retractionWatchExport
+        
+        case 2: return .crossref
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RetractionLookup, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .retractionWatchExport:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .crossref:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionLookup_lift(_ buf: RustBuffer) throws -> RetractionLookup {
+    return try FfiConverterTypeRetractionLookup.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionLookup_lower(_ value: RetractionLookup) -> RustBuffer {
+    return FfiConverterTypeRetractionLookup.lower(value)
+}
+
+
+
+/**
+ * Where a piece of evidence came from.
+ */
+
+public enum RetractionSource: Equatable, Hashable {
+    
+    /**
+     * The Retraction Watch export.
+     */
+    case retractionWatchExport
+    /**
+     * A Crossref relation whose `source` is `retraction-watch`.
+     */
+    case crossrefRetractionWatch
+    /**
+     * A Crossref relation whose `source` is `publisher`.
+     */
+    case crossrefPublisher
+    /**
+     * PubMed's `Retracted Publication` publication type.
+     */
+    case pubmedLabel
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RetractionSource: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRetractionSource: FfiConverterRustBuffer {
+    typealias SwiftType = RetractionSource
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionSource {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .retractionWatchExport
+        
+        case 2: return .crossrefRetractionWatch
+        
+        case 3: return .crossrefPublisher
+        
+        case 4: return .pubmedLabel
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RetractionSource, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .retractionWatchExport:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .crossrefRetractionWatch:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .crossrefPublisher:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .pubmedLabel:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionSource_lift(_ buf: RustBuffer) throws -> RetractionSource {
+    return try FfiConverterTypeRetractionSource.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionSource_lower(_ value: RetractionSource) -> RustBuffer {
+    return FfiConverterTypeRetractionSource.lower(value)
+}
+
+
+
+/**
+ * The verdict. `Unchecked` is never a softer `Clear`.
+ */
+
+public enum RetractionStatus: Equatable, Hashable {
+    
+    /**
+     * Retracted, and not reinstated since. Leave the paper out.
+     */
+    case retracted
+    /**
+     * An expression of concern or a partial retraction stands. Warn.
+     */
+    case concern
+    /**
+     * Every lookup answered and no retraction or concern stands.
+     */
+    case clear
+    /**
+     * No retraction or concern stands, but a lookup did not answer.
+     */
+    case unchecked
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension RetractionStatus: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeRetractionStatus: FfiConverterRustBuffer {
+    typealias SwiftType = RetractionStatus
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> RetractionStatus {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .retracted
+        
+        case 2: return .concern
+        
+        case 3: return .clear
+        
+        case 4: return .unchecked
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: RetractionStatus, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .retracted:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .concern:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .clear:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .unchecked:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionStatus_lift(_ buf: RustBuffer) throws -> RetractionStatus {
+    return try FfiConverterTypeRetractionStatus.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeRetractionStatus_lower(_ value: RetractionStatus) -> RustBuffer {
+    return FfiConverterTypeRetractionStatus.lower(value)
+}
+
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2401,6 +3213,78 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeRetractionEvidence: FfiConverterRustBuffer {
+    typealias SwiftType = RetractionEvidence?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeRetractionEvidence.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeRetractionEvidence.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeCrossrefResult: FfiConverterRustBuffer {
+    typealias SwiftType = CrossrefResult?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeCrossrefResult.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeCrossrefResult.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionSequenceTypeRetractionEvidence: FfiConverterRustBuffer {
+    typealias SwiftType = [RetractionEvidence]?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterSequenceTypeRetractionEvidence.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterSequenceTypeRetractionEvidence.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -2418,6 +3302,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeCrossrefBatch: FfiConverterRustBuffer {
+    typealias SwiftType = [CrossrefBatch]
+
+    public static func write(_ value: [CrossrefBatch], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeCrossrefBatch.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [CrossrefBatch] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [CrossrefBatch]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeCrossrefBatch.read(from: &buf))
         }
         return seq
     }
@@ -2626,30 +3535,83 @@ fileprivate struct FfiConverterSequenceTypeJatsTable: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterDictionaryStringString: FfiConverterRustBuffer {
-    public static func write(_ value: [String: String], into buf: inout [UInt8]) {
+fileprivate struct FfiConverterSequenceTypeRetractionEvidence: FfiConverterRustBuffer {
+    typealias SwiftType = [RetractionEvidence]
+
+    public static func write(_ value: [RetractionEvidence], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRetractionEvidence.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RetractionEvidence] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RetractionEvidence]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRetractionEvidence.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeRetractionLookup: FfiConverterRustBuffer {
+    typealias SwiftType = [RetractionLookup]
+
+    public static func write(_ value: [RetractionLookup], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeRetractionLookup.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [RetractionLookup] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [RetractionLookup]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeRetractionLookup.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterDictionaryStringTypeCrossrefResult: FfiConverterRustBuffer {
+    public static func write(_ value: [String: CrossrefResult], into buf: inout [UInt8]) {
         let len = Int32(value.count)
         writeInt(&buf, len)
         for (key, value) in value {
             FfiConverterString.write(key, into: &buf)
-            FfiConverterString.write(value, into: &buf)
+            FfiConverterTypeCrossrefResult.write(value, into: &buf)
         }
     }
 
-    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: String] {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [String: CrossrefResult] {
         let len: Int32 = try readInt(&buf)
-        var dict = [String: String]()
+        var dict = [String: CrossrefResult]()
         dict.reserveCapacity(Int(len))
         for _ in 0..<len {
             let key = try FfiConverterString.read(from: &buf)
-            let value = try FfiConverterString.read(from: &buf)
+            let value = try FfiConverterTypeCrossrefResult.read(from: &buf)
             dict[key] = value
         }
         return dict
     }
 }
 /**
- * The bmlib crate version these bindings were built from — what an app pins.
+ * The Rust workspace version these bindings were built from (`0.2.0` …),
+ * which bmlib-ffi and the bmlib crate share. Not Python bmlib's version, and
+ * the same for every commit of one version, so it cannot tell two builds
+ * apart — the build's commit is issue #493.
  */
 public func bmlibVersion() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
@@ -2659,11 +3621,19 @@ public func bmlibVersion() -> String  {
 })
 }
 /**
- * Parse a JATS document.
+ * Parse a JATS document, **discarding its audit**.
+ *
+ * bmlib counts what a parse loses (refused table spans, dropped formulas,
+ * unfiled terms…) and checks itself for reader defects. This function returns
+ * the article alone: those lines go only to the process's stderr, which an
+ * iOS app does not see outside an attached debugger and Android discards. Use
+ * [`parse_jats_audited`] to receive them.
  *
  * # Errors
  *
- * [`JatsError::Xml`] when the document is not well-formed.
+ * [`JatsError::Xml`] when the document is not well-formed,
+ * [`JatsError::NestingTooDeep`] past [`MAX_NESTING_DEPTH`], and
+ * [`JatsError::Resource`] when the parse thread cannot start.
  */
 public func parseJats(xml: String)throws  -> JatsArticle  {
     return try  FfiConverterTypeJatsArticle_lift(try rustCallWithError(FfiConverterTypeJatsError_lift) {
@@ -2674,11 +3644,15 @@ public func parseJats(xml: String)throws  -> JatsArticle  {
 })
 }
 /**
- * Parse a JATS document with a known PMC id, returning the audit as well.
+ * Parse a JATS document and return the audit with it.
+ *
+ * `known_pmc_id` is the id the caller already holds, or `""` for none; a bare
+ * number is `PMC`-prefixed, and it wins over an id the document deposits. The
+ * audit's lines are also written to stderr, as for [`parse_jats`].
  *
  * # Errors
  *
- * [`JatsError::Xml`] when the document is not well-formed.
+ * As [`parse_jats`].
  */
 public func parseJatsAudited(xml: String, knownPmcId: String)throws  -> JatsParseReport  {
     return try  FfiConverterTypeJatsParseReport_lift(try rustCallWithError(FfiConverterTypeJatsError_lift) {
@@ -2686,6 +3660,71 @@ public func parseJatsAudited(xml: String, knownPmcId: String)throws  -> JatsPars
     uniffi_bmlib_ffi_fn_func_parse_jats_audited(
         FfiConverterString.lower(xml),
         FfiConverterString.lower(knownPmcId),uniffiCallStatus
+    )
+})
+}
+/**
+ * Build an index from the export's CSV bytes. `data_as_of` is your date for
+ * the copy (the day it was downloaded), returned by
+ * [`RetractionIndex::data_as_of`] so a verdict can say how fresh it is.
+ *
+ * # Errors
+ *
+ * The CSV is not UTF-8 or is malformed, `data_as_of` is blank, no row was
+ * usable, or no notice carries a paper DOI (or none a PMID): a renamed
+ * column. Keep the previous index, if any. A download truncated on a row
+ * boundary builds: compare `notice_count()` with the index it replaces.
+ */
+public func buildRetractionIndex(csv: Data, dataAsOf: String)throws  -> RetractionIndexBuild  {
+    return try  FfiConverterTypeRetractionIndexBuild_lift(try rustCallWithError(FfiConverterTypeRetractionIndexError_lift) {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_func_build_retraction_index(
+        FfiConverterData.lower(csv),
+        FfiConverterString.lower(dataAsOf),uniffiCallStatus
+    )
+})
+}
+/**
+ * Build the batched Crossref requests for `dois`.
+ */
+public func crossrefRetractionRequests(dois: [String], mailto: String?) -> CrossrefRequests  {
+    return try!  FfiConverterTypeCrossrefRequests_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_func_crossref_retraction_requests(
+        FfiConverterSequenceString.lower(dois),
+        FfiConverterOptionString.lower(mailto),uniffiCallStatus
+    )
+})
+}
+/**
+ * Read one batch's answer: a result per requested DOI, keyed by the
+ * normalised DOI. A failed batch makes every DOI in it `Unreachable`.
+ */
+public func parseCrossrefRetractionResponse(status: UInt16, body: Data, requestedDois: [String]) -> [String: CrossrefResult]  {
+    return try!  FfiConverterDictionaryStringTypeCrossrefResult.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_func_parse_crossref_retraction_response(
+        FfiConverterUInt16.lower(status),
+        FfiConverterData.lower(body),
+        FfiConverterSequenceString.lower(requestedDois),uniffiCallStatus
+    )
+})
+}
+/**
+ * Decide one paper's retraction status. See bmlib's `retraction_status`.
+ *
+ * `export`: `None` when the export was not consulted (no index, an unusable
+ * one, or [`RetractionIndex::lookup`] returned `None`). `crossref`: `None`
+ * when Crossref was not asked (no DOI, an unsendable one).
+ */
+public func retractionStatus(doi: String?, export: [RetractionEvidence]?, crossref: CrossrefResult?, publicationTypes: [String]) -> RetractionVerdict  {
+    return try!  FfiConverterTypeRetractionVerdict_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_bmlib_ffi_fn_func_retraction_status(
+        FfiConverterOptionString.lower(doi),
+        FfiConverterOptionSequenceTypeRetractionEvidence.lower(export),
+        FfiConverterOptionTypeCrossrefResult.lower(crossref),
+        FfiConverterSequenceString.lower(publicationTypes),uniffiCallStatus
     )
 })
 }
@@ -2705,29 +3744,43 @@ private let initializationResult: InitializationResult = {
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_bmlib_ffi_checksum_func_bmlib_version() != 60469) {
+    if (uniffi_bmlib_ffi_checksum_func_bmlib_version() != 42428) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_bmlib_ffi_checksum_func_parse_jats() != 1073) {
+    if (uniffi_bmlib_ffi_checksum_func_parse_jats() != 30685) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_bmlib_ffi_checksum_func_parse_jats_audited() != 38158) {
+    if (uniffi_bmlib_ffi_checksum_func_parse_jats_audited() != 54867) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_bmlib_ffi_checksum_method_bmlibfulltextservice_fetch_status() != 17669) {
+    if (uniffi_bmlib_ffi_checksum_func_build_retraction_index() != 8662) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_bmlib_ffi_checksum_method_foreignhttpclient_get() != 64393) {
+    if (uniffi_bmlib_ffi_checksum_func_crossref_retraction_requests() != 23667) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_bmlib_ffi_checksum_method_foreignhttpclient_post_json() != 2658) {
+    if (uniffi_bmlib_ffi_checksum_func_parse_crossref_retraction_response() != 59883) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_bmlib_ffi_checksum_constructor_bmlibfulltextservice_new() != 23256) {
+    if (uniffi_bmlib_ffi_checksum_func_retraction_status() != 39250) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_bmlib_ffi_checksum_method_retractionindex_data_as_of() != 7573) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_bmlib_ffi_checksum_method_retractionindex_lookup() != 24950) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_bmlib_ffi_checksum_method_retractionindex_notice_count() != 61427) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_bmlib_ffi_checksum_method_retractionindex_to_bytes() != 45359) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_bmlib_ffi_checksum_constructor_retractionindex_from_bytes() != 29137) {
         return InitializationResult.apiChecksumMismatch
     }
 
-    uniffiCallbackInitForeignHttpClient()
     return InitializationResult.ok
 }()
 

@@ -1,8 +1,8 @@
 {
-  "comment": "SPIKE (WP-2). The one bmlib pin for both apps: the commit that built BmlibFFI.xcframework and Sources/BmlibCore/bmlib_ffi.swift (bmlib's rust/bmlib-ffi/scripts/build-xcframework.sh) and generated android/MedicalFactChecker/app/src/main/java/org/bmlib/ffi/bmlib_ffi.kt. All three are regenerated together, from one bmlib commit; a binding generated from another commit fails UniFFI's checksum check at first call. Android's Gradle cargo tasks read bmlibCommit from this file and refuse a bmlib checkout at any other commit (override: -Pbmlib.allowUnpinnedCommit=true). treeSha256 is defined and computed by treeSha256Script; run it with --check on this file.",
+  "comment": "SPIKE (WP-2). The one bmlib pin for both apps: the commit that built BmlibFFI.xcframework and Sources/BmlibCore/bmlib_ffi.swift (bmlib's rust/bmlib-ffi/scripts/build-xcframework.sh) and generated android/MedicalFactChecker/app/src/main/java/org/bmlib/ffi/bmlib_ffi.kt. All three are regenerated together, from one bmlib commit; a binding generated from another commit fails UniFFI's checksum check at first call. Android's Gradle cargo tasks read bmlibCommit from this file and refuse a bmlib checkout at any other commit (override: -Pbmlib.allowUnpinnedCommit=true). treeSha256 is defined and computed by treeSha256Script; run it with --check on this file. The xcframework and bmlib_ffi.swift are the bmlib-xcframework workflow's own build (xcode is that runner's), which every PR rebuilds and compares; its header says how to re-pin (#583).",
   "bmlibRepository": "https://github.com/hherb/bmlib",
-  "bmlibCommit": "2b969a5cc05b6436f21fe13224a4ff3fc02fb26f",
-  "bmlibBranch": "spike/uniffi-ffi",
+  "bmlibCommit": "f76721545a76eceb683d9c460fb1f47e5c925cdb",
+  "bmlibBranch": "main",
   "bmlibCrateVersion": "0.2.0",
   "uniffiVersion": "0.32.2",
   "rustc": "1.98.0",
@@ -18,5 +18,5 @@
     "macOS": "14.0"
   },
   "treeSha256Script": ".github/scripts/xcframework_tree_sha256.py",
-  "treeSha256": "004989a0323b99950827af0865b8676fa89e688fc919ef0be59d6dbfa1b086da"
+  "treeSha256": "492da54e9a702d2c0743d015aa900c5da3649d1675c37d92d1730262b5edd5f9"
 }

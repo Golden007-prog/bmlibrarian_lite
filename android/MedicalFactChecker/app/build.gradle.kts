@@ -268,8 +268,10 @@ if (bmlibDir != null) {
         workingDir = rustWorkspace
         inputs.files(rustInputs)
         outputs.dir(bmlibJniLibs)
+        // Through bmlib's wrapper, so the builder's paths are not compiled into
+        // the shipped library (bmlib#490).
         commandLine(
-            listOf("cargo", "ndk") +
+            listOf(File(rustWorkspace, "bmlib-ffi/scripts/with-remapped-paths.sh").absolutePath, "cargo", "ndk") +
                 bmlibAbis.flatMap { listOf("-t", it) } +
                 listOf(
                     "-p", appMinSdk.toString(),

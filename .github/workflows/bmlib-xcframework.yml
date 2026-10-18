@@ -1,0 +1,106 @@
+name: bmlib xcframework
+
+permissions:
+  contents: read
+
+# Rebuilds BmlibFFI.xcframework and its Swift bindings from the bmlib commit
+# BmlibFFI.pin.json names, and fails unless they match what is committed
+# (#583). A committed binary is checked, not trusted.
+#
+# The committed copy is this job's own build. Byte-identity needs the same
+# rustc *and* the same Apple linker, so a copy built on a developer's Mac never
+# matches a runner's. To re-pin:
+#   1. set bmlibCommit (and rustc, if it moves) in the pin;
+#   2. run this workflow; it fails and uploads `bmlib-xcframework`;
+#   3. unpack its xcframework.tgz into Packages/BioMedLit/Frameworks (the
+#      xcframework) and Packages/BioMedLit/Sources/BmlibCore (bmlib_ffi.swift),
+#      and copy treeSha256 and xcode from its build.json into the pin.
+# When a runner image moves to another Xcode, this fails on an unchanged pin;
+# the log names both Xcode versions, and the same three steps re-pin.
+#
+# Deliberately NOT filtered by `paths:` (HANDOVER: no job gains one).
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: bmlib-xcframework-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIN: Packages/BioMedLit/Frameworks/BmlibFFI.pin.json
+
+jobs:
+  rebuild:
+    name: Rebuild from the pin and compare
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pin
+        id: pin
+        run: |
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          pin = json.load(open(os.environ["PIN"]))
+          print(f"commit={pin['bmlibCommit']}")
+          print(f"rustc={pin['rustc']}")
+          print(f"xcode={pin.get('xcode', 'none recorded')}")
+          PY
+
+      - name: Check out bmlib at the pinned commit
+        uses: actions/checkout@v4
+        with:
+          # hherb/bmlib is public, so no token is needed.
+          repository: hherb/bmlib
+          ref: ${{ steps.pin.outputs.commit }}
+          path: bmlib-checkout
+
+      - name: Install the pinned Rust
+        run: |
+          rustup toolchain install "${{ steps.pin.outputs.rustc }}" --profile minimal \
+            --target aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios,aarch64-apple-darwin,x86_64-apple-darwin
+          rustup override set "${{ steps.pin.outputs.rustc }}" --path bmlib-checkout/rust
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            bmlib-checkout/rust/target
+          key: bmlib-xcframework-${{ steps.pin.outputs.commit }}-${{ steps.pin.outputs.rustc }}
+
+      - name: Build
+        working-directory: bmlib-checkout/rust
+        run: bmlib-ffi/scripts/build-xcframework.sh "$RUNNER_TEMP/xcf"
+
+      - name: Package the build
+        run: |
+          xcode="$(xcodebuild -version | head -1 | sed 's/^Xcode //')"
+          hash="$(python3 .github/scripts/xcframework_tree_sha256.py "$RUNNER_TEMP/xcf/BmlibFFI.xcframework")"
+          printf '{"treeSha256": "%s", "xcode": "%s"}\n' "$hash" "$xcode" > "$RUNNER_TEMP/xcf/build.json"
+          cat "$RUNNER_TEMP/xcf/build.json"
+          # A tarball, because upload-artifact drops the macOS slice's symlinks.
+          tar -czf "$RUNNER_TEMP/xcframework.tgz" -C "$RUNNER_TEMP/xcf" .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bmlib-xcframework
+          path: ${{ runner.temp }}/xcframework.tgz
+          retention-days: 14
+
+      - name: Compare with the committed xcframework and bindings
+        run: |
+          status=0
+          python3 .github/scripts/xcframework_tree_sha256.py \
+            "$RUNNER_TEMP/xcf/BmlibFFI.xcframework" --check "$PIN" || status=1
+          diff -u Packages/BioMedLit/Sources/BmlibCore/bmlib_ffi.swift \
+            "$RUNNER_TEMP/xcf/Swift/bmlib_ffi.swift" || status=1
+          if [ "$status" != 0 ]; then
+            echo "::error::The rebuild differs from what is committed. The pin was built with Xcode" \
+              "${{ steps.pin.outputs.xcode }}, this runner has $(xcodebuild -version | head -1)." \
+              "Re-pin from this run's bmlib-xcframework artifact (see the comment at the top of this workflow)."
+          fi
+          exit "$status"

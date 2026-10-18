@@ -54,8 +54,9 @@ archive. Both test suites exercise it.
   and reference counts, plus table labels and the first figure's graphic. Result: **2/2
   pass, 0 skipped**. The full Android unit suite still passes: **1,703 tests, 0 failures**
   (18 skipped).
-- **CI never runs the Android FFI test.** `android-tests.yml` configures no bmlib
-  checkout, so `BmlibJatsFfiTest` skips there; it ran on the spike's host only. Wiring it
+- **CI never ran the Android FFI test** at the spike: `BmlibJatsFfiTest` skipped there
+  and ran on the spike's host only. *Since #583 (2026-10-18)* `android-tests.yml` checks
+  out bmlib at the pin with the pinned rustc and cargo-ndk, and fails if the test skips. Wiring it
   is under [What GitHub Actions needs](#5-gradle-builds-the-so-files--prototyped-and-working).
 
 ### 2. Corpus comparison — **met; every difference classified**
@@ -190,9 +191,11 @@ needs ("CoreSimulator is out of date"). The generic-device archive does compile 
 **Recommendation: (i)**, with dynamic frameworks. Add a CI guard (GitHub Actions, macOS)
 that rebuilds the xcframework from the pinned bmlib commit and compares tree hashes
 (`.github/scripts/xcframework_tree_sha256.py <xcframework> --check BmlibFFI.pin.json`), so
-the committed binary is checked rather than trusted. **That guard cannot pass yet**: the
-build compiles the builder's absolute paths into each slice (risk 9), so a runner's build
-never matches a developer's. bmlib #490 makes the build path-independent first.
+the committed binary is checked rather than trusted. *Since #583 (2026-10-18)* it is
+`.github/workflows/bmlib-xcframework.yml`, after bmlib #490 made the build
+path-independent. Byte-identity also needs the same Apple linker, so **the committed
+xcframework is that workflow's own build** (maintainer, 2026-10-18), and the pin records
+the runner's Xcode; the workflow's header says how to re-pin.
 
 Dynamic rather than static matters most for repository size: one order of magnitude.
 Static would make the shipped app ~0.1 MB smaller, since the generated Swift and the
@@ -339,18 +342,25 @@ under criterion 4 (Swift).
    section. Each one left in the adapter is a small per-platform port again.
 3. **Two new bmlib gaps surfaced:** Europe PMC's injected `associated-data` `<sec>`
    (duplicate legends) and the title-only abstract section. Both are lodged on bmlib:
-   bmlib#497 and bmlib#498.
+   bmlib#497 and bmlib#498. *At #583's re-pin (bmlib `f767215`)* bmlib drops the
+   associated-data block (#497) and links affiliations, so `BmlibJATSParityTests`
+   compares author names only (BioMedLit has no affiliations, #154) and leaves Swift's
+   `>Associated Data` paths out of its section check (#587).
 4. **Digest churn.** Adopting Rust moves `JATSRealCorpusTests`' digests (body sections,
    citation counts). Read each change against the table above; it is a review, not a
    regeneration.
-5. **Binary provenance.** A committed binary is trusted until the CI rebuild guard exists.
+5. **Binary provenance.** Guarded since #583: CI rebuilds the xcframework from the pin and
+   compares it and the Swift bindings with what is committed.
 6. **The xcframework is rebuilt for every bmlib bump** (~4 min locally, 5 targets), and
    needs the `x86_64-apple-darwin` target for the universal macOS slice.
 7. **Mobile caches** (WP-4.6) must carry a renderer stamp before a Rust switch ships, or
    cached articles keep the old parse. This holds whichever route Phase 4 takes.
 8. **The `sqlite`/`http-ureq` defaults are a bmlib API change** (additive, default-on). They
    need a bmlib CHANGELOG entry and bmlib's CI matrix extended with `--no-default-features`.
-9. **The binaries carry the builder's home path, so they are not reproducible.** `strings`
+9. **Fixed by bmlib #490 (2026-10-18):** builds go through bmlib's
+   `with-remapped-paths.sh` (Gradle's cargo-ndk task too), Apple slices link with a fixed
+   install name, and two checkouts build the same bytes. As found at the spike: **the
+   binaries carried the builder's home path, so they were not reproducible.** `strings`
    on the committed `ios-arm64` slice finds 23 `/Users/<builder>/…` panic-location paths
    (`~/.rustup/…/rustlib/src`, `~/.cargo/registry/src/…`). That leaks the developer's home
    path into every shipped app, and it means the recommended CI rebuild-and-compare guard
@@ -383,9 +393,10 @@ apps' parsers:
    synthetic or small corpus missed JATS defects that affected about half of real
    articles. Run both comparisons over a few hundred live PMC articles, and classify every
    new difference as the table does.
-4. **The bmlib items:** reproducible builds (#490), bytes across the FFI (#491), the HTTP
-   sketch out of the exported surface (#492), and the build commit exposed (#493), each
-   followed by a rebuild of the committed binaries and bindings.
+4. **The bmlib items:** bytes across the FFI (#491) and the build commit exposed (#493),
+   each followed by a rebuild of the committed binaries and bindings. Reproducible builds
+   (#490) and the HTTP sketch out of the exported surface (#492) are done; the pin names
+   bmlib `main` since #583.
 
 ## Maintainer decisions (2026-10-17)
 

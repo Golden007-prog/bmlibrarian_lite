@@ -30,17 +30,26 @@ have landed):
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
 **Next: retraction checking** (Phase 7; ledger row
-`bmlib:0.7.0-retraction-watch`). Spec of the 2026-10-18 decisions:
-`docs/superpowers/specs/2026-10-18-retraction-checking-design.md`. It checks
-the Retraction Watch export, Crossref's `updated-by` and PubMed's label,
-because measurement showed neither of the first two contains the other.
-**Blocked on bmlib#504**, which the maintainer will do in bmlib: one rule and
-one fixture in Python and Rust, which the apps consume through UniFFI. After
-it lands: refresh lite's bmlib pin (**#583**), write the plan with
-superpowers:writing-plans, then build in the spec's PR order.
+`bmlib:0.7.0-retraction-watch`). Spec:
+`docs/superpowers/specs/2026-10-18-retraction-checking-design.md`. bmlib's
+rule landed (bmlib#504, PR #506; #508, a served Crossref result carries its
+DOI, PR #511; contract 47 rule cases). **Decided 2026-10-18: the desktop
+imports `bmlib.publications.retraction_status`** (a 0.12.0 release if one is
+cut, else a git pin): Phase 8 comes forward for this module; the apps use
+the FFI. Next: write the plan (superpowers:writing-plans), then the spec's
+PR order. **Owed in PR 1** (it copies the fixture): sync the ledger to bmlib
+`f767215`, triaging bmlib#489, #490, #494, #497, #504
+(`check_bmlib_ledger.py --bmlib ~/src/bmlib`).
 
 ## Recently landed (context)
 
+- **The FFI pin names bmlib `main`** (#583): `f767215`, after bmlib#490
+  (path-independent builds via `with-remapped-paths.sh`, Gradle's cargo-ndk
+  too) and #492. `android-tests.yml` builds bmlib at the pin and fails if
+  `BmlibJatsFfiTest` skips. **The committed xcframework is
+  `bmlib-xcframework.yml`'s own build**, rebuilt and compared on every PR
+  (identity needs the same Apple linker); re-pin from its artifact as its
+  header says. Lodged: #587 (Europe PMC's associated-data `<sec>`).
 - **The bmlib port set** (PRs #564–#570, #572; Phases 0–2 of the plan).
   **`doc/cross_platform/bmlib_sync/ledger.json` records every bmlib change
   per platform**, pinned to bmlib 0.11.0. A sync is: bump `bmlib_commit`,
@@ -52,9 +61,8 @@ superpowers:writing-plans, then build in the spec's PR order.
   Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet,
   pin stale (**#583**). Lodged: #573–#581; **#585** (bmlib#485, a blank
   id as a full-text cache name, on bmlib's `main` after 0.11.0).
-- **A download is checked before it is cached** (#560, #561; PR #562): Swift
-  stages `<cache name>.<UUID>.unchecked`, Android checks the `.part`;
-  **Android's `downloadPdf` never answers from the cache.** Lodged: #563.
+- **A download is checked before it is cached** (#560, #561; PR #562); **Android's
+  `downloadPdf` never answers from the cache.** Lodged: #563.
 - **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559). Contract
   `pdf_title_check.json`: ≥ 0.5 of the title's adjacent word pairs on the first
   page with text, or the whole title with word breaks ignored (≥ 20
@@ -117,9 +125,8 @@ superpowers:writing-plans, then build in the spec's PR order.
 - **Unpaywall** (PRs #465–#482; `fulltext_retrieval.md`): a PDF not obtained
   is refused, never a link; non-`%PDF` is `malformed_response`; **no absence
   while an `OpenAccessShortfall` is set**; Room migrations register from
-  `AppDatabase.ALL_MIGRATIONS`.
-- **iOS/macOS workflow** (PRs #458–#469): one stop path, `stopWork(_:)`;
-  **`session.errorMessage` means a failure and nothing else**.
+  `AppDatabase.ALL_MIGRATIONS`. **iOS/macOS workflow** (PRs #458–#469): one
+  stop path, `stopWork(_:)`; **`session.errorMessage` means a failure only**.
 - **Europe PMC fetches, compressed** (PRs #433–#452). A typed XML fetch on all
   three: served, absent (404) or unreachable. **Preprints are fetched by their
   `PPR` ID.** A chain Europe PMC did not settle is **not** "no full text".
@@ -212,10 +219,8 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
-- **Retraction checking** (above, waits on bmlib#504); then the plan's work packages: Phase 3
-  (transparency), Phase 4 (JATS, as adapter work over the Rust parser after
-  **#583**), Phase 5 (retrieval), Phase 6 (LLM plumbing). The bmlib audit's
-  leftovers are **#571**, **#573**–**#581**, **#585**.
+- **Retraction checking** (above), then Phases 3–6 (Phase 4 as adapter work
+  over the Rust parser). bmlib audit leftovers: **#571**, **#573**–**#581**, **#585**.
 - **#545** sweep the PDF library for other articles' PDFs (CLI only, the
   maintainer's call); **#547** keep a set-aside PDF from the GUI (both from
   #541); **#555** Android release builds fail R8; **#556**–**#558** (#546's).
@@ -491,10 +496,6 @@ scheme `MedicalFactChecker`, from a **fresh clone**. Two invariants break it
 silently while local builds stay green, both enforced on every PR by
 `.github/workflows/xcode-project-guards.yml`: **no Swift package reference may
 point outside this repository**, and **`MedicalFactChecker.xcscheme` must stay
-shared** (`…xcodeproj/xcshareddata/xcschemes/`). Reproduce a cloud build with:
-
-```bash
-git clone <repo> /tmp/x && cd /tmp/x/ios/MedicalFactChecker && xcodebuild \
-  -scheme MedicalFactChecker -destination 'platform=macOS' \
-  CODE_SIGNING_ALLOWED=NO archive
-```
+shared** (`…xcodeproj/xcshareddata/xcschemes/`). Reproduce a cloud build:
+`git clone <repo> /tmp/x && cd /tmp/x/ios/MedicalFactChecker && xcodebuild
+-scheme MedicalFactChecker -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO archive`.
