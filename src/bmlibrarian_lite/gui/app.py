@@ -289,6 +289,9 @@ class LiteMainWindow(QMainWindow):
         self.systematic_review_tab.transparency_outcome_ready.connect(
             self.audit_trail_tab.on_transparency_outcome
         )
+        self.systematic_review_tab.retraction_screened.connect(
+            self.audit_trail_tab.on_retraction_screened
+        )
 
         # Connect Audit Trail document request to load document
         self.audit_trail_tab.document_requested.connect(
@@ -780,6 +783,8 @@ class LiteMainWindow(QMainWindow):
                 self.audit_trail_tab.on_citation_extracted(citation)
 
             badge_failure = self._show_stored_transparency(documents_found)
+            retraction_rows = recorded_retraction_snapshot(checkpoint.metadata)
+            self.audit_trail_tab.show_retraction_snapshot(retraction_rows)
 
             self.audit_trail_tab.on_workflow_finished()
 
@@ -803,7 +808,7 @@ class LiteMainWindow(QMainWindow):
                 ),
                 # Its papers left out as retracted are linked to the question;
                 # without this they would be audited as never scored
-                retraction_snapshot=recorded_retraction_snapshot(checkpoint.metadata) or None,
+                retraction_snapshot=retraction_rows or None,
                 # The run saved its own report and audit when it ran; a record
                 # rebuilt from the database would be a second, poorer one.
                 auto_save=False,

@@ -154,3 +154,16 @@ def format_reference_concern_annotation(row: Mapping[str, Any]) -> str:
         part for part in (when, f"notice {notice}" if notice else None) if part
     )
     return f"{_CONCERN_INDENT}⚠️ Expression of concern" + (f" ({detail})" if detail else "")
+
+
+_BADGE_TEXTS = {
+    RetractionStatus.RETRACTED: "RETRACTED",
+    RetractionStatus.CONCERN: "CONCERN",
+    RetractionStatus.UNCHECKED: "NOT CHECKED",
+}
+EXCLUDED_RETRACTED_LABEL = "Excluded: retracted"
+
+
+def badge_text(status: RetractionStatus) -> str | None:
+    """A status badge's text; ``None`` for clear, which shows no badge."""
+    return _BADGE_TEXTS.get(status)

@@ -103,8 +103,7 @@ from ..transparency import (
     count_transparency_over,
 )
 from ..transparency.assessment import contact_email
-from ..retraction_checks import RetractionChecker
-from ..retraction_crossref import crossref_session
+from ..retraction_checks import RetractionChecker, build_retraction_checker
 from ..retraction_screen import RetractionScreen, screen_with_fallback
 from ..retraction_text import run_summary_clause, with_retraction_notice
 from datetime import datetime
@@ -879,6 +878,7 @@ class SystematicReviewTab(QWidget):
     # for both, because a failed analysis has to travel the same path to the
     # same badge: the separate analysis_failed signal reached nothing at all
     # (#249, #361).
+    retraction_screened = Signal(object)  # RetractionScreen, for the Audit Trail
     transparency_outcome_ready = Signal(str, object)
 
     def __init__(
@@ -1169,13 +1169,7 @@ class SystematicReviewTab(QWidget):
         Returns:
             The checker over this tab's storage and data directory.
         """
-        mailto = contact_email(self.config)
-        return RetractionChecker(
-            self.storage,
-            self.config.storage.data_dir,
-            crossref_session(mailto),
-            mailto=mailto,
-        )
+        return build_retraction_checker(self.config, self.storage)
 
     def _cancel_workflow(self) -> None:
         """Cancel the running workflow."""
@@ -1304,6 +1298,7 @@ class SystematicReviewTab(QWidget):
             screen: The run's retraction screen.
         """
         self._retraction_screen = screen
+        self.retraction_screened.emit(screen)
         clause = run_summary_clause(screen)
         if clause is None:
             return

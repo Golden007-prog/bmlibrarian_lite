@@ -25,13 +25,15 @@ from bmlib.publications.retraction_status import (
     retraction_status,
 )
 
+from .config import LiteConfig
 from .constants import RETRACTION_CHECK_MAX_AGE_DAYS
 from .data_models import LiteDocument
 from .identifiers import canonical_pmid
-from .retraction_crossref import lookup_crossref
+from .retraction_crossref import crossref_session, lookup_crossref
 from .retraction_export import ExportCopy, export_copy, export_evidence, refresh_export
 from .retraction_store import PaperCheck
 from .storage import LiteStorage
+from .transparency.assessment import contact_email
 
 __all__ = ["PaperCheck", "RetractionChecker", "paper_key"]
 
@@ -236,3 +238,19 @@ class RetractionChecker:
             out.update((doc.id, fresh) for doc in docs)
         self._storage.store_retraction_checks(decided)
         return out
+
+
+def build_retraction_checker(config: LiteConfig, storage: LiteStorage) -> RetractionChecker:
+    """A checker for one use, so a failed export refresh is tried again next time.
+
+    Args:
+        config: The application's configuration.
+        storage: Where verdicts are stored.
+
+    Returns:
+        A checker over the storage and the configured data directory.
+    """
+    mailto = contact_email(config)
+    return RetractionChecker(
+        storage, config.storage.data_dir, crossref_session(mailto), mailto=mailto
+    )

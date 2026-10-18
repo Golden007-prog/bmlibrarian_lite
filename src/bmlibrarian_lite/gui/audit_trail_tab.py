@@ -29,7 +29,7 @@ its sub-tabs in real-time during workflow execution.
 
 import logging
 from collections.abc import Mapping
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
@@ -48,6 +48,7 @@ from ..data_models import (
     TransparencyAnalysisFailure,
 )
 from ..quality.data_models import QualityAssessment
+from ..retraction_screen import RetractionScreen, check_from_snapshot_row
 from ..transparency import (
     TransparencyOutcome,
     TransparencyResult,
@@ -360,6 +361,27 @@ class AuditTrailTab(QWidget):
         """
         for doc_id, outcome in outcomes.items():
             self.literature_tab.update_transparency(doc_id, outcome)
+
+    def on_retraction_screened(self, screen: RetractionScreen) -> None:
+        """Show a run's retraction screen: badges, and the papers left out.
+
+        Args:
+            screen: The run's screen.
+        """
+        excluded = {doc.id for doc in screen.excluded}
+        for doc_id, check in screen.checks.items():
+            self.literature_tab.update_retraction(doc_id, check, doc_id in excluded)
+
+    def show_retraction_snapshot(self, rows: Mapping[str, Mapping[str, Any]]) -> None:
+        """Show a reopened question's stored snapshot the same way.
+
+        Args:
+            rows: The snapshot rows by document id.
+        """
+        for doc_id, row in rows.items():
+            check = check_from_snapshot_row(row)
+            if check is not None:
+                self.literature_tab.update_retraction(doc_id, check, bool(row.get("excluded")))
 
     # =========================================================================
     # Data Access

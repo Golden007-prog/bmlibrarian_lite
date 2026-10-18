@@ -173,7 +173,7 @@ class TestEveryWorkerEndsItsRun:
 
     def test_the_module_defines_the_workers_this_suite_expects(self) -> None:
         """A guard on the sweep below: an empty sweep passes vacuously."""
-        assert len(worker_classes()) == 9
+        assert len(worker_classes()) == 10
 
     @pytest.mark.parametrize("worker", worker_classes(), ids=lambda c: c.__name__)
     def test_a_worker_ends_a_run_exactly_once(self, worker: type) -> None:
@@ -1417,6 +1417,7 @@ def interrogation_tab(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
     from bmlibrarian_lite.gui import document_interrogation_tab as tab_module
 
     monkeypatch.setattr(tab_module, "LiteInterrogationAgent", MagicMock())
+    monkeypatch.setattr(tab_module, "RetractionCheckWorker", MagicMock())
     monkeypatch.setattr(tab_module, "QMessageBox", MagicMock())
     monkeypatch.setattr(tab_module, "find_existing_fulltext", lambda _m: None)
     monkeypatch.setattr(tab_module, "find_existing_pdf", lambda _m: None)

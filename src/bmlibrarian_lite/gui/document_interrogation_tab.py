@@ -76,7 +76,7 @@ from ..browser_rescue_text import (
 )
 from ..config import LiteConfig
 from ..constants import CORE_SOURCE_LABEL, RESCUE_PRIORITY_WAITING, RESCUE_READER_WAIT_LIMIT_MS
-from ..data_models import LookupRecord
+from ..data_models import LiteDocument, LookupRecord
 from ..exceptions import SQLiteError
 from ..identifiers import refused_pmid_sentence
 from ..elsevier_api import ElsevierCredentials
@@ -97,7 +97,18 @@ from ..conversation_export import (
     export_conversation_to_markdown,
     create_conversation_message,
 )
-from .workers import AnswerWorker, PDFDiscoveryWorker, FulltextDiscoveryWorker, OpenAthensAuthWorker
+from .workers import (
+    AnswerWorker,
+    PDFDiscoveryWorker,
+    FulltextDiscoveryWorker,
+    OpenAthensAuthWorker,
+    RetractionCheckWorker,
+)
+from .retraction_badge import status_stylesheet
+from ..retraction_checks import build_retraction_checker
+from ..retraction_screen import unchecked_check
+from ..retraction_store import PaperCheck
+from ..retraction_text import badge_text, paper_status_line
 from .chat_widgets import ChatBubble
 from .document_viewer import LiteDocumentViewWidget
 from .dialogs import (
@@ -226,6 +237,8 @@ class DocumentInterrogationTab(QWidget):
         self._agent = LiteInterrogationAgent(config=config, storage=storage)
         self._worker: Optional[AnswerWorker] = None
         self._pdf_worker: Optional[PDFDiscoveryWorker] = None
+        self._retraction_worker: RetractionCheckWorker | None = None
+        self._retraction_doc_id: str | None = None
         self._fulltext_worker: Optional[FulltextDiscoveryWorker] = None
         self._openathens_worker: Optional[OpenAthensAuthWorker] = None
         self._pdf_progress_dialog: Optional[QProgressDialog] = None
@@ -253,6 +266,10 @@ class DocumentInterrogationTab(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._create_top_bar())
+        self.retraction_banner = QLabel()
+        self.retraction_banner.setWordWrap(True)
+        self.retraction_banner.setVisible(False)
+        layout.addWidget(self.retraction_banner)
         layout.addWidget(self._create_split_pane())
 
     def _create_top_bar(self) -> QWidget:
@@ -293,6 +310,41 @@ class DocumentInterrogationTab(QWidget):
         layout.addWidget(self.wrong_pdf_btn)
 
         return widget
+
+    def show_retraction_check(self, check: PaperCheck | None) -> None:
+        """Show the open paper's retraction status above the document.
+
+        Args:
+            check: Retracted gets an error banner, a concern a warning
+                banner, unchecked one plain line; clear and ``None`` show
+                nothing.
+        """
+        if check is None or badge_text(check.verdict.status) is None:
+            self.retraction_banner.clear()
+            self.retraction_banner.setVisible(False)
+            return
+        self.retraction_banner.setText(paper_status_line(check))
+        self.retraction_banner.setStyleSheet(status_stylesheet(check.verdict.status))
+        self.retraction_banner.setVisible(True)
+
+    def _start_retraction_check(self, document: LiteDocument) -> None:
+        """Check the one paper in a worker thread; a result for another document is ignored."""
+        self._retraction_doc_id = document.id
+        try:
+            worker = RetractionCheckWorker(build_retraction_checker(self.config, self.storage), document)
+        except Exception as e:
+            # the type only: provider text never reaches the reader or the log
+            logger.warning("Retraction checker could not be built (%s)", type(e).__name__)
+            self.show_retraction_check(unchecked_check())
+            return
+        worker.checked.connect(self._on_retraction_checked)
+        self._retraction_worker = worker
+        worker.start()
+
+    def _on_retraction_checked(self, doc_id: str, check: PaperCheck) -> None:
+        """Show a finished check if it is for the paper now open."""
+        if doc_id == self._retraction_doc_id:
+            self.show_retraction_check(check)
 
     def _create_button(self, text: str, callback, tooltip: str = "") -> QPushButton:
         """Create a styled button."""
@@ -483,6 +535,8 @@ class DocumentInterrogationTab(QWidget):
     def _clear_document(self) -> None:
         """Clear the loaded document, and stop waiting for its walled PDF."""
         self._end_rescue_wait()
+        self._retraction_doc_id = None
+        self.show_retraction_check(None)
         self._agent.clear_document()
         self.document_view.clear()
         self.doc_label.setText("No document loaded")
@@ -942,6 +996,7 @@ class DocumentInterrogationTab(QWidget):
         self._clear_document()
         self._current_doc_metadata = build_doc_metadata(citation)
         self._pending_citation = citation
+        self._start_retraction_check(citation.document)
         title = get_document_title(citation)
 
         logger.info(f"load_from_citation: doc_id={citation.document.id}, pmid={citation.document.pmid}, doi={citation.document.doi}, pmc_id={citation.document.pmc_id}")

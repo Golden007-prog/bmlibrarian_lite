@@ -62,6 +62,7 @@ from ..pdf_library_check import set_aside_download_note
 from ..pdf_utils import generate_pdf_path
 from ..fulltext_discovery import FulltextDiscoverer, FulltextResult, FulltextSourceType
 from ..utils import classify_analysis_exception
+from ..retraction_screen import screen_with_fallback, unchecked_check
 
 if TYPE_CHECKING:
     from ..config import LiteConfig
@@ -135,6 +136,41 @@ class SingleOutcome:
             if not self._ended:
                 fallback(str(e))
             raise
+
+
+class RetractionCheckWorker(SingleOutcome, QThread):
+    """Checks one paper's retraction status off the GUI thread.
+
+    Signals:
+        checked: Emitted with the document id and its ``PaperCheck``. A check
+            that fails is an unchecked ``PaperCheck``, never an error: the
+            reader sees the unchecked line, not a dialog.
+
+    ``checked`` ends every run. This worker cannot be cancelled; the tab
+    ignores a result for a document it no longer shows.
+    """
+
+    checked = Signal(str, object)  # doc_id, PaperCheck
+
+    def __init__(self, checker: Any, document: 'LiteDocument') -> None:
+        """Keep the checker and the paper.
+
+        Args:
+            checker: A ``RetractionChecker`` built for this one use.
+            document: The paper to check.
+        """
+        super().__init__()
+        self.checker = checker
+        self.document = document
+
+    def run(self) -> None:
+        """Check the paper and emit ``checked``, whatever happens."""
+        self._run_once(self._check, lambda _error: self._end(self.checked, self.document.id, unchecked_check()))
+
+    def _check(self) -> None:
+        """Screen the one document (never raises) and end the run."""
+        screen = screen_with_fallback(self.checker, [self.document])
+        self._end(self.checked, self.document.id, screen.checks.get(self.document.id) or unchecked_check())
 
 
 class AnswerWorker(SingleOutcome, QThread):

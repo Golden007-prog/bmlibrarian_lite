@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from bmlib.publications.retraction_status import (
+    RetractionEvidence,
     RetractionLookup,
     RetractionStatus,
     RetractionVerdict,
@@ -261,3 +262,28 @@ def screen_with_fallback(
     finally:
         checker.close()
     return screen_documents(documents, checks)
+
+
+def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:
+    """Rebuild a paper's check from a stored snapshot row, for display.
+
+    A row does not record which lookups went unanswered, so an unchecked row
+    names every source. ``None`` for a row this build cannot read.
+    """
+    try:
+        status = RetractionStatus(row["status"])
+        deciding = row.get("deciding")
+        stamp = row.get("checked_at")
+        return PaperCheck(
+            RetractionVerdict(
+                status,
+                RetractionEvidence.from_dict(deciding) if deciding else None,
+                tuple(RetractionLookup) if status is RetractionStatus.UNCHECKED else (),
+            ),
+            as_utc(datetime.fromisoformat(stamp)) if stamp else datetime.now(UTC),
+            None,
+            None,
+        )
+    except (KeyError, ValueError, TypeError, AttributeError):
+        logger.warning("Skipping a retraction snapshot row this build cannot read")
+        return None
