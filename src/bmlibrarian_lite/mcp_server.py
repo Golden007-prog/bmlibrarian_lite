@@ -29,7 +29,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from typing import Any
 
@@ -65,7 +65,7 @@ from bmlibrarian_lite.retraction_checks import RetractionChecker
 from bmlibrarian_lite.retraction_crossref import crossref_session
 from bmlibrarian_lite.retraction_screen import (
     RetractionScreen,
-    screen_documents,
+    UnbuiltChecker,
     screen_with_fallback,
     unchecked_check,
 )
@@ -418,6 +418,7 @@ def _screen(ctx: _AgentsContext, documents: Sequence[LiteDocument]) -> Retractio
     Returns:
         The screen; a failed check leaves every document unchecked.
     """
+    checker: RetractionChecker | UnbuiltChecker
     try:
         checker = _build_checker(ctx)
     except Exception as exc:
@@ -425,8 +426,7 @@ def _screen(ctx: _AgentsContext, documents: Sequence[LiteDocument]) -> Retractio
         logger.warning(
             "Retraction checker not built (%s); every document unchecked", type(exc).__name__
         )
-        unchecked = unchecked_check()
-        return screen_documents(documents, {doc.id: unchecked for doc in documents})
+        checker = UnbuiltChecker()
     return screen_with_fallback(checker, documents)
 
 
@@ -848,19 +848,7 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
         return failed
 
     title = result.article_info.title if result.article_info else "Unknown"
-    # What discovery learned stands in for an identifier the request lacked
     info = result.article_info
-    check = _paper_check(
-        ctx,
-        LiteDocument(
-            id=doc_id,
-            title=title,
-            abstract="",
-            doi=doi or (info.doi if info else None),
-            pmid=pmid or (info.pmid if info else None),
-            pmc_id=pmc_id,
-        ),
-    )
 
     payload: dict[str, Any] = {
         "success": True,
@@ -892,7 +880,30 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
             f"ask_document: {exc}"
         )
 
-    return _status_first(payload, check, "content")
+    # What discovery learned stands in for an identifier the request lacked
+    document = LiteDocument(
+        id=doc_id,
+        title=info.title if info else "",
+        abstract=info.abstract if info else "",
+        authors=list(info.authors) if info else [],
+        year=info.year if info else None,
+        journal=(info.journal or None) if info else None,
+        doi=doi or (info.doi if info else None),
+        pmid=pmid or (info.pmid if info else None),
+        pmc_id=pmc_id or (info.pmcid if info else None),
+        publication_types=info.publication_types if info else None,
+    )
+    try:
+        # Under the id ask_document is called with, so it can check the paper
+        # too; an upsert, so it never erases a stored fact
+        ctx.storage.add_document(replace(document, id=payload["document_id"]))
+    except Exception as exc:
+        # the type only: the check still runs on the document in hand
+        logger.warning("Fulltext document not stored (%s)", type(exc).__name__)
+    out = _status_first(payload, _paper_check(ctx, document), "content")
+    # the length of the content returned, status line included
+    out["content_length"] = len(out["content"])
+    return out
 
 
 def _handle_ask_document(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any]:

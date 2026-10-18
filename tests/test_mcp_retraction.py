@@ -363,3 +363,80 @@ def test_fact_check_notice_order(checker: FakeChecker, monkeypatch: pytest.Monke
     report = mcp_server._handle_fact_check({"claim": "c"}, ctx)["report"]
     order = [report.index(m) for m in ("SEARCH", "ANALYSIS", "Retracted papers left out", "BODYTEXT")]
     assert order == sorted(order)
+
+
+def _real_storage(tmp_path):
+    """A real store under tmp_path."""
+    from bmlibrarian_lite.config import LiteConfig
+    from bmlibrarian_lite.storage import LiteStorage
+
+    config = LiteConfig()
+    config.storage.data_dir = tmp_path / "store"
+    return LiteStorage(config)
+
+
+def test_ask_document_after_fulltext_gives_the_same_status(checker: FakeChecker, tmp_path) -> None:
+    """get_document_fulltext stores what it learned, so ask_document can check the paper."""
+    checker.by_id["pmid-7"] = RetractionStatus.RETRACTED
+    ctx = _make_context()
+    ctx.storage = _real_storage(tmp_path)
+    _ok_fulltext(ctx)
+    ctx.interrogation_agent.load_document.return_value = "pmid-7"
+    ft = mcp_server._handle_fulltext({"pmid": "7", "doi": "10.9/x"}, ctx)
+    stored = ctx.storage.get_document("pmid-7")
+    assert stored is not None and (stored.pmid, stored.doi) == ("7", "10.9/x")
+    ctx.interrogation_agent.ask.return_value = ("A", [])
+    ask = mcp_server._handle_ask_document({"question": "q", "document_id": "pmid-7"}, ctx)
+    assert ft["retraction_status"] == ask["retraction_status"]
+    assert ask["retraction_status"]["status"] == "retracted"
+    assert checker.calls == 2
+
+
+def test_fulltext_checks_and_stores_the_records_publication_types(checker: FakeChecker) -> None:
+    """The label discovery read reaches the check and the stored document."""
+    seen = []
+    original = checker.check
+
+    def spy(documents, **kw):
+        seen.extend(documents)
+        return original(documents, **kw)
+
+    checker.check = spy  # type: ignore[method-assign]
+    ctx = _make_context()
+    _ok_fulltext(ctx, title="T", pmid="55", doi="10.9/found")
+    ctx.fulltext_discoverer.discover_fulltext.return_value.article_info.publication_types = [
+        "Retracted Publication"
+    ]
+    mcp_server._handle_fulltext({"pmc_id": "PMC9"}, ctx)
+    assert seen[0].publication_types == ["Retracted Publication"]
+    stored = ctx.storage.add_document.call_args.args[0]
+    assert stored.publication_types == ["Retracted Publication"]
+    assert stored.id == "pmc-9"
+
+
+def test_content_length_is_the_returned_contents(checker: FakeChecker) -> None:
+    """With the status line in front, content_length still measures the content returned."""
+    checker.by_id["pmid-7"] = RetractionStatus.RETRACTED
+    ctx = _make_context()
+    _ok_fulltext(ctx)
+    ctx.interrogation_agent.load_document.return_value = "pmid-7"
+    out = mcp_server._handle_fulltext({"pmid": "7"}, ctx)
+    assert out["content_length"] == len(out["content"])
+
+
+def test_the_mcp_checker_never_downloads_the_export(tmp_path, monkeypatch) -> None:
+    """A one-paper tool call uses the copy it has: a stale one is not refreshed."""
+    from bmlibrarian_lite.config import LiteConfig
+    from bmlibrarian_lite.retraction_export import refresh_export
+    from tests.test_retraction_checks import MAILTO, START, StubSession, _doc
+
+    refresh_export(tmp_path, StubSession(), mailto=MAILTO, today=START.date().replace(year=2020))
+    session = StubSession()
+    monkeypatch.setattr(mcp_server, "crossref_session", lambda mailto: session)
+    ctx = _make_context()
+    ctx.config = LiteConfig()
+    ctx.config.storage.data_dir = tmp_path
+    ctx.storage = _real_storage(tmp_path)
+    check = mcp_server._build_checker(ctx).check([_doc("a", doi="10.1/a")])["a"]
+    assert session.export_calls == 0
+    assert check.verdict.status is RetractionStatus.UNCHECKED
