@@ -32,9 +32,9 @@ from ..analysis_failures import (
 )
 from ..data_models import AnalysisShortfall, AnalysisStage, Citation, ReportMetadata
 from ..retraction_text import (
-    checked_on_line,
     format_reference_concern_annotation,
     format_retracted_section,
+    retraction_methods_line,
     with_retraction_notice,
 )
 from ..search_failures import describe_search_shortfalls, with_search_shortfall_notice
@@ -799,7 +799,7 @@ Key passages:
         ])
         if metadata.retraction_screen is not None:
             lines.append(
-                f"- **Retraction Check:** {checked_on_line(metadata.retraction_screen.checked_at)}"
+                f"- **Retraction Check:** {retraction_methods_line(metadata.retraction_screen)}"
             )
         # Documents the model could not read are neither accepted nor
         # rejected: recording them as rejected made a failure read as the

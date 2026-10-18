@@ -297,10 +297,14 @@ class TestTheChokePoint:
         )
         from bmlibrarian_lite.retraction_text import run_summary_clause
 
-        assert run_summary_clause(screen) == "3 papers' retraction status could not be checked"
+        assert run_summary_clause(screen) == (
+            "3 papers' retraction status could not be checked: the check failed"
+        )
         assert "OperationalError" in caplog.text
         assert "secret provider text" not in caplog.text
-        assert {row["status"] for row in snapshot_of(storage).values()} == {"unchecked"}
+        rows = snapshot_of(storage).values()
+        assert {row["status"] for row in rows} == {"unchecked"}
+        assert {row["checked_at"] for row in rows} == {None}  # nothing was checked
 
     def test_every_paper_left_out_ends_the_run_without_scoring(
         self, monkeypatch: pytest.MonkeyPatch, storage: LiteStorage

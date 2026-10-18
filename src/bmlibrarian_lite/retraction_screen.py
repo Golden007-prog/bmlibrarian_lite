@@ -63,11 +63,14 @@ class RetractionScreen:
         kept: Everything not retracted, in input order.
         excluded: The retracted papers, in input order.
         checks: Each checked document's verdict, keyed by ``LiteDocument.id``.
+        failed: The check itself failed: every check is a stand-in, decided
+            nothing, and carries no check time.
     """
 
     kept: tuple[LiteDocument, ...]
     excluded: tuple[LiteDocument, ...]
     checks: Mapping[str, PaperCheck]
+    failed: bool = False
 
     @property
     def unchecked_count(self) -> int:
@@ -90,13 +93,16 @@ class RetractionScreen:
 
     @property
     def checked_at(self) -> datetime | None:
-        """The oldest ``checked_at`` among the checks; ``None`` without any."""
+        """The oldest ``checked_at`` among the checks; ``None`` without any, or when the check failed."""
+        if self.failed:
+            return None
         return min((as_utc(c.checked_at) for c in self.checks.values()), default=None)
 
     def to_snapshot(self) -> list[dict[str, Any]]:
         """Rows for the report and audit trail, one per held document.
 
-        A document with no check is an unchecked row with ``checked_at`` ``None``.
+        A document with no check, or whose check failed, is an unchecked row
+        with ``checked_at`` ``None``.
         ``excluded`` is a fact of the run: a later *Check again* may rewrite
         ``status``, never this, so readers decide exclusion from it alone.
 
@@ -117,7 +123,11 @@ class RetractionScreen:
                     "doi": doc.doi,
                     "pmid": doc.pmid,
                     "status": (check.verdict.status if check else RetractionStatus.UNCHECKED).value,
-                    "checked_at": as_utc(check.checked_at).isoformat() if check else None,
+                    "checked_at": (
+                        as_utc(check.checked_at).isoformat()
+                        if check and not self.failed
+                        else None
+                    ),
                     "deciding": deciding.to_dict() if deciding else None,
                     "excluded": doc.id in excluded_ids,
                 }
@@ -203,13 +213,17 @@ class RetractionSnapshot:
 
 
 def screen_documents(
-    documents: Iterable[LiteDocument], checks: Mapping[str, PaperCheck]
+    documents: Iterable[LiteDocument],
+    checks: Mapping[str, PaperCheck],
+    *,
+    failed: bool = False,
 ) -> RetractionScreen:
     """Leave out the retracted; keep everything else, in input order.
 
     Args:
         documents: The documents checked.
         checks: Verdicts keyed by document id; a document without one is kept.
+        failed: The check failed and ``checks`` are stand-ins.
 
     Returns:
         The screen.
@@ -220,7 +234,7 @@ def screen_documents(
         check = checks.get(doc.id)
         retracted = check is not None and check.verdict.status is RetractionStatus.RETRACTED
         (excluded if retracted else kept).append(doc)
-    return RetractionScreen(tuple(kept), tuple(excluded), dict(checks))
+    return RetractionScreen(tuple(kept), tuple(excluded), dict(checks), failed)
 
 
 def unchecked_check() -> PaperCheck:
@@ -231,6 +245,25 @@ def unchecked_check() -> PaperCheck:
         None,
         None,
     )
+
+
+class UnbuiltChecker:
+    """Stands in for a checker that could not be built: every check fails.
+
+    So a run whose checker could not be built goes on with every document
+    unchecked, exactly as one whose check raised.
+    """
+
+    def check(self, documents: Sequence[LiteDocument], **_kwargs: Any) -> dict[str, PaperCheck]:
+        """Fail, as the checker that could not be built would have.
+
+        Raises:
+            RuntimeError: Always.
+        """
+        raise RuntimeError("the retraction checker could not be built")
+
+    def close(self) -> None:
+        """Nothing to close."""
 
 
 def screen_with_fallback(
@@ -253,15 +286,14 @@ def screen_with_fallback(
         The screen; after a cancel, possibly partial.
     """
     try:
-        checks = checker.check(documents, should_cancel=should_cancel)
+        return screen_documents(documents, checker.check(documents, should_cancel=should_cancel))
     except Exception as e:
         # the type only: provider text never reaches the reader or the log
         logger.warning("Retraction check failed (%s); every document unchecked", type(e).__name__)
         unchecked = unchecked_check()
-        checks = {doc.id: unchecked for doc in documents}
+        return screen_documents(documents, {doc.id: unchecked for doc in documents}, failed=True)
     finally:
         checker.close()
-    return screen_documents(documents, checks)
 
 
 def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:

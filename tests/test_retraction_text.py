@@ -14,12 +14,19 @@ from bmlib.publications.retraction_status import (
 )
 
 from bmlibrarian_lite.data_models import LiteDocument, RequestFailure, RequestFailureKind
-from bmlibrarian_lite.retraction_screen import RetractionScreen, screen_documents
+from bmlibrarian_lite.retraction_screen import (
+    RetractionScreen,
+    RetractionSnapshot,
+    screen_documents,
+    screen_with_fallback,
+)
 from bmlibrarian_lite.retraction_store import PaperCheck
 from bmlibrarian_lite.retraction_text import (
     checked_on_line,
+    format_retracted_section,
     format_retraction_notice,
     paper_status_line,
+    retraction_methods_line,
     run_summary_clause,
     with_retraction_notice,
     without_retraction_notice,
@@ -27,6 +34,7 @@ from bmlibrarian_lite.retraction_text import (
 
 WHEN = datetime(2026, 10, 18, 9, 30, tzinfo=UTC)
 BOTH = (RetractionLookup.RETRACTION_WATCH_EXPORT, RetractionLookup.CROSSREF)
+RW_CAUSE = "the Retraction Watch copy could not be used (run `bmll retractions-update`)"
 
 
 def _doc(i: str) -> LiteDocument:
@@ -62,11 +70,13 @@ def test_summary_clause_counts_and_singulars():
     """Test summary clause counts and singulars."""
     assert run_summary_clause(_screen(0, 0)) is None
     assert run_summary_clause(_screen(1, 0)) == "1 retracted paper left out"
-    assert (
-        run_summary_clause(_screen(2, 3))
-        == "2 retracted papers left out; 3 papers' retraction status could not be checked"
+    assert run_summary_clause(_screen(2, 3)) == (
+        "2 retracted papers left out; 3 papers' retraction status could not be checked: "
+        + RW_CAUSE
     )
-    assert run_summary_clause(_screen(0, 1)) == "1 paper's retraction status could not be checked"
+    assert run_summary_clause(_screen(0, 1)) == (
+        "1 paper's retraction status could not be checked: " + RW_CAUSE
+    )
 
 
 def test_notice_is_idempotent():
@@ -169,3 +179,120 @@ def test_concern_without_a_date():
 def test_checked_on_line_reads_a_naive_datetime_as_utc():
     """A naive time is read as UTC, not rejected or shifted."""
     assert checked_on_line(datetime(2026, 10, 18, 23, 59)) == "Retraction status checked 2026-10-18"
+
+
+def test_a_retraction_watch_retraction_without_a_notice_doi_is_not_pubmeds():
+    """The export's "unavailable" notice DOI becomes None; the date still shows, PubMed is not named."""
+    rw = _evidence(notice=None)
+    line = paper_status_line(_check(RetractionStatus.RETRACTED, rw, asof=None))
+    assert line == "Retracted on 2026-03-09"
+    assert "PubMed" not in line
+    crossref = RetractionEvidence(RetractionSource.CROSSREF_PUBLISHER, RetractionKind.RETRACTION)
+    assert paper_status_line(_check(RetractionStatus.RETRACTED, crossref, asof=None)) == "Retracted"
+    # control: the label is still the label, and a concern by label says so
+    label = RetractionEvidence(RetractionSource.PUBMED_LABEL, RetractionKind.RETRACTION)
+    assert (
+        paper_status_line(_check(RetractionStatus.RETRACTED, label, asof=None))
+        == "Retracted (PubMed's label)"
+    )
+    concern_label = RetractionEvidence(
+        RetractionSource.PUBMED_LABEL, RetractionKind.EXPRESSION_OF_CONCERN
+    )
+    assert (
+        paper_status_line(_check(RetractionStatus.CONCERN, concern_label, asof=None))
+        == "Expression of concern (PubMed's label)"
+    )
+
+
+def test_the_left_out_section_names_pubmed_only_for_the_label():
+    """The report's section follows the evidence's source, not the notice DOI's presence."""
+    rw, label = _doc("rw"), _doc("label")
+    screen = screen_documents(
+        [rw, label],
+        {
+            "rw": _check(RetractionStatus.RETRACTED, _evidence(notice=None)),
+            "label": _check(
+                RetractionStatus.RETRACTED,
+                RetractionEvidence(RetractionSource.PUBMED_LABEL, RetractionKind.RETRACTION),
+            ),
+        },
+    )
+    section = format_retracted_section(screen)
+    assert "- Title rw. Retracted 2026-03-09\n" in section + "\n"
+    assert "- Title label. Retracted (PubMed's label)" in section
+
+
+def _unchecked_doc(i, doi="10.1/x", pmid=None):
+    return LiteDocument(id=i, title=f"T {i}", abstract="", doi=doi, pmid=pmid)
+
+
+def test_the_summary_names_why_papers_are_unchecked():
+    """Each cause class, de-duplicated, in one sentence; no provider text."""
+    throttled = RequestFailure(RequestFailureKind.HTTP_STATUS, 429)
+    timeout = RequestFailure(RequestFailureKind.TIMEOUT)
+    crossref = (RetractionLookup.CROSSREF,)
+    export = (RetractionLookup.RETRACTION_WATCH_EXPORT,)
+    cases = {
+        "export": ([_unchecked_doc("a")], {"a": _check(RetractionStatus.UNCHECKED, unanswered=export, asof=None)}),
+        "crossref": (
+            [_unchecked_doc("a"), _unchecked_doc("b"), _unchecked_doc("c")],
+            {
+                "a": _check(RetractionStatus.UNCHECKED, unanswered=crossref, failure=throttled),
+                "b": _check(RetractionStatus.UNCHECKED, unanswered=crossref, failure=throttled),
+                "c": _check(RetractionStatus.UNCHECKED, unanswered=crossref, failure=timeout),
+            },
+        ),
+        "ids": (
+            [_unchecked_doc("a", doi=None)],
+            {"a": _check(RetractionStatus.UNCHECKED, unanswered=BOTH, asof=None)},
+        ),
+    }
+    clauses = {name: run_summary_clause(screen_documents(*case)) for name, case in cases.items()}
+    assert clauses["export"] == "1 paper's retraction status could not be checked: " + RW_CAUSE
+    assert clauses["crossref"] == (
+        "3 papers' retraction status could not be checked: Crossref could not be used "
+        f"({throttled.describe()}, {timeout.describe()})"
+    )
+    assert clauses["ids"] == "1 paper's retraction status could not be checked: no DOI or PMID"
+
+
+def test_a_mixed_run_names_every_cause_once():
+    """Export missing for all, Crossref throttled for one, one with no identifier."""
+    throttled = RequestFailure(RequestFailureKind.HTTP_STATUS, 429)
+    docs = [_unchecked_doc("a"), _unchecked_doc("b"), _unchecked_doc("n", doi=None), _doc("r")]
+    checks = {
+        "a": _check(RetractionStatus.UNCHECKED, unanswered=BOTH, failure=throttled, asof=None),
+        "b": _check(RetractionStatus.UNCHECKED, unanswered=BOTH, failure=throttled, asof=None),
+        "n": _check(RetractionStatus.UNCHECKED, unanswered=BOTH, asof=None),
+        "r": _check(RetractionStatus.RETRACTED, _evidence()),
+    }
+    screen = screen_documents(docs, checks)
+    clause = run_summary_clause(screen)
+    assert clause == (
+        "1 retracted paper left out; 3 papers' retraction status could not be checked: "
+        f"{RW_CAUSE}; Crossref could not be used ({throttled.describe()}); no DOI or PMID"
+    )
+    assert format_retraction_notice(screen) == f"> **Retracted papers left out:** {clause}."
+
+
+class _Broken:
+    def check(self, documents, **_kw):
+        raise RuntimeError("secret provider text")
+
+    def close(self):
+        pass
+
+
+def test_a_failed_check_says_so_in_the_summary_and_the_methods_line():
+    """Every check stood in for a failure: no check date, and the cause is the check."""
+    screen = screen_with_fallback(_Broken(), [_doc("a"), _doc("b")])
+    assert run_summary_clause(screen) == (
+        "2 papers' retraction status could not be checked: the check failed"
+    )
+    assert retraction_methods_line(screen) == "Retraction status could not be checked"
+    restored = RetractionSnapshot.from_rows(screen.to_snapshot())
+    assert retraction_methods_line(restored) == "Retraction status could not be checked"
+    # control: a run that checked says when
+    checked = _screen(1, 1)
+    assert retraction_methods_line(checked) == "Retraction status checked 2026-10-18"
+    assert retraction_methods_line(screen_documents([], {})) == "Retraction status never checked"
