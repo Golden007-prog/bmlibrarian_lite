@@ -29,6 +29,7 @@ import logging
 import os
 import re
 import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Mapping, Sequence
@@ -87,6 +88,7 @@ from ..retraction_screen import (
     RetractionScreen,
     UnbuiltChecker,
     changed_since_snapshot,
+    decided_checked_at,
     latest_checks,
     rechecked_snapshot,
 )
@@ -117,10 +119,13 @@ FILE_ID_PREFIX = "file:"
 
 
 def retraction_entry(rows: Any) -> dict[str, Any]:
-    """The audit JSON's ``retraction`` value for snapshot *rows*."""
-    snapshot = RetractionSnapshot.from_rows(rows)
-    stamp = snapshot.checked_at
-    return {"snapshot": snapshot.to_snapshot(), "checked_at": stamp.isoformat() if stamp else None}
+    """The audit JSON's ``retraction`` value for snapshot *rows*.
+
+    ``checked_at`` follows the saved-work line: the oldest decided row's time.
+    """
+    snapshot = RetractionSnapshot.from_rows(rows).to_snapshot()
+    stamp = decided_checked_at(snapshot)
+    return {"snapshot": snapshot, "checked_at": stamp.isoformat() if stamp else None}
 
 
 class ReportTab(QWidget):
@@ -569,12 +574,13 @@ class ReportTab(QWidget):
             ids = {str(e["id"]) for e in left_out if isinstance(e, Mapping) and "id" in e}
             updated = RetractionSnapshot(tuple({**r, "excluded": r["document_id"] in ids} for r in updated.rows))
         audit["retraction"] = retraction_entry(updated.rows)
-        temp = audit_path.with_name(audit_path.name + ".tmp")
+        handle, temp = tempfile.mkstemp(dir=audit_path.parent, prefix=audit_path.name, suffix=".tmp")
         try:
-            temp.write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8")
+            with os.fdopen(handle, "w", encoding="utf-8") as out:
+                json.dump(audit, out, indent=2, ensure_ascii=False)
             os.replace(temp, audit_path)
         finally:
-            temp.unlink(missing_ok=True)
+            Path(temp).unlink(missing_ok=True)
         return updated, audit
 
     def _on_recheck_cancelled(self, checkpoint_id: str) -> None:

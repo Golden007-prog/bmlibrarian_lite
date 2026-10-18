@@ -23,7 +23,13 @@ from bmlib.publications.retraction_status import (
 
 from .retraction_checks import paper_key
 from .retraction_export import ExportCopy, ExportState
-from .retraction_screen import RetractionRecord, RetractionScreen, as_utc, run_deciding_of
+from .retraction_screen import (
+    RetractionRecord,
+    RetractionScreen,
+    as_utc,
+    decided_checked_at,
+    run_deciding_of,
+)
 from .retraction_store import PaperCheck
 
 _NOTICE_OPENING = "> **Retraction check:** "
@@ -192,14 +198,10 @@ def saved_work_line(rows: Iterable[Mapping[str, Any]]) -> str:
     if not rows:
         return checked_on_line(None)
     unchecked = sum(1 for r in rows if r.get("status") == RetractionStatus.UNCHECKED.value)
-    decided = [
-        as_utc(datetime.fromisoformat(r["checked_at"]))
-        for r in rows
-        if r.get("status") != RetractionStatus.UNCHECKED.value and r.get("checked_at")
-    ]
-    if not decided:
+    checked_at = decided_checked_at(rows)
+    if checked_at is None:
         return "Retraction status could not be checked"
-    line = checked_on_line(min(decided))
+    line = checked_on_line(checked_at)
     if unchecked:
         line += f"; {'1 paper' if unchecked == 1 else f'{unchecked:,} papers'} could not be checked"
     return line

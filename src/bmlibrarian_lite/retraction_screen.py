@@ -39,6 +39,21 @@ def as_utc(moment: datetime) -> datetime:
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
 
 
+def decided_checked_at(rows: Iterable[Mapping[str, Any]]) -> datetime | None:
+    """The oldest check time among decided rows (retracted, concern, clear); ``None`` without one.
+
+    An unchecked answer's time is never a check time.
+    """
+    return min(
+        (
+            as_utc(datetime.fromisoformat(r["checked_at"]))
+            for r in rows
+            if r.get("status") != RetractionStatus.UNCHECKED.value and r.get("checked_at")
+        ),
+        default=None,
+    )
+
+
 def run_status_of(row: Mapping[str, Any]) -> str | None:
     """The status the run saw in a snapshot row: ``run_status`` once *Check again* rewrote it."""
     return row[RUN_STATUS_KEY] if RUN_STATUS_KEY in row else row.get("status")

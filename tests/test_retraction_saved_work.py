@@ -866,6 +866,13 @@ def test_audit_json_carries_the_snapshot(tab: ReportTab) -> None:
     saved = json.loads(audit_of(report_path).read_text(encoding="utf-8"))
     assert saved["retraction"]["snapshot"] == list(run_snapshot().values())
     assert saved["retraction"]["checked_at"] == RUN.isoformat()
+    # the date is the saved-work line's: the oldest decided row, never an unchecked answer's time
+    snapshot = {**run_snapshot(), CITED.id: {**run_snapshot()[CITED.id], "status": "unchecked"}}
+    saved = json.loads(audit_of(save_report(tab, snapshot)).read_text(encoding="utf-8"))
+    assert saved["retraction"]["checked_at"] == LATER_RUN.isoformat()
+    unchecked = {doc_id: {**row, "status": "unchecked"} for doc_id, row in run_snapshot().items()}
+    saved = json.loads(audit_of(save_report(tab, unchecked)).read_text(encoding="utf-8"))
+    assert saved["retraction"]["checked_at"] is None
     # a run that never checked writes no snapshot at all
     report_path = save_report(tab, None)
     assert "retraction" not in json.loads(audit_of(report_path).read_text(encoding="utf-8"))
@@ -997,6 +1004,22 @@ def test_a_failed_write_tells_the_reader_and_leaves_the_file(
     assert audit_path.read_bytes() == before
     assert not list(audit_path.parent.glob("*.tmp"))
     assert CHECK_AGAIN_NOT_SAVED in tab.retraction_line.text()
+
+
+def test_the_rewrite_never_touches_a_file_that_happens_to_share_the_temp_name(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The temp file is a fresh one, not a fixed name beside the audit JSON."""
+    report_path = save_report(tab, run_snapshot())
+    audit_path = audit_of(report_path)
+    bystander = audit_path.with_name(audit_path.name + ".tmp")
+    bystander.write_text("someone else's", encoding="utf-8")
+    load(tab, report_path, monkeypatch)
+    run_check_again(tab, storage, monkeypatch, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    assert bystander.read_text(encoding="utf-8") == "someone else's"
+    assert set(audit_path.parent.glob("*.tmp")) == {bystander}
+    rows = {r["document_id"]: r for r in json.loads(audit_path.read_text(encoding="utf-8"))["retraction"]["snapshot"]}
+    assert rows[CITED.id]["status"] == "retracted"
 
 
 def saved_with_left_out(tab: ReportTab, snapshot: dict[str, dict[str, Any]] | None) -> Any:
