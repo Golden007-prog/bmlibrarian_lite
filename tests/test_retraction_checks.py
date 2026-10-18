@@ -34,7 +34,12 @@ _ROW = (
     "3/9/2026 0:00,10.9/notice,87654321,5/6/2023 0:00,10.9/retracted,12345678,"
     "Retraction,Reason;,No,Notes,\n"
 )
-CSV = (_HEADER + _ROW).encode()
+_CONCERN_ROW = (
+    "2,Another,Subject,Inst,Journal,Pub,AU,Author,URL,Article,"
+    "3/9/2026 0:00,10.9/eoc,22222223,5/6/2023 0:00,10.9/concern,22222222,"
+    "Expression of concern,Reason;,No,Notes,\n"
+)
+CSV = (_HEADER + _ROW + _CONCERN_ROW).encode()
 START = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
 MAILTO = "t@example.org"
 
@@ -317,12 +322,12 @@ _CONCERN = RetractionEvidence(
 _KEY = "doi:10.1/a"
 
 
-def _store(storage, status, deciding=None, unanswered=(), age=timedelta(days=8)):
-    """Store a crafted verdict for 10.1/a, checked *age* before START."""
+def _store(storage, status, deciding=None, unanswered=(), age=timedelta(days=8), key=_KEY):
+    """Store a crafted verdict under *key*, checked *age* before START."""
     check = PaperCheck(
         RetractionVerdict(status, deciding, tuple(unanswered)), START - age, START.date(), None
     )
-    storage.store_retraction_checks({_KEY: check})
+    storage.store_retraction_checks({key: check})
     return check
 
 
@@ -377,3 +382,50 @@ def test_a_cancelled_check_does_not_download_the_export(storage, tmp_path):
     assert session.export_calls == 0
     _checker(storage, tmp_path, session).check(docs)
     assert session.export_calls == 1
+
+
+def _recheck(storage, tmp_path, doc, refresh=False):
+    """Re-check *doc* with Crossref down; return the check and the stored row."""
+    out = _checker(storage, tmp_path, StubSession(_unreachable)).check([doc], refresh=refresh)
+    key = paper_key(doc)
+    return out[doc.id], storage.retraction_checks([key])[key]
+
+
+def test_a_fresh_retraction_replaces_a_stored_concern_during_an_outage(storage, tmp_path):
+    """Crossref down, the export now says retracted: stored and returned retracted."""
+    _current_export(tmp_path)
+    _store(storage, RetractionStatus.CONCERN, _CONCERN, key="doi:10.9/retracted")
+    check, row = _recheck(storage, tmp_path, _doc("a", doi="10.9/retracted"))
+    assert check.verdict.status is RetractionStatus.RETRACTED
+    assert row == check
+
+
+def test_a_fresh_retraction_replaces_a_fresh_clear_on_refresh(storage, tmp_path):
+    """Refresh with Crossref down: the export's or the label's retraction is stored."""
+    _current_export(tmp_path)
+    _store(storage, RetractionStatus.CLEAR, age=timedelta(hours=1), key="doi:10.9/retracted")
+    check, row = _recheck(storage, tmp_path, _doc("a", doi="10.9/retracted"), refresh=True)
+    assert check.verdict.status is RetractionStatus.RETRACTED and row == check
+    _store(storage, RetractionStatus.CLEAR, age=timedelta(hours=1))
+    labelled = _doc("b", doi="10.1/a", types=["Retracted Publication"])
+    check, row = _recheck(storage, tmp_path, labelled, refresh=True)
+    assert check.verdict.status is RetractionStatus.RETRACTED and row == check
+
+
+def test_a_fresh_concern_replaces_a_stored_clear_during_an_outage(storage, tmp_path):
+    """Crossref down, the export now holds a concern: stored and returned concern."""
+    _current_export(tmp_path)
+    _store(storage, RetractionStatus.CLEAR, key="doi:10.9/concern")
+    check, row = _recheck(storage, tmp_path, _doc("a", doi="10.9/concern"))
+    assert check.verdict.status is RetractionStatus.CONCERN
+    assert row == check
+
+
+def test_a_fresh_concern_does_not_replace_a_stored_retraction_during_an_outage(
+    storage, tmp_path
+):
+    """Control: a concern seen while Crossref is down never downgrades a retraction."""
+    _current_export(tmp_path)
+    old = _store(storage, RetractionStatus.RETRACTED, _NOTICE, key="doi:10.9/concern")
+    check, row = _recheck(storage, tmp_path, _doc("a", doi="10.9/concern"))
+    assert check == old and row == old

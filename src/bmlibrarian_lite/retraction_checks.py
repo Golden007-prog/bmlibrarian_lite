@@ -20,6 +20,7 @@ from pathlib import Path
 import requests
 from bmlib.publications.retraction_status import (
     RetractionStatus,
+    RetractionVerdict,
     crossref_key,
     retraction_status,
 )
@@ -66,6 +67,22 @@ def _label_retracts(docs: Sequence[LiteDocument]) -> bool:
     """Whether the records' own label says retracted."""
     verdict = retraction_status(doi=None, export=None, crossref=None, publication_types=_types(docs))
     return verdict.status is RetractionStatus.RETRACTED
+
+
+def _keeps(old: PaperCheck, new: RetractionVerdict) -> bool:
+    """Whether the stored check stands against a fresh verdict.
+
+    It stands only when the fresh verdict leaves unanswered a lookup the
+    stored one had answered and does not warn more: a fresh retraction, or a
+    concern over a stored clear, is news even while a lookup is down.
+    """
+    if not set(new.unanswered) - set(old.verdict.unanswered):
+        return False
+    if new.status is RetractionStatus.RETRACTED:
+        return False
+    return not (
+        new.status is RetractionStatus.CONCERN and old.verdict.status is RetractionStatus.CLEAR
+    )
 
 
 class RetractionChecker:
@@ -206,7 +223,7 @@ class RetractionChecker:
                 lookups.failures.get(doi) if doi else None,
             )
             old = stored.get(key)
-            if old and set(verdict.unanswered) - set(old.verdict.unanswered):
+            if old is not None and _keeps(old, verdict):
                 # an outage never erases what an answer established
                 kept = old.verdict.status in (RetractionStatus.RETRACTED, RetractionStatus.CONCERN)
                 out.update((doc.id, old if kept else fresh) for doc in docs)
