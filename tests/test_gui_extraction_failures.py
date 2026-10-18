@@ -286,7 +286,7 @@ class TestTheReviewTab:
         tab._on_citation_extraction_recorded([FAILURE])
         tab._on_finished("# Evidence Report", ReportMetadata(research_question=QUESTION))
 
-        assert emitted[0][-1] == [FAILURE]
+        assert emitted[0][8] == [FAILURE]
 
     def test_a_run_that_never_finished_extraction_recorded_nothing(
         self, qapp: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
@@ -299,7 +299,7 @@ class TestTheReviewTab:
 
         tab._on_finished("Workflow cancelled.", ReportMetadata(research_question=QUESTION))
 
-        assert emitted[0][-1] is None
+        assert emitted[0][8] is None
 
     def test_a_new_run_starts_without_them(
         self, qapp: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any

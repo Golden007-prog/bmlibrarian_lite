@@ -41,6 +41,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any
 
+from bmlib.publications.retraction_status import RetractionStatus
+
 from .constants import SCORE_MAX, SCORE_MIN
 from .data_models import (
     EvaluationErrorCode,
@@ -48,6 +50,7 @@ from .data_models import (
     LiteDocument,
     ScoredDocument,
 )
+from .retraction_screen import RetractionScreen
 
 #: What a failure whose code this build cannot name is recorded as. The count
 #: never degrades, only the reason (the #301 rule); the code itself is kept
@@ -73,6 +76,10 @@ CHECKPOINT_EXTRACTION_FAILURES_KEY = CITATION_EXTRACTION_FAILED_KEY
 #: The audit summary's count of those documents; None when not recorded.
 EXTRACTION_FAILED_COUNT_KEY = "documents_citation_extraction_failed"
 
+#: Where a review checkpoint keeps the retraction status its run used for
+#: every document it held, excluded ones included.
+CHECKPOINT_RETRACTION_SNAPSHOT_KEY = "retraction_snapshot"
+
 #: How older builds began the explanation of a scoring call that raised,
 #: stored with a score of 1: the benchmark runner until #306, and the review
 #: scorer until 2025-12-23. What followed was the raw exception text.
@@ -97,6 +104,8 @@ class DocumentOutcomes:
             quality filter, or left over when a run stopped early. Nothing is
             claimed about their relevance, because nothing was decided.
         min_score: The threshold the accepted/rejected split was made at.
+        excluded_retracted: Retracted papers the review left out before
+            scoring. Never in ``not_scored``: a retraction must not hide there.
     """
 
     accepted: tuple[ScoredDocument, ...]
@@ -104,6 +113,7 @@ class DocumentOutcomes:
     failed: tuple[ScoredDocument, ...]
     not_scored: tuple[LiteDocument, ...]
     min_score: int
+    excluded_retracted: tuple[LiteDocument, ...] = ()
 
     def __post_init__(self) -> None:
         """Refuse a record that counts a document twice or files it wrongly.
@@ -116,11 +126,11 @@ class DocumentOutcomes:
         ids = [
             scored.document.id
             for scored in (*self.accepted, *self.rejected, *self.failed)
-        ] + [document.id for document in self.not_scored]
+        ] + [document.id for document in (*self.not_scored, *self.excluded_retracted)]
         if len(ids) != len(set(ids)):
             raise ValueError(
                 "A document belongs to one outcome: accepted, rejected, "
-                "failed or not scored"
+                "failed, not scored or excluded as retracted"
             )
         if any(scored.score >= 0 for scored in self.failed):
             raise ValueError("A failed document carries a negative score")
@@ -152,6 +162,7 @@ def classify_document_outcomes(
     documents_found: Sequence[LiteDocument],
     scored_documents: Sequence[ScoredDocument],
     min_score: int,
+    excluded_retracted: Sequence[LiteDocument] = (),
 ) -> DocumentOutcomes:
     """Sort every document into what actually happened to it.
 
@@ -166,9 +177,14 @@ def classify_document_outcomes(
             caller has to remember to: missed, it was audited as rejected,
             with the raw provider text as its reason (#315).
         min_score: The threshold the run accepted at.
+        excluded_retracted: The retracted papers the run left out before
+            scoring. A document listed twice is one document.
 
     Returns:
-        The four outcomes, together holding each document exactly once.
+        The outcomes, together holding each document exactly once.
+
+    Raises:
+        ValueError: If a document left out as retracted was also scored.
     """
     accepted: list[ScoredDocument] = []
     rejected: list[ScoredDocument] = []
@@ -187,6 +203,10 @@ def classify_document_outcomes(
         else:
             rejected.append(scored)
 
+    excluded = list({document.id: document for document in excluded_retracted}.values())
+    # a scored one stays in ``seen`` too, so DocumentOutcomes refuses it
+    seen.update(document.id for document in excluded)
+
     not_scored: list[LiteDocument] = []
     for document in documents_found:
         if document.id not in seen:
@@ -199,6 +219,7 @@ def classify_document_outcomes(
         failed=tuple(failed),
         not_scored=tuple(not_scored),
         min_score=min_score,
+        excluded_retracted=tuple(excluded),
     )
 
 
@@ -365,7 +386,10 @@ def scoring_failure_code(scored: ScoredDocument) -> str | None:
 
 
 def outcome_summary(
-    outcomes: DocumentOutcomes, *, threshold_recorded: bool = True
+    outcomes: DocumentOutcomes,
+    *,
+    threshold_recorded: bool = True,
+    retraction_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, int | None]:
     """The counts the audit record's summary states about the outcomes.
 
@@ -375,11 +399,22 @@ def outcome_summary(
             (a report restored from an older checkpoint), so the split was
             made at a default nobody chose and the threshold is stated as
             unknown.
+        retraction_snapshot: The run's retraction snapshot rows by document
+            id; None or empty when the run recorded none.
 
     Returns:
-        The four counts, the documents actually scored, and the threshold.
+        The counts, the documents actually scored, and the threshold. The
+        retraction counts are None for a run that recorded no snapshot:
+        never 0, which would say the run was checked and nothing was found.
     """
+    rows = list((retraction_snapshot or {}).values())
     return {
+        "documents_excluded_retracted": len(outcomes.excluded_retracted) if rows else None,
+        "documents_retraction_unchecked": (
+            sum(1 for row in rows if row.get("status") == RetractionStatus.UNCHECKED)
+            if rows
+            else None
+        ),
         "documents_scored": outcomes.documents_scored,
         "documents_scored_relevant": len(outcomes.accepted),
         "documents_rejected": len(outcomes.rejected),
@@ -389,18 +424,35 @@ def outcome_summary(
     }
 
 
-def outcome_entries(outcomes: DocumentOutcomes) -> dict[str, list[dict[str, Any]]]:
+def outcome_entries(
+    outcomes: DocumentOutcomes,
+    retraction_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
     """One entry per document, under the list its outcome names.
 
     Args:
         outcomes: What became of each document.
+        retraction_snapshot: The run's retraction snapshot rows by document
+            id, for each left-out paper's date and notice; None when none.
 
     Returns:
-        The audit record's four document lists. ``scored_documents`` is the
+        The audit record's document lists. ``scored_documents`` is the
         accepted ones -- an older name, kept so older builds can still read
         the file.
     """
     return {
+        # A retracted paper the review left out before scoring, with the
+        # retraction's date and notice DOI when the evidence named them.
+        "retracted_documents": [
+            {
+                "id": document.id,
+                "title": document.title,
+                "doi": document.doi,
+                "pmid": document.pmid,
+                **_retraction_evidence((retraction_snapshot or {}).get(document.id)),
+            }
+            for document in outcomes.excluded_retracted
+        ],
         "scored_documents": [
             {
                 "id": scored.document.id,
@@ -442,6 +494,78 @@ def outcome_entries(outcomes: DocumentOutcomes) -> dict[str, list[dict[str, Any]
             for document in outcomes.not_scored
         ],
     }
+
+
+def _retraction_evidence(row: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The retraction date and notice DOI a snapshot row's evidence names.
+
+    Args:
+        row: The paper's snapshot row, read as input; None when absent.
+
+    Returns:
+        ``retraction_date`` and ``notice_doi``, each None when not named.
+    """
+    deciding = row.get("deciding") if isinstance(row, Mapping) else None
+    deciding = deciding if isinstance(deciding, Mapping) else {}
+    return {"retraction_date": deciding.get("date"), "notice_doi": deciding.get("notice_doi")}
+
+
+def checkpoint_metadata_with_retraction_snapshot(
+    metadata: Mapping[str, Any], screen: RetractionScreen
+) -> dict[str, Any]:
+    """A checkpoint's metadata with its run's retraction snapshot added.
+
+    Updating a checkpoint replaces its metadata whole, so everything it
+    already kept is carried over.
+
+    Args:
+        metadata: What the checkpoint keeps so far.
+        screen: The run's retraction screen.
+
+    Returns:
+        The new metadata: one snapshot row per document the run held.
+    """
+    return {**metadata, CHECKPOINT_RETRACTION_SNAPSHOT_KEY: screen.to_snapshot()}
+
+
+def recorded_retraction_snapshot(checkpoint_metadata: object) -> dict[str, dict[str, Any]]:
+    """The retraction snapshot a checkpoint recorded, by document id.
+
+    Args:
+        checkpoint_metadata: The checkpoint's stored metadata -- JSON from
+            the database, so it is read as input (golden rule 1).
+
+    Returns:
+        The rows by document id; empty for a run from before the check, or a
+        record that is not a list.
+    """
+    if not isinstance(checkpoint_metadata, Mapping):
+        return {}
+    rows = checkpoint_metadata.get(CHECKPOINT_RETRACTION_SNAPSHOT_KEY)
+    if not isinstance(rows, list):
+        return {}
+    return RetractionScreen.from_snapshot(rows)
+
+
+def retracted_in_snapshot(
+    documents: Sequence[LiteDocument],
+    retraction_snapshot: Mapping[str, Mapping[str, Any]] | None,
+) -> list[LiteDocument]:
+    """The documents a run's snapshot records as retracted, i.e. left out.
+
+    Args:
+        documents: The run's documents.
+        retraction_snapshot: Its snapshot rows by document id, or None.
+
+    Returns:
+        Those documents, in order.
+    """
+    rows = retraction_snapshot or {}
+    return [
+        document
+        for document in documents
+        if rows.get(document.id, {}).get("status") == RetractionStatus.RETRACTED
+    ]
 
 
 def extraction_failure_entries(

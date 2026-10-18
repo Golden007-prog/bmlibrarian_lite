@@ -29,7 +29,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Optional, List, Dict, Any
 
 from PySide6.QtWidgets import (
@@ -68,6 +68,7 @@ from ..audit_records import (
     outcome_summary,
     predates_outcome_split,
     readable_extraction_failures,
+    retracted_in_snapshot,
     score_failure_reason,
     without_invented_reason,
 )
@@ -138,6 +139,9 @@ class ReportTab(QWidget):
         # The relevant documents whose citations could not be extracted;
         # None when the run never recorded them (#310)
         self._citation_extraction_failures: list[ExtractionFailure] | None = None
+        # The run's retraction snapshot rows by document id; None when the
+        # run was not checked
+        self._retraction_snapshot: dict[str, dict[str, Any]] | None = None
 
         # Ensure reports directory exists
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
@@ -213,6 +217,7 @@ class ReportTab(QWidget):
         min_score_threshold: int | None = None,
         auto_save: bool = True,
         citation_extraction_failures: Sequence[ExtractionFailure] | None = None,
+        retraction_snapshot: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         """
         Display a report from the systematic review workflow.
@@ -244,6 +249,10 @@ class ReportTab(QWidget):
                 which (#310). None when the run never recorded them -- a
                 report restored from an older checkpoint -- which the audit
                 trail states, rather than claiming none failed
+            retraction_snapshot: The run's retraction snapshot rows by
+                document id. Documents it records as retracted were left
+                out before scoring and are audited as such. None when the
+                run was not checked, which the audit trail states
         """
         self._current_report = report
         self._current_question = question
@@ -258,6 +267,11 @@ class ReportTab(QWidget):
             None
             if citation_extraction_failures is None
             else list(citation_extraction_failures)
+        )
+        self._retraction_snapshot = (
+            None
+            if retraction_snapshot is None
+            else {doc_id: dict(row) for doc_id, row in retraction_snapshot.items()}
         )
         self._loaded_audit_data = None
 
@@ -492,6 +506,9 @@ class ReportTab(QWidget):
             self._documents_found,
             self._all_scored_documents,
             DEFAULT_MIN_SCORE if recorded is None else recorded,
+            excluded_retracted=retracted_in_snapshot(
+                self._documents_found, self._retraction_snapshot
+            ),
         )
 
     def _auto_save_report(self) -> None:
@@ -537,7 +554,9 @@ class ReportTab(QWidget):
                 "workflow_summary": {
                     "documents_searched": len(self._documents_found),
                     **outcome_summary(
-                        outcomes, threshold_recorded=threshold_recorded
+                        outcomes,
+                        threshold_recorded=threshold_recorded,
+                        retraction_snapshot=self._retraction_snapshot,
                     ),
                     "citations_extracted": len(self._all_citations),
                     **extraction_failure_summary(self._citation_extraction_failures),
@@ -568,7 +587,7 @@ class ReportTab(QWidget):
                     }
                     for doc in self._documents_found
                 ],
-                **outcome_entries(outcomes),
+                **outcome_entries(outcomes, self._retraction_snapshot),
                 **extraction_failure_record(self._citation_extraction_failures),
                 "citations": [
                     {
@@ -696,11 +715,12 @@ class ReportTab(QWidget):
                 **outcome_summary(
                     outcomes,
                     threshold_recorded=self._recorded_min_score() is not None,
+                    retraction_snapshot=self._retraction_snapshot,
                 ),
                 "citations_extracted": len(self._all_citations),
                 **extraction_failure_summary(self._citation_extraction_failures),
             },
-            **outcome_entries(outcomes),
+            **outcome_entries(outcomes, self._retraction_snapshot),
             **extraction_failure_record(self._citation_extraction_failures),
             "citations": [
                 {
@@ -753,6 +773,11 @@ class ReportTab(QWidget):
             ("Documents rejected", "documents_rejected"),
             ("Documents that could not be scored", "documents_failed"),
             ("Documents not scored", "documents_not_scored"),
+            ("Retracted papers left out", "documents_excluded_retracted"),
+            (
+                "Papers whose retraction status could not be checked",
+                "documents_retraction_unchecked",
+            ),
             ("Citations extracted", "citations_extracted"),
             (
                 "Relevant documents whose citations could not be extracted",
@@ -823,6 +848,15 @@ class ReportTab(QWidget):
             )
             lines.append("")
             lines.extend(self._audit_document_lines(unscored))
+
+        retracted = self._audit_entries(audit_data, "retracted_documents")
+        if retracted:
+            lines.extend(["", "## Excluded: Retracted", ""])
+            lines.append(
+                "These papers are retracted and were left out before scoring."
+            )
+            lines.append("")
+            lines.extend(self._retracted_lines(retracted))
 
         # Only shown when something was lost, as for scoring
         if extraction_failed:
@@ -939,6 +973,26 @@ class ReportTab(QWidget):
             if reason is not None:
                 return f"could not be scored ({reason})"
         return f"{score}/{SCORE_MAX}"
+
+    @staticmethod
+    def _retracted_lines(entries: list[dict[str, Any]]) -> list[str]:
+        """One bullet per paper left out, with its retraction's date and notice.
+
+        Args:
+            entries: The record's retracted-document entries.
+
+        Returns:
+            The markdown bullets; a date or notice not named is not shown.
+        """
+        lines = []
+        for entry in entries:
+            detail = "retracted"
+            if entry.get("retraction_date"):
+                detail += f" {entry['retraction_date']}"
+            if entry.get("notice_doi"):
+                detail += f"; notice {entry['notice_doi']}"
+            lines.append(f"- {entry.get('title', '')} — {detail}")
+        return lines
 
     @staticmethod
     def _audit_document_lines(entries: list[dict[str, Any]]) -> list[str]:

@@ -52,9 +52,16 @@ from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 from bmlibrarian_lite.resources.styles.stylesheet_generator import get_stylesheet_generator
 from bmlibrarian_lite.resources.styles.theme_colors import ThemeColors
 
+from bmlib.publications.retraction_status import (
+    RetractionLookup,
+    RetractionStatus,
+    RetractionVerdict,
+)
+
 from ..audit_records import (
     CHECKPOINT_MIN_SCORE_KEY,
     checkpoint_metadata_with_extraction_failures,
+    checkpoint_metadata_with_retraction_snapshot,
 )
 from ..config import LiteConfig
 from ..storage import LiteStorage
@@ -102,7 +109,12 @@ from ..transparency import (
     count_transparency_over,
 )
 from ..transparency.assessment import contact_email
-from datetime import datetime
+from ..retraction_checks import RetractionChecker
+from ..retraction_crossref import crossref_session
+from ..retraction_screen import RetractionScreen, screen_documents
+from ..retraction_store import PaperCheck
+from ..retraction_text import run_summary_clause
+from datetime import UTC, datetime
 
 from .quality_filter_panel import QualityFilterPanel
 from .quality_summary import QualitySummaryWidget
@@ -147,6 +159,8 @@ class WorkflowWorker(QThread):
             its sources (every shortfall's clause, joined with "; ")
         analysis_incomplete: Emitted when scoring or citation extraction
             could not read part of what the search found (#261, #262)
+        retraction_screened: Emitted with the run's RetractionScreen once
+            the gathered documents are checked, before anything is scored
     """
 
     progress = Signal(str, int, int)  # step, current, total
@@ -155,6 +169,7 @@ class WorkflowWorker(QThread):
     finished = Signal(str, object)  # final report, ReportMetadata
     search_incomplete = Signal(str)  # what the search is missing (#247)
     analysis_incomplete = Signal(str)  # what the analysis could not read (#261)
+    retraction_screened = Signal(object)  # RetractionScreen
 
     # Granular signals for audit trail
     query_generated = Signal(str, str)  # (pubmed_query, nl_query)
@@ -178,6 +193,7 @@ class WorkflowWorker(QThread):
         preloaded_documents: Optional[List[LiteDocument]] = None,
         pubmed_query: Optional[str] = None,
         preloaded_search_shortfalls: list[RetrievalShortfall] | None = None,
+        retraction_checker: RetractionChecker | None = None,
     ) -> None:
         """
         Initialize the workflow worker.
@@ -195,6 +211,9 @@ class WorkflowWorker(QThread):
             preloaded_search_shortfalls: What the search that found the
                 preloaded documents is missing (#247), so their review is
                 reported as resting on an incomplete search
+            retraction_checker: Decides each gathered document's retraction
+                status; retracted ones are left out before scoring. None
+                skips the check and records no snapshot.
         """
         super().__init__()
         self.question = question
@@ -207,6 +226,9 @@ class WorkflowWorker(QThread):
         self.preloaded_documents = preloaded_documents
         self.pubmed_query = pubmed_query
         self.preloaded_search_shortfalls = list(preloaded_search_shortfalls or [])
+        self.retraction_checker = retraction_checker
+        # The run's screen, once the check has run; None without a checker
+        self.retraction_screen: RetractionScreen | None = None
         self._cancelled = False
         self._cancel_event = threading.Event()
         self._checkpoint_id: Optional[str] = None
@@ -380,6 +402,25 @@ class WorkflowWorker(QThread):
                 self._finish_without_report("No documents found for this query.", metadata)
                 return
 
+            # The one choke point: retracted papers leave before anything is
+            # filtered or scored, whichever path gathered the documents
+            excluded: list[LiteDocument] = []
+            if self.retraction_checker is not None:
+                screen = self._screen_retractions(self.retraction_checker, documents)
+                if self._cancelled:
+                    self.finished.emit("Workflow cancelled.", metadata)
+                    return
+                self.retraction_screen = screen
+                self.retraction_screened.emit(screen)
+                documents = list(screen.kept)
+                excluded = list(screen.excluded)
+                if not documents:
+                    self._finish_without_report(
+                        f"No documents left to score: {run_summary_clause(screen)}.",
+                        metadata,
+                    )
+                    return
+
             # Track original document count before quality filtering
             original_doc_count = len(documents)
 
@@ -444,7 +485,11 @@ class WorkflowWorker(QThread):
             # Create checkpoint BEFORE scoring so we can persist results
             # immediately. It keeps the threshold, so a report restored from
             # it states the split it was made at instead of guessing (#302).
-            checkpoint_metadata = {CHECKPOINT_MIN_SCORE_KEY: self.min_score}
+            checkpoint_metadata: dict[str, Any] = {CHECKPOINT_MIN_SCORE_KEY: self.min_score}
+            if self.retraction_screen is not None:
+                checkpoint_metadata = checkpoint_metadata_with_retraction_snapshot(
+                    checkpoint_metadata, self.retraction_screen
+                )
             checkpoint = self.storage.create_checkpoint(
                 research_question=self.question,
                 metadata=checkpoint_metadata,
@@ -453,11 +498,13 @@ class WorkflowWorker(QThread):
 
             # Backstop for any route that preloads documents it did not
             # store: a scored document must be retrievable on reopen.
-            unstored = [d for d in documents if self.storage.get_document(d.id) is None]
+            # Excluded papers too: reopening and Check again must find them.
+            held = [*documents, *excluded]
+            unstored = [d for d in held if self.storage.get_document(d.id) is None]
             if unstored:
                 self.storage.add_documents(unstored)
-            # Record document-question associations for all documents being scored
-            doc_ids = [doc.id for doc in documents]
+            # Link every document scored or left out as retracted
+            doc_ids = [doc.id for doc in held]
             self.storage.add_question_documents(
                 question=self.question,
                 document_ids=doc_ids,
@@ -720,6 +767,37 @@ class WorkflowWorker(QThread):
                 e,
             )
 
+    def _screen_retractions(
+        self, checker: RetractionChecker, documents: list[LiteDocument]
+    ) -> RetractionScreen:
+        """Check the gathered documents and leave the retracted ones out.
+
+        A check that fails never stops the review: every document is then
+        unchecked, goes on, and is counted as such.
+
+        Args:
+            checker: The run's retraction checker.
+            documents: The gathered documents.
+
+        Returns:
+            The screen; after a cancel, possibly partial (the caller ends).
+        """
+        try:
+            checks = checker.check(documents, should_cancel=lambda: self._cancelled)
+        except Exception as e:
+            # the type only: provider text never reaches the reader or the log
+            logger.warning(
+                "Retraction check failed (%s); every document unchecked", type(e).__name__
+            )
+            unchecked = PaperCheck(
+                RetractionVerdict(RetractionStatus.UNCHECKED, None, tuple(RetractionLookup)),
+                datetime.now(UTC),
+                None,
+                None,
+            )
+            checks = {doc.id: unchecked for doc in documents}
+        return screen_documents(documents, checks)
+
     def _report_incomplete_search(self, metadata: ReportMetadata) -> None:
         """Tell the tab the review rests on an incomplete search, if it does.
 
@@ -794,8 +872,9 @@ class SystematicReviewTab(QWidget):
     # Emitted when a report is generated - contains all data needed for display
     # Args: report, question, citations, documents_found, scored_documents,
     #       quality_assessments, quality_filter_settings, report_metadata,
-    #       citation_extraction_failures (None when extraction never finished)
-    report_generated = Signal(str, str, list, list, list, dict, dict, object, object)
+    #       citation_extraction_failures (None when extraction never finished),
+    #       retraction_snapshot (rows by document id; None when not checked)
+    report_generated = Signal(str, str, list, list, list, dict, dict, object, object, object)
 
     # Audit Trail signals - emitted during workflow for real-time updates
     workflow_started = Signal()  # Emitted when workflow begins
@@ -876,6 +955,8 @@ class SystematicReviewTab(QWidget):
         # which (#310). None until extraction has run to the end.
         self._citation_extraction_failures: list[ExtractionFailure] | None = None
         self._quality_assessments: Dict[str, QualityAssessment] = {}
+        # This run's retraction screen; None until the check has run
+        self._retraction_screen: RetractionScreen | None = None
 
         # Pre-loaded documents from Research Questions tab (skip search if set)
         self._preloaded_documents: Optional[List[LiteDocument]] = None
@@ -998,6 +1079,18 @@ class SystematicReviewTab(QWidget):
         self.analysis_notice_label.setVisible(False)
         progress_layout.addWidget(self.analysis_notice_label)
 
+        # Says how many retracted papers were left out and how many papers'
+        # status could not be checked. It stays until the next run.
+        self.retraction_notice_label = QLabel()
+        self.retraction_notice_label.setWordWrap(True)
+        self.retraction_notice_label.setStyleSheet(
+            get_stylesheet_generator().label_stylesheet(
+                color=ThemeColors.WARNING_TEXT, bold=True
+            )
+        )
+        self.retraction_notice_label.setVisible(False)
+        progress_layout.addWidget(self.retraction_notice_label)
+
         self.progress_label = QLabel("Ready")
         progress_layout.addWidget(self.progress_label)
 
@@ -1034,6 +1127,9 @@ class SystematicReviewTab(QWidget):
         self._analysis_notices = []
         self.analysis_notice_label.clear()
         self.analysis_notice_label.setVisible(False)
+        self._retraction_screen = None
+        self.retraction_notice_label.clear()
+        self.retraction_notice_label.setVisible(False)
 
         # Update UI state
         self.run_btn.setEnabled(False)
@@ -1058,6 +1154,7 @@ class SystematicReviewTab(QWidget):
             preloaded_documents=self._preloaded_documents,
             pubmed_query=self._preloaded_pubmed_query,
             preloaded_search_shortfalls=self._preloaded_search_shortfalls,
+            retraction_checker=self._retraction_checker(),
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.step_complete.connect(self._on_step_complete)
@@ -1065,6 +1162,7 @@ class SystematicReviewTab(QWidget):
         self._worker.finished.connect(self._on_finished)
         self._worker.search_incomplete.connect(self._on_search_incomplete)
         self._worker.analysis_incomplete.connect(self._on_analysis_incomplete)
+        self._worker.retraction_screened.connect(self._on_retraction_screened)
 
         # Connect worker audit trail signals to tab signals
         self._worker.query_generated.connect(self.query_generated)
@@ -1079,6 +1177,20 @@ class SystematicReviewTab(QWidget):
         self.clear_preloaded_documents()
 
         self._worker.start()
+
+    def _retraction_checker(self) -> RetractionChecker:
+        """A checker for one run, so a failed export refresh is tried again next run.
+
+        Returns:
+            The checker over this tab's storage and data directory.
+        """
+        mailto = contact_email(self.config)
+        return RetractionChecker(
+            self.storage,
+            self.config.storage.data_dir,
+            crossref_session(mailto),
+            mailto=mailto,
+        )
 
     def _cancel_workflow(self) -> None:
         """Cancel the running workflow."""
@@ -1200,6 +1312,19 @@ class SystematicReviewTab(QWidget):
         )
         self.search_notice_label.setVisible(True)
 
+    def _on_retraction_screened(self, screen: RetractionScreen) -> None:
+        """Keep the run's screen and say what it left out or could not check.
+
+        Args:
+            screen: The run's retraction screen.
+        """
+        self._retraction_screen = screen
+        clause = run_summary_clause(screen)
+        if clause is None:
+            return
+        self.retraction_notice_label.setText(f"Retraction check: {clause}.")
+        self.retraction_notice_label.setVisible(True)
+
     def _on_analysis_incomplete(self, missing: str) -> None:
         """Tell the user the review could not read part of what it found.
 
@@ -1284,6 +1409,11 @@ class SystematicReviewTab(QWidget):
                 None
                 if self._citation_extraction_failures is None
                 else list(self._citation_extraction_failures)
+            ),
+            (
+                None
+                if self._retraction_screen is None
+                else RetractionScreen.from_snapshot(self._retraction_screen.to_snapshot())
             ),
         )
 
