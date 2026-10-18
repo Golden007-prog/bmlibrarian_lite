@@ -877,6 +877,8 @@ This updates:
 - `CLAUDE.md` (`**Current version:**`)
 - `CHANGELOG.md` (promotes `[Unreleased]` — see below)
 
+Before a PyPI upload: a git-pinned dependency (bmlib) blocks the upload until bmlib is released (0.12.0 or later) and the pin becomes a version.
+
 ### Changelog
 
 `CHANGELOG.md` is the canonical release history ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)

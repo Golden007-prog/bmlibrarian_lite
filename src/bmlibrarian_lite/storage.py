@@ -192,6 +192,34 @@ def compute_question_hash(question: str) -> str:
     return hashlib.sha256(normalized.encode()).hexdigest()[:BENCHMARK_QUESTION_HASH_LENGTH]
 
 
+# An upsert never erases a stored fact: NULL, '' and '[]' (JSON lists) mean
+# "not supplied" and keep the stored value; a non-empty value overwrites, so
+# corrections land. publication_types is the exception: '[]' there is a
+# recorded fact, distinct from NULL. created_at and the rowid (which keys the
+# vector in vec_documents) are never touched.
+_KEEP_TEXT = "COALESCE(NULLIF(excluded.{c}, ''), documents.{c})"
+_KEEP_LIST = (
+    "CASE WHEN excluded.{c} IS NULL OR excluded.{c} = '[]' "
+    "THEN documents.{c} ELSE excluded.{c} END"
+)
+UPSERT_DOCUMENT_SQL = (
+    """
+    INSERT INTO documents
+    (id, title, abstract, authors, year, journal, doi, pmid,
+     pmc_id, url, mesh_terms, source, publication_types)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+    """
+    + ", ".join(
+        [f"{c} = {_KEEP_TEXT.format(c=c)}" for c in (
+            "title", "abstract", "journal", "doi", "pmid", "pmc_id", "url", "source")]
+        + [f"{c} = {_KEEP_LIST.format(c=c)}" for c in ("authors", "mesh_terms")]
+        + ["year = COALESCE(excluded.year, documents.year)",
+           "publication_types = COALESCE(excluded.publication_types, documents.publication_types)"]
+    )
+)
+
+
 class LiteStorage:
     """
     Unified storage layer for BMLibrarian Lite.
@@ -255,6 +283,7 @@ class LiteStorage:
             self._migrate_scored_documents_constraint()
             self._migrate_transparency_results()
             self._migrate_document_publication_types()
+            self._sweep_orphaned_document_vectors()
             logger.debug(f"SQLite initialized at {self._storage_config.sqlite_path}")
         except sqlite3.Error as e:
             raise SQLiteError(
@@ -704,6 +733,25 @@ class LiteStorage:
             raise SQLiteError(
                 f"Could not add documents.publication_types: {e}"
             ) from e
+
+    def _sweep_orphaned_document_vectors(self) -> None:
+        """Delete vectors whose document row is gone (idempotent).
+
+        The old ``INSERT OR REPLACE`` upsert gave a re-added document a new
+        rowid and left its vector behind under the old one.
+
+        Raises:
+            SQLiteError: If the sweep fails. Runs from ``_init_sqlite``.
+        """
+        try:
+            with self._sqlite_connection() as conn:
+                conn.execute(
+                    "DELETE FROM vec_documents "
+                    "WHERE rowid NOT IN (SELECT rowid FROM documents)"
+                )
+                conn.commit()
+        except sqlite3.Error as e:
+            raise SQLiteError(f"Could not sweep orphaned vectors: {e}") from e
 
     @staticmethod
     def _retract_migrated_coi_indicators(conn: sqlite3.Connection) -> None:
@@ -1193,30 +1241,18 @@ class LiteStorage:
             )
             doc_id = storage.add_document(doc, embedding_function=embedder)
         """
+        # Embedded before the write transaction opens: the model can be slow,
+        # and an open transaction locks out every other writer meanwhile.
+        embedding_bytes = None
+        if embedding_function and document.abstract:
+            embedding_bytes = self._serialize_embedding(
+                embedding_function.embed_single(document.abstract)
+            )
         try:
             with self._sqlite_connection() as conn:
                 # Insert document metadata
                 conn.execute(
-                    """
-                    INSERT INTO documents
-                    (id, title, abstract, authors, year, journal, doi, pmid,
-                     pmc_id, url, mesh_terms, source, publication_types)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO UPDATE SET
-                        title = excluded.title,
-                        abstract = excluded.abstract,
-                        authors = excluded.authors,
-                        year = excluded.year,
-                        journal = excluded.journal,
-                        doi = excluded.doi,
-                        pmid = excluded.pmid,
-                        pmc_id = excluded.pmc_id,
-                        url = excluded.url,
-                        mesh_terms = excluded.mesh_terms,
-                        source = excluded.source,
-                        publication_types = COALESCE(
-                            excluded.publication_types, documents.publication_types)
-                    """,
+                    UPSERT_DOCUMENT_SQL,
                     (
                         document.id,
                         document.title,
@@ -1242,10 +1278,7 @@ class LiteStorage:
                 rowid = cursor.fetchone()[0]
 
                 # Generate and store embedding if function provided
-                if embedding_function and document.abstract:
-                    embedding = embedding_function.embed_single(document.abstract)
-                    embedding_bytes = self._serialize_embedding(embedding)
-
+                if embedding_bytes is not None:
                     # Delete existing embedding if any
                     conn.execute(
                         "DELETE FROM vec_documents WHERE rowid = ?",
@@ -1309,6 +1342,17 @@ class LiteStorage:
         if not documents:
             return []
 
+        # Embedded before the write transaction opens (see add_document).
+        embeddings: dict[str, bytes] = {}
+        if embedding_function:
+            with_abstract = [doc for doc in documents if doc.abstract]
+            if with_abstract:
+                vectors = embedding_function.embed([d.abstract for d in with_abstract])
+                embeddings = {
+                    d.id: self._serialize_embedding(v)
+                    for d, v in zip(with_abstract, vectors, strict=True)
+                }
+
         try:
             with self._sqlite_connection() as conn:
                 ids = []
@@ -1316,26 +1360,7 @@ class LiteStorage:
                 # Batch insert documents
                 for doc in documents:
                     conn.execute(
-                        """
-                        INSERT INTO documents
-                        (id, title, abstract, authors, year, journal, doi, pmid,
-                         pmc_id, url, mesh_terms, source, publication_types)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(id) DO UPDATE SET
-                            title = excluded.title,
-                            abstract = excluded.abstract,
-                            authors = excluded.authors,
-                            year = excluded.year,
-                            journal = excluded.journal,
-                            doi = excluded.doi,
-                            pmid = excluded.pmid,
-                            pmc_id = excluded.pmc_id,
-                            url = excluded.url,
-                            mesh_terms = excluded.mesh_terms,
-                            source = excluded.source,
-                            publication_types = COALESCE(
-                                excluded.publication_types, documents.publication_types)
-                        """,
+                        UPSERT_DOCUMENT_SQL,
                         (
                             doc.id,
                             doc.title,
@@ -1354,36 +1379,16 @@ class LiteStorage:
                     )
                     ids.append(doc.id)
 
-                # Generate embeddings if function provided
-                if embedding_function:
-                    texts = [doc.abstract for doc in documents if doc.abstract]
-                    if texts:
-                        embeddings = embedding_function.embed(texts)
-
-                        # Get rowids and insert embeddings
-                        text_idx = 0
-                        for doc in documents:
-                            if doc.abstract:
-                                cursor = conn.execute(
-                                    "SELECT rowid FROM documents WHERE id = ?",
-                                    (doc.id,),
-                                )
-                                rowid = cursor.fetchone()[0]
-
-                                embedding_bytes = self._serialize_embedding(
-                                    embeddings[text_idx]
-                                )
-                                # Delete existing embedding if any
-                                conn.execute(
-                                    "DELETE FROM vec_documents WHERE rowid = ?",
-                                    (rowid,),
-                                )
-                                conn.execute(
-                                    "INSERT INTO vec_documents(rowid, embedding) "
-                                    "VALUES (?, ?)",
-                                    (rowid, embedding_bytes),
-                                )
-                                text_idx += 1
+                for doc_id, embedding_bytes in embeddings.items():
+                    rowid = conn.execute(
+                        "SELECT rowid FROM documents WHERE id = ?", (doc_id,)
+                    ).fetchone()[0]
+                    # Delete existing embedding if any
+                    conn.execute("DELETE FROM vec_documents WHERE rowid = ?", (rowid,))
+                    conn.execute(
+                        "INSERT INTO vec_documents(rowid, embedding) VALUES (?, ?)",
+                        (rowid, embedding_bytes),
+                    )
 
                 conn.commit()
                 logger.info(f"Added {len(documents)} documents to storage")

@@ -948,6 +948,7 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                 api_key=self.config.pubmed.api_key,
             )
 
+            self.progress.emit(0, self.target_new_docs, "Loading the embedding model...")
             embedder, vector_note = self._build_embedder()
             all_new_docs: List["LiteDocument"] = []
             shortfalls: list[RetrievalShortfall] = []
@@ -1026,18 +1027,17 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                 shortfalls.extend(pubmed_shortfalls(result, fetched))
                 articles = fetched.articles
 
-                # Filter out already scored documents
-                batch_new_docs: List["LiteDocument"] = []
+                # Every fetched article is stored (the upsert keeps what is
+                # already known); only those new to the question, up to the
+                # target, are linked and handed on.
+                batch_docs: list[LiteDocument] = []
+                batch_new_docs: list[LiteDocument] = []
                 for article in articles:
                     if self._cancelled:
                         stopped = True
                         break
 
                     doc_id = f"pmid-{article.pmid}"
-                    if doc_id in self.already_scored_ids:
-                        continue
-
-                    # Convert to LiteDocument
                     doc = LiteDocument(
                         id=doc_id,
                         title=article.title,
@@ -1052,26 +1052,28 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                         source=DocumentSource.PUBMED,
                         publication_types=article.publication_types,
                     )
+                    batch_docs.append(doc)
 
-                    batch_new_docs.append(doc)
-                    all_new_docs.append(doc)
+                    if (
+                        doc_id not in self.already_scored_ids
+                        and len(all_new_docs) < self.target_new_docs
+                    ):
+                        batch_new_docs.append(doc)
+                        all_new_docs.append(doc)
 
-                    # Stop if we've reached our target
-                    if len(all_new_docs) >= self.target_new_docs:
-                        break
-
-                if batch_new_docs:
+                if batch_docs:
                     # Stored and linked before anyone is told of them: a
                     # document found by any route is kept, never only in
                     # memory. A storage failure raises into the handler
                     # below, so nothing is emitted as if stored.
-                    self.storage.add_documents(batch_new_docs, embedding_function=embedder)
-                    self.storage.add_question_documents(
-                        question=self.question,
-                        document_ids=[d.id for d in batch_new_docs],
-                    )
-                    saved += len(batch_new_docs)
-                    self.batch_complete.emit(batch_new_docs)
+                    embedder, vector_note = self._store(batch_docs, embedder, vector_note)
+                    if batch_new_docs:
+                        self.storage.add_question_documents(
+                            question=self.question,
+                            document_ids=[d.id for d in batch_new_docs],
+                        )
+                        saved += len(batch_new_docs)
+                        self.batch_complete.emit(batch_new_docs)
 
                 # Update progress
                 self.progress.emit(
@@ -1091,6 +1093,14 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                         "results exhausted"
                     )
                     break
+
+            if vector_note:
+                # Repeated at the end, where the reader looks for the outcome
+                self.progress.emit(
+                    len(all_new_docs),
+                    self.target_new_docs,
+                    f"Search finished: {len(all_new_docs)} new documents{vector_note}",
+                )
 
             shortfalls = combined_shortfalls(shortfalls)
             if shortfalls and not all_new_docs and not self.retry_documents:
@@ -1128,6 +1138,37 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                     self.error,
                     unexpected_rerun_error_text(str(e), len(self.retry_documents)),
                 )
+
+    def _store(
+        self, documents: list[Any], embedder: Any, vector_note: str
+    ) -> tuple[Any, str]:
+        """Store documents, falling back to no vectors if embedding fails.
+
+        Args:
+            documents: Documents to store.
+            embedder: The embedder, or ``None``.
+            vector_note: The note already in force.
+
+        Returns:
+            The embedder and note to use from now on. Embedding runs before
+            the write, so a failed embed leaves nothing half-written.
+
+        Raises:
+            sqlite3.Error: If the database fails (also as ``SQLiteError``).
+        """
+        from ..exceptions import SQLiteError
+
+        try:
+            self.storage.add_documents(documents, embedding_function=embedder)
+        except (sqlite3.Error, SQLiteError):
+            raise
+        except Exception:
+            if embedder is None:
+                raise
+            logger.exception("Embedding failed; documents stored without vectors")
+            self.storage.add_documents(documents, embedding_function=None)
+            return None, VECTORS_UNAVAILABLE_NOTE
+        return embedder, vector_note
 
     def _build_embedder(self) -> tuple[Any, str]:
         """Build the embedder the search agent uses, here in the worker thread.

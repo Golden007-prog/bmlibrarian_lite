@@ -299,3 +299,113 @@ def test_a_later_batch_failure_leaves_earlier_batches_stored_and_says_how_many(
     assert seen["finished"] == []
     assert storage.get_document("pmid-2") is not None
     assert storage.get_document("pmid-3") is None
+
+
+def _stored_row(storage: LiteStorage, doc_id: str) -> Any:
+    with storage._sqlite_connection() as conn:
+        return conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
+
+
+@pytest.mark.parametrize("many", [False, True])
+def test_a_poorer_re_add_never_erases_a_stored_fact(storage: LiteStorage, many: bool) -> None:
+    """None, '' and [] keep what is stored; a non-empty value corrects it."""
+    rich = LiteDocument(
+        id="pmid-5", title="Old title", abstract="Zebra stripe", authors=["A B"],
+        year=2020, journal="J", doi="10.1/x", pmid="5", pmc_id="PMC1", url="http://u",
+        mesh_terms=["M"], source=DocumentSource.EUROPEPMC,
+    )
+    storage.add_documents([rich], embedding_function=FakeEmbedder())
+    poor = LiteDocument(
+        id="pmid-5", title="New title", abstract="", authors=[], year=None, journal=None,
+        doi=None, pmid="5", pmc_id=None, url=None, mesh_terms=[], source=DocumentSource.PUBMED,
+    )
+
+    storage.add_documents([poor]) if many else storage.add_document(poor)
+
+    row = _stored_row(storage, "pmid-5")
+    assert row["title"] == "New title"
+    assert (row["doi"], row["abstract"], row["journal"], row["year"]) == (
+        "10.1/x", "Zebra stripe", "J", 2020)
+    assert (row["pmc_id"], row["url"]) == ("PMC1", "http://u")
+    assert (row["authors"], row["mesh_terms"]) == ('["A B"]', '["M"]')
+    found = storage.search_documents("Zebra stripe", n_results=1, embedding_function=FakeEmbedder())
+    assert [d.id for d in found] == ["pmid-5"]
+
+
+def test_the_sweep_removes_only_orphaned_vectors(storage: LiteStorage) -> None:
+    """Vectors left under a vanished rowid go; attached ones stay; a rerun is a no-op."""
+    _embedded(storage)
+    with storage._sqlite_connection() as conn:
+        conn.execute(
+            "INSERT INTO vec_documents(rowid, embedding) VALUES (?, ?)",
+            (9999, storage._serialize_embedding([0.5] * DIMS)),
+        )
+        conn.commit()
+    assert vector_count(storage) == 2
+
+    storage._sweep_orphaned_document_vectors()
+    storage._sweep_orphaned_document_vectors()
+
+    assert vector_count(storage) == 1
+
+
+def test_embedding_happens_before_the_write_transaction(
+    storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another connection can write while the (slow) embedder runs."""
+    seen: list[bool] = []
+
+    class Probe(FakeEmbedder):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            other = sqlite3.connect(storage._storage_config.sqlite_path, timeout=0.1)
+            try:
+                other.execute("BEGIN IMMEDIATE")
+                seen.append(True)
+                other.rollback()
+            finally:
+                other.close()
+            return super().embed(texts)
+
+    storage.add_documents(
+        [LiteDocument(id="pmid-7", title="T", abstract="Abc", pmid="7")], embedding_function=Probe()
+    )
+    assert seen == [True]
+
+
+def test_an_embed_failure_stores_without_vectors_and_says_so(
+    monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
+) -> None:
+    """A model that loads but fails to embed is treated as one that did not load."""
+    class FailingEmbed(FakeEmbedder):
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("model broke")
+
+    worker, seen = search_worker(monkeypatch, storage)
+    monkeypatch.setattr(embeddings, "LiteEmbedder", FailingEmbed)
+
+    worker.run()
+
+    assert seen["error"] == []
+    assert storage.get_document("pmid-1") is not None
+    assert vector_count(storage) == 0
+    assert "stored without search vectors" in seen["progress"][-1]
+    assert [d.id for d in seen["finished"][0]] == ["pmid-1", "pmid-2"]
+    assert any("Loading the embedding model" in t for t in seen["progress"])
+
+
+def test_already_scored_and_past_target_articles_are_stored_but_not_emitted(
+    monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
+) -> None:
+    """A scored paper with no documents row is stored by a rerun; one past the target too."""
+    monkeypatch.setattr(StubClient, "pool", ["1", "2", "3"])
+    worker, seen = search_worker(monkeypatch, storage)
+    worker.already_scored_ids = {"pmid-1"}
+    worker.target_new_docs = 1
+
+    worker.run()
+
+    assert [d.id for d in seen["finished"][0]] == ["pmid-2"]
+    assert [d.id for b in seen["batch"] for d in b] == ["pmid-2"]
+    for pmid in ("1", "2", "3"):
+        assert storage.get_document(f"pmid-{pmid}") is not None
+    assert storage.get_document_ids_for_question(QUESTION) == {"pmid-2"}

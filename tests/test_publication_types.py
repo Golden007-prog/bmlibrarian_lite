@@ -120,3 +120,25 @@ def test_a_later_search_fills_types_but_never_erases_them(tmp_path: Path) -> Non
     assert storage.get_document("pmid-1").publication_types == [RETRACTED]
     storage.add_document(_doc(None))
     assert storage.get_document("pmid-1").publication_types == [RETRACTED]
+
+
+def test_search_service_conversions_carry_publication_types() -> None:
+    """Both providers' conversions keep the record's types."""
+    from types import SimpleNamespace
+
+    from bmlibrarian_lite.search_service import SearchService
+
+    svc = SearchService.__new__(SearchService)
+    types = [RETRACTED, ARTICLE]
+    pm = SimpleNamespace(
+        pmid="1", pmc_id=None, doi=None, title="T", abstract="A", authors=[],
+        publication="J", publication_date="2020-01-01", mesh_terms=[], url=None,
+        publication_types=types,
+    )
+    ep = SimpleNamespace(
+        pmid="1", pmcid=None, doi=None, title="T", abstract="A", authors=[],
+        journal="J", year=2020, is_preprint=False, has_fulltext_xml=False,
+        publication_types=types,
+    )
+    assert svc._pubmed_to_merged(pm).publication_types == types
+    assert svc._europepmc_to_merged(ep).publication_types == types
