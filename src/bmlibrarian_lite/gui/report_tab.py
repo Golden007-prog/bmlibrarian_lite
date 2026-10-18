@@ -26,6 +26,7 @@ Provides a dedicated full-screen view for systematic review reports with:
 
 import json
 import logging
+import os
 import re
 import sqlite3
 from datetime import datetime
@@ -82,6 +83,7 @@ from ..analysis_failures import without_analysis_shortfall_notice
 from ..search_failures import without_search_shortfall_notice
 from ..retraction_checks import build_retraction_checker, stored_checks
 from ..retraction_screen import (
+    RetractionSnapshot,
     RetractionScreen,
     UnbuiltChecker,
     changed_since_snapshot,
@@ -105,6 +107,17 @@ from .workers import RetractionRecheckWorker
 REPORTS_DIR = Path.home() / "bmlibrarian_reports" / "LITE"
 
 logger = logging.getLogger(__name__)
+
+
+#: Marks a *Check again* id that names a report file, not a checkpoint.
+FILE_ID_PREFIX = "file:"
+
+
+def retraction_entry(rows: Any) -> dict[str, Any]:
+    """The audit JSON's ``retraction`` value for snapshot *rows*."""
+    snapshot = RetractionSnapshot.from_rows(rows)
+    stamp = snapshot.checked_at
+    return {"snapshot": snapshot.to_snapshot(), "checked_at": stamp.isoformat() if stamp else None}
 
 
 class ReportTab(QWidget):
@@ -172,6 +185,8 @@ class ReportTab(QWidget):
         self._retraction_snapshot: dict[str, dict[str, Any]] | None = None
         # The reopened run *Check again* updates; None for any other report
         self._saved_checkpoint_id: str | None = None
+        # A loaded report file's documents (cited and left out), for Check again
+        self._file_documents: list[LiteDocument] = []
         self._recheck_worker: RetractionRecheckWorker | None = None
         # The latest checks the warning was computed from, kept so a failed
         # Check again does not take down a warning already shown
@@ -430,8 +445,12 @@ class ReportTab(QWidget):
         if checkpoint_id is None or self._recheck_worker is not None:
             return
         try:
-            documents = self.storage.get_documents(
-                sorted(self.storage.get_document_ids_for_question(self._current_question))
+            documents = (
+                list(self._file_documents)
+                if checkpoint_id.startswith(FILE_ID_PREFIX)
+                else self.storage.get_documents(
+                    sorted(self.storage.get_document_ids_for_question(self._current_question))
+                )
             )
         except (SQLiteError, sqlite3.Error, ValueError) as e:
             logger.warning("Could not read the question's documents (%s)", type(e).__name__)
@@ -473,15 +492,18 @@ class ReportTab(QWidget):
             return
         note = ""
         try:
-            checkpoint = self.storage.get_checkpoint(checkpoint_id)
-            if checkpoint is None:
-                raise LookupError("checkpoint gone")
-            updated = rechecked_snapshot(recorded_retraction_snapshot(checkpoint.metadata), screen)
-            self.storage.update_checkpoint(
-                checkpoint_id,
-                metadata=checkpoint_metadata_with_retraction_snapshot(checkpoint.metadata, updated),
-            )
-        except (SQLiteError, sqlite3.Error, LookupError) as e:
+            if checkpoint_id.startswith(FILE_ID_PREFIX):
+                updated = self._rewrite_audit_snapshot(Path(checkpoint_id[len(FILE_ID_PREFIX):]), screen)
+            else:
+                checkpoint = self.storage.get_checkpoint(checkpoint_id)
+                if checkpoint is None:
+                    raise LookupError("checkpoint gone")
+                updated = rechecked_snapshot(recorded_retraction_snapshot(checkpoint.metadata), screen)
+                self.storage.update_checkpoint(
+                    checkpoint_id,
+                    metadata=checkpoint_metadata_with_retraction_snapshot(checkpoint.metadata, updated),
+                )
+        except (SQLiteError, sqlite3.Error, LookupError, OSError, ValueError) as e:
             # The shared rows hold the answers; only this run's record missed them
             logger.warning("Could not save the new retraction status with %s (%s)", checkpoint_id, type(e).__name__)
             updated = rechecked_snapshot(self._retraction_snapshot or {}, screen)
@@ -492,6 +514,38 @@ class ReportTab(QWidget):
         self._retraction_snapshot = rows
         self._show_saved_retraction(screen.checks, note)
         self.retraction_rechecked.emit(rows)
+
+    @staticmethod
+    def _rewrite_audit_snapshot(report_path: Path, screen: RetractionScreen) -> RetractionSnapshot:
+        """Write *Check again*'s answers into a report's audit JSON, and nothing else.
+
+        The file is read again, and replaced whole through a temp file in the
+        same directory, so a failure leaves it as it was.
+
+        Args:
+            report_path: The report; its sibling ``*_audit.json`` is rewritten.
+            screen: The check's screen.
+
+        Returns:
+            The new snapshot.
+
+        Raises:
+            OSError: The file could not be read or replaced.
+            ValueError: The file is not JSON.
+        """
+        audit_path = report_path.with_name(report_path.name.replace("_report.md", "_audit.json"))
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        record = audit.get("retraction")
+        rows = record.get("snapshot") if isinstance(record, Mapping) else None
+        updated = rechecked_snapshot(RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}, screen)
+        audit["retraction"] = retraction_entry(updated.rows)
+        temp = audit_path.with_name(audit_path.name + ".tmp")
+        try:
+            temp.write_text(json.dumps(audit, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(temp, audit_path)
+        finally:
+            temp.unlink(missing_ok=True)
+        return updated
 
     def _on_recheck_cancelled(self, checkpoint_id: str) -> None:
         """A cancel (at quit) stopped *Check again*: nothing is saved."""
@@ -713,6 +767,16 @@ class ReportTab(QWidget):
             ),
         )
 
+    def _retraction_record(self) -> dict[str, Any]:
+        """The audit JSON's ``retraction`` entry: the one copy of the snapshot.
+
+        Returns:
+            Empty for a run that never checked, so a reader says "never checked".
+        """
+        if self._retraction_snapshot is None:
+            return {}
+        return {"retraction": retraction_entry(self._retraction_snapshot.values())}
+
     def _auto_save_report(self) -> None:
         """
         Auto-save report with audit trail to ~/bmlibrarian_reports/.
@@ -791,6 +855,7 @@ class ReportTab(QWidget):
                 ],
                 **outcome_entries(outcomes, self._retraction_snapshot),
                 **extraction_failure_record(self._citation_extraction_failures),
+                **self._retraction_record(),
                 "citations": [
                     {
                         "document_id": c.document.id,
@@ -841,6 +906,9 @@ class ReportTab(QWidget):
             report = path.read_text(encoding="utf-8")
             self._current_report = report
             self._hide_saved_retraction()
+            self._retraction_snapshot = None
+            self._all_citations = []
+            self._file_documents = []
 
             # Try to load the accompanying audit file
             audit_path = path.with_name(path.name.replace("_report.md", "_audit.json"))
@@ -874,10 +942,12 @@ class ReportTab(QWidget):
                         context=cit_data.get("context", ""),
                     )
                     self._citations_by_doc_id[doc.id] = citation
+                    self._all_citations.append(citation)
 
                 self.audit_btn.setEnabled(True)
                 self._current_report_path = path
                 self._loaded_audit_data = audit_data
+                self._restore_saved_retraction(path, audit_data)
 
                 self.status_label.setText(
                     f"Loaded report with {len(self._citations_by_doc_id)} citations"
@@ -897,6 +967,32 @@ class ReportTab(QWidget):
         except Exception as e:
             logger.exception("Failed to load report")
             QMessageBox.critical(self, "Load Error", f"Failed to load report:\n{e}")
+
+    def _restore_saved_retraction(self, report_path: Path, audit_data: Mapping[str, Any]) -> None:
+        """Show a loaded report's checked-on line and offer *Check again*.
+
+        Check again covers the papers cited plus those the run left out.
+
+        Args:
+            report_path: The loaded report; its audit JSON is what Check again rewrites.
+            audit_data: The audit JSON as read (input, golden rule 1).
+        """
+        record = audit_data.get("retraction")
+        rows = record.get("snapshot") if isinstance(record, Mapping) else None
+        self._retraction_snapshot = RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}
+        left_out = [
+            LiteDocument(
+                id=str(entry["id"]),
+                title=entry.get("title", ""),
+                abstract="",
+                doi=entry.get("doi"),
+                pmid=entry.get("pmid"),
+            )
+            for entry in audit_data.get("retracted_documents", [])
+            if isinstance(entry, Mapping) and "id" in entry
+        ]
+        self._file_documents = list({d.id: d for d in [*self._used_documents(), *left_out]}.values())
+        self.show_saved_retraction(FILE_ID_PREFIX + str(report_path))
 
     def _audit_trail_data(self) -> dict[str, Any]:
         """The audit record this tab would show, live or as loaded from disk.

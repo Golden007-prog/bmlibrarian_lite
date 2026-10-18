@@ -52,6 +52,7 @@ from bmlibrarian_lite.retraction_screen import (  # noqa: E402
     screen_documents,
 )
 from bmlibrarian_lite.retraction_store import PaperCheck  # noqa: E402
+from bmlibrarian_lite.retraction_text import CHECK_AGAIN_NOT_SAVED  # noqa: E402
 from bmlibrarian_lite.storage import LiteStorage  # noqa: E402
 
 QUESTION = "Does aspirin prevent stroke?"
@@ -745,3 +746,123 @@ def test_the_transparency_offer_says_retracted_papers_are_left_out(questions_tab
     questions_tab._on_reanalyse_transparency_clicked()
     text = questions_module.QMessageBox.question.call_args.args[2]
     assert "Retracted papers are left out before the work starts." in text
+
+
+# ---------------------------------------------------------------------------
+# A saved report file
+# ---------------------------------------------------------------------------
+
+
+def save_report(tab: ReportTab, snapshot: dict[str, dict[str, Any]] | None) -> Any:
+    """Save the run as the tab does; returns the report's path."""
+    reopen(tab, snapshot)
+    tab._auto_save_report()
+    return tab._current_report_path
+
+
+def audit_of(report_path: Any) -> Any:
+    """The saved audit JSON's path."""
+    return report_path.with_name(report_path.name.replace("_report.md", "_audit.json"))
+
+
+def load(tab: ReportTab, report_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Load a saved report through the tab's file dialog."""
+    monkeypatch.setattr(
+        report_tab_module.QFileDialog, "getOpenFileName", lambda *_a, **_k: (str(report_path), "")
+    )
+    tab._load_report()
+
+
+def test_audit_json_carries_the_snapshot(tab: ReportTab) -> None:
+    """One copy of the snapshot, and the oldest check time, in the audit JSON."""
+    report_path = save_report(tab, run_snapshot())
+    saved = json.loads(audit_of(report_path).read_text(encoding="utf-8"))
+    assert saved["retraction"]["snapshot"] == list(run_snapshot().values())
+    assert saved["retraction"]["checked_at"] == RUN.isoformat()
+    # a run that never checked writes no snapshot at all
+    report_path = save_report(tab, None)
+    assert "retraction" not in json.loads(audit_of(report_path).read_text(encoding="utf-8"))
+
+
+def test_loading_a_report_shows_its_checked_on_line(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The saved-work line and Check again; no request."""
+    report_path = save_report(tab, run_snapshot())
+    tab._hide_saved_retraction()
+    forbid_requests(monkeypatch)
+    load(tab, report_path, monkeypatch)
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-01"
+    assert not tab.check_again_btn.isHidden() and tab.check_again_btn.isEnabled()
+    # a live report afterwards hides it again
+    tab.display_report(
+        report=REPORT, question=QUESTION, citations=[], documents_found=[], all_scored_documents=[],
+        auto_save=False,
+    )
+    assert tab.retraction_line.isHidden()
+
+
+def test_loading_an_old_report_says_never_checked(tab: ReportTab, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No retraction key: never checked, Check again offered."""
+    report_path = save_report(tab, None)
+    load(tab, report_path, monkeypatch)
+    assert tab.retraction_line.text() == "Retraction status never checked"
+    assert not tab.check_again_btn.isHidden()
+
+
+def test_check_again_on_a_loaded_report_rewrites_only_the_audit_json_snapshot(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Cited and left-out papers checked; the .md byte-identical; the rest of the JSON kept."""
+    report_path = save_report(tab, run_snapshot())
+    audit_path = audit_of(report_path)
+    md_before = report_path.read_bytes()
+    before = json.loads(audit_path.read_text(encoding="utf-8"))
+    load(tab, report_path, monkeypatch)
+
+    checker, _ = run_check_again(
+        tab,
+        storage,
+        monkeypatch,
+        {
+            CITED.id: check(RetractionStatus.RETRACTED, NOW),
+            LEFT_OUT.id: check(RetractionStatus.CLEAR, NOW),
+        },
+    )
+
+    [(ids, _kwargs)] = checker.calls
+    assert ids == sorted([CITED.id, LEFT_OUT.id])  # the cited paper and the one the run left out
+    assert report_path.read_bytes() == md_before
+    after = json.loads(audit_path.read_text(encoding="utf-8"))
+    assert {k: v for k, v in after.items() if k != "retraction"} == {
+        k: v for k, v in before.items() if k != "retraction"
+    }
+    rows = {r["document_id"]: r for r in after["retraction"]["snapshot"]}
+    assert rows[CITED.id]["status"] == "retracted" and rows[CITED.id]["excluded"] is False
+    assert rows[LEFT_OUT.id]["status"] == "clear" and rows[LEFT_OUT.id]["excluded"] is True
+    assert after["retraction"]["checked_at"] == min(r["checked_at"] for r in rows.values())
+    assert not list(audit_path.parent.glob("*.tmp"))
+    assert CITED.title in tab.retraction_warning.text()
+    assert storage.retraction_checks([paper_key(CITED)])[paper_key(CITED)].verdict.status is (
+        RetractionStatus.RETRACTED
+    )
+
+
+def test_a_failed_write_tells_the_reader_and_leaves_the_file(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The replace fails: not-saved wording, file untouched, no temp file left."""
+    report_path = save_report(tab, run_snapshot())
+    audit_path = audit_of(report_path)
+    before = audit_path.read_bytes()
+    load(tab, report_path, monkeypatch)
+
+    def refuse(*_a: Any, **_k: Any) -> None:
+        raise OSError("read-only")
+
+    monkeypatch.setattr(report_tab_module.os, "replace", refuse)
+    run_check_again(tab, storage, monkeypatch, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+
+    assert audit_path.read_bytes() == before
+    assert not list(audit_path.parent.glob("*.tmp"))
+    assert CHECK_AGAIN_NOT_SAVED in tab.retraction_line.text()
