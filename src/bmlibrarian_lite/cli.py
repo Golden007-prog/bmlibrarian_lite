@@ -41,6 +41,9 @@ Usage:
     # Keep a PDF the title check set aside as its article's
     bmll keep-pdf ~/knowledgebase/pdf/2016/10.3945_ajcn.115.120147.pdf.mismatch
 
+    # Refresh the local Retraction Watch copy (exit 1 if it could not be refreshed)
+    bmll retractions-update
+
     # Show version
     bmll --version
 
@@ -224,6 +227,49 @@ def cmd_keep_pdf(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_retractions_update(args: argparse.Namespace) -> int:
+    """Refresh the local Retraction Watch copy.
+
+    Args:
+        args: Parsed command line arguments
+
+    Returns:
+        Exit code (0 when a new copy dated today was built, 1 otherwise)
+    """
+    from datetime import UTC, datetime
+
+    import requests
+
+    from . import LiteConfig
+    from .polite_session import mount_politely
+    from .retraction_export import ExportState, export_copy, refresh_export
+    from .transparency.assessment import contact_email
+
+    config = LiteConfig.load()
+    data_dir = config.storage.data_dir
+    today = datetime.now(UTC).date()
+    session = mount_politely(requests.Session())
+    try:
+        copy = refresh_export(data_dir, session, mailto=contact_email(config), today=today)
+    except Exception as e:  # noqa: BLE001 - only the exception's type is reported
+        print(f"Refresh failed: {type(e).__name__}.")
+        copy = export_copy(data_dir, today=today)
+    finally:
+        session.close()
+
+    if copy.state is ExportState.CURRENT and copy.data_as_of == today:
+        print(f"Retraction Watch copy refreshed; data as of {today.isoformat()}.")
+        return 0
+    if copy.data_as_of is None:
+        print(f"Refresh did not produce a new copy; there is no copy to keep (state: {copy.state.value}).")
+    else:
+        print(
+            f"Refresh did not produce a new copy; kept copy is {copy.state.value}, "
+            f"data as of {copy.data_as_of.isoformat()}."
+        )
+    return 1
+
+
 def cmd_config(args: argparse.Namespace) -> int:
     """
     Show or export configuration.
@@ -364,6 +410,13 @@ Examples:
         help="The set-aside PDF (<name>.pdf.mismatch) or a PDF in the library",
     )
     keep_parser.set_defaults(func=cmd_keep_pdf)
+
+    # Retractions update command
+    retractions_parser = subparsers.add_parser(
+        "retractions-update",
+        help="Refresh the local Retraction Watch copy",
+    )
+    retractions_parser.set_defaults(func=cmd_retractions_update)
 
     # Config command
     config_parser = subparsers.add_parser(
