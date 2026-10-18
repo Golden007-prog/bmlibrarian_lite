@@ -667,3 +667,25 @@ def test_a_corrected_record_replaces_a_stored_label_retraction(storage, tmp_path
     out = _checker(storage, tmp_path, StubSession()).check([typed])
     assert out["doi-10.1_a"].verdict.status is RetractionStatus.CLEAR
     assert storage.retraction_checks([_KEY])[_KEY].verdict.status is RetractionStatus.CLEAR
+
+
+def test_a_fresh_retraction_replaces_a_stored_label_retraction_reached_without_types(storage, tmp_path):
+    """Control: the unreadable-label guard never keeps a label row against a fresh notice of retraction."""
+    _current_export(tmp_path)
+    key = "doi:10.9/retracted"
+    _store(storage, RetractionStatus.RETRACTED, _LABEL, key=key)
+    out = _checker(storage, tmp_path, StubSession()).check([_doc("doi-10.9_retracted", doi="10.9/retracted")])
+    check = out["doi-10.9_retracted"]
+    assert check.verdict.status is RetractionStatus.RETRACTED
+    assert check.verdict.deciding.source is not RetractionSource.PUBMED_LABEL
+    assert check.verdict.deciding.notice_doi == "10.9/notice"
+    assert storage.retraction_checks([key])[key] == check
+
+
+def test_an_outage_never_erases_a_stored_concern(storage, tmp_path):
+    """Crossref down on the re-check: a stored concern is returned and kept, as a retraction is."""
+    _current_export(tmp_path)
+    old = _store(storage, RetractionStatus.CONCERN, _CONCERN)
+    out = _checker(storage, tmp_path, StubSession(_unreachable)).check([_doc("a", doi="10.1/a")])
+    assert out["a"] == old
+    assert storage.retraction_checks([_KEY])[_KEY] == old
