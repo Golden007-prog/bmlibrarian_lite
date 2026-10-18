@@ -1032,6 +1032,17 @@ class IncrementalSearchWorker(SingleOutcome, QThread):
                         break
 
                 if batch_new_docs:
+                    # Stored and linked before anyone is told of them: a
+                    # document found by any route is kept, never only in
+                    # memory. A storage failure raises into the handler
+                    # below, so nothing is emitted as if stored. No embedder:
+                    # this worker has none, and add_documents stores without
+                    # vectors when given none.
+                    self.storage.add_documents(batch_new_docs)
+                    self.storage.add_question_documents(
+                        question=self.question,
+                        document_ids=[d.id for d in batch_new_docs],
+                    )
                     self.batch_complete.emit(batch_new_docs)
 
                 # Update progress
