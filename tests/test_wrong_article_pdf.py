@@ -33,6 +33,9 @@ from bmlibrarian_lite.pdf_discovery import (
     PDFSourceType,
 )
 from bmlibrarian_lite.pdf_library_check import mark_kept
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 TITLE = "Coffee and caffeine consumption and the risk of hypertension in postmenopausal women"
 OTHER = "Scientific opinion on the safety of bovine colostrum filtration"

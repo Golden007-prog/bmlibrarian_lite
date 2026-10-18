@@ -31,12 +31,17 @@ NOTICE = "10.1/notice"
 
 
 def _check(status: RetractionStatus) -> PaperCheck:
-    if status is RetractionStatus.RETRACTED:
+    if status in (RetractionStatus.RETRACTED, RetractionStatus.CONCERN):
+        kind = (
+            RetractionKind.RETRACTION
+            if status is RetractionStatus.RETRACTED
+            else RetractionKind.EXPRESSION_OF_CONCERN
+        )
         verdict = RetractionVerdict(
             status,
             RetractionEvidence(
                 RetractionSource.CROSSREF_PUBLISHER,
-                RetractionKind.RETRACTION,
+                kind,
                 "2025-03-04",
                 NOTICE,
             ),
@@ -228,3 +233,133 @@ def test_each_workflow_screens_once(checker: FakeChecker) -> None:
     ctx.interrogation_agent.ask.return_value = ("A", [])
     mcp_server._handle_ask_document({"question": "q", "document_id": "pmid-1"}, ctx)
     assert checker.calls == 4
+
+
+def _boom_builder(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make building the checker raise, with provider text in the message."""
+
+    def boom(ctx: object) -> None:
+        raise RuntimeError("secret provider text")
+
+    monkeypatch.setattr(mcp_server, "_build_checker", boom)
+
+
+def _ok_fulltext(ctx: MagicMock, **info: str) -> None:
+    """Have discovery succeed, optionally with article info."""
+    article = MagicMock(**info) if info else None
+    ctx.fulltext_discoverer.discover_fulltext.return_value = FulltextResult(
+        success=True,
+        source_type=FulltextSourceType.EUROPEPMC_XML,
+        markdown_content="BODY",
+        article_info=article,
+    )
+    ctx.interrogation_agent.load_document.return_value = "pmc-9"
+
+
+def test_a_checker_that_cannot_be_built_leaves_every_tool_unchecked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A build failure never fails a call, and no provider text leaks."""
+    _boom_builder(monkeypatch)
+    good, bad = _docs()
+    ctx = _make_context()
+    ctx.search_agent.search.return_value = (_make_session(), [good, bad])
+    out = mcp_server._handle_search({"query": "q"}, ctx)
+    assert len(out["documents"]) == 2 and out["retraction"]["unchecked"] == 2
+    ctx.scoring_agent.score_documents.return_value = MagicMock(accepted=[], shortfall=None)
+    fc = mcp_server._handle_fact_check({"claim": "c"}, ctx)
+    assert fc["retraction"]["unchecked"] == 2
+    _ok_fulltext(ctx)
+    ft = mcp_server._handle_fulltext({"pmid": "7"}, ctx)
+    ctx.storage.get_document.return_value = good
+    ctx.interrogation_agent.ask.return_value = ("A", [])
+    ask = mcp_server._handle_ask_document({"question": "q", "document_id": "pmid-1"}, ctx)
+    for tool_out in (out, fc, ft, ask):
+        assert "secret" not in str(tool_out)
+    assert ft["retraction_status"]["status"] == "unchecked"
+    assert ask["retraction_status"]["status"] == "unchecked"
+
+
+def test_a_check_that_raises_leaves_the_single_paper_tools_unchecked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing check never fails ask_document or get_document_fulltext."""
+
+    class Boom(FakeChecker):
+        def check(self, documents, **_kw):
+            """Fail."""
+            raise RuntimeError("secret provider text")
+
+    fake = Boom({})
+    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx: fake)
+    ctx = _make_context()
+    _ok_fulltext(ctx)
+    ft = mcp_server._handle_fulltext({"pmid": "7"}, ctx)
+    ctx.storage.get_document.return_value = _docs()[0]
+    ctx.interrogation_agent.ask.return_value = ("A", [])
+    ask = mcp_server._handle_ask_document({"question": "q", "document_id": "pmid-1"}, ctx)
+    assert ft["retraction_status"]["status"] == ask["retraction_status"]["status"] == "unchecked"
+    assert "secret" not in str(ft) + str(ask)
+    assert fake.closed
+
+
+def test_concern_is_prefixed_and_named(checker: FakeChecker) -> None:
+    """A concern status prefixes the text."""
+    checker.by_id["pmid-7"] = RetractionStatus.CONCERN
+    ctx = _make_context()
+    _ok_fulltext(ctx)
+    out = mcp_server._handle_fulltext({"pmid": "7"}, ctx)
+    assert out["retraction_status"]["status"] == "concern"
+    assert out["content"] == out["retraction_status"]["line"] + "\n\nBODY"
+
+
+def test_search_with_no_documents(checker: FakeChecker) -> None:
+    """Nothing found means nothing screened."""
+    ctx = _make_context()
+    ctx.search_agent.search.return_value = (_make_session(), [])
+    out = mcp_server._handle_search({"query": "q"}, ctx)
+    assert out["documents"] == []
+    assert out["retraction"] == {"left_out": [], "unchecked": 0, "checked_at": None}
+    assert checker.calls == 0
+
+
+def test_pmc_only_request_is_checked_with_the_ids_discovery_learned(
+    checker: FakeChecker,
+) -> None:
+    """A pmc_id-only request is checked by the DOI discovery found; the id is unchanged."""
+    seen = []
+    original = checker.check
+
+    def spy(documents, **kw):
+        seen.extend(documents)
+        return original(documents, **kw)
+
+    checker.check = spy  # type: ignore[method-assign]
+    ctx = _make_context()
+    _ok_fulltext(ctx, title="T", pmid="55", doi="10.9/found")
+    out = mcp_server._handle_fulltext({"pmc_id": "PMC9"}, ctx)
+    assert (seen[0].doi, seen[0].pmid) == ("10.9/found", "55")
+    assert out["retraction_status"]["status"] == "clear"
+    assert out["document_id"] == "pmc-9"
+
+
+def test_fact_check_notice_order(checker: FakeChecker, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Text order: search notice, analysis notice, retraction notice, body."""
+    monkeypatch.setattr(mcp_server, "with_search_shortfall_notice", lambda t, s: f"SEARCH\n\n{t}")
+    monkeypatch.setattr(
+        mcp_server, "with_analysis_shortfall_notice", lambda t, s: f"ANALYSIS\n\n{t}"
+    )
+    good, bad = _docs()
+    checker.by_id["pmid-2"] = RetractionStatus.RETRACTED
+    ctx = _make_context()
+    ctx.search_agent.search.return_value = (_make_session(), [good, bad])
+    ctx.scoring_agent.score_documents.return_value = MagicMock(
+        accepted=[_make_scored_document(good)], shortfall=None
+    )
+    ctx.citation_agent.extract_all_citations.return_value = MagicMock(
+        citations=[], failed=[], shortfall=None
+    )
+    ctx.reporting_agent.generate_report.return_value = "BODYTEXT"
+    report = mcp_server._handle_fact_check({"claim": "c"}, ctx)["report"]
+    order = [report.index(m) for m in ("SEARCH", "ANALYSIS", "Retracted papers left out", "BODYTEXT")]
+    assert order == sorted(order)

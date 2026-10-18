@@ -336,26 +336,3 @@ def pytest_unconfigure(config: pytest.Config) -> None:
         config: The pytest configuration.
     """
     gc.enable()
-
-
-@pytest.fixture(autouse=True)
-def _mcp_retraction_checker_finds_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MCP tool tests are not about retractions: every paper is clear, no network."""
-    from datetime import UTC, datetime
-
-    from bmlib.publications.retraction_status import RetractionStatus, RetractionVerdict
-
-    from bmlibrarian_lite import mcp_server
-    from bmlibrarian_lite.retraction_store import PaperCheck
-
-    class _ClearChecker:
-        def check(self, documents, **_kwargs):  # type: ignore[no-untyped-def]
-            clear = PaperCheck(
-                RetractionVerdict(RetractionStatus.CLEAR), datetime.now(UTC), None, None
-            )
-            return {d.id: clear for d in documents}
-
-        def close(self) -> None:
-            pass
-
-    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx: _ClearChecker())

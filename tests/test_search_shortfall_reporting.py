@@ -53,6 +53,9 @@ from bmlibrarian_lite.search_failures import (
     with_search_shortfall_notice,
 )
 from bmlibrarian_lite.search_service import UnifiedSearchResult
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 RATE_LIMITED = RequestFailure(RequestFailureKind.HTTP_STATUS, 429)
 PUBMED_DOWN = RetrievalShortfall(SearchProvider.PUBMED, RATE_LIMITED)

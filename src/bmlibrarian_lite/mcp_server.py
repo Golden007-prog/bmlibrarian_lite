@@ -65,6 +65,7 @@ from bmlibrarian_lite.retraction_checks import RetractionChecker
 from bmlibrarian_lite.retraction_crossref import crossref_session
 from bmlibrarian_lite.retraction_screen import (
     RetractionScreen,
+    screen_documents,
     screen_with_fallback,
     unchecked_check,
 )
@@ -417,7 +418,16 @@ def _screen(ctx: _AgentsContext, documents: Sequence[LiteDocument]) -> Retractio
     Returns:
         The screen; a failed check leaves every document unchecked.
     """
-    return screen_with_fallback(_build_checker(ctx), documents)
+    try:
+        checker = _build_checker(ctx)
+    except Exception as exc:
+        # the type only: provider text never reaches the reader or the log
+        logger.warning(
+            "Retraction checker not built (%s); every document unchecked", type(exc).__name__
+        )
+        unchecked = unchecked_check()
+        return screen_documents(documents, {doc.id: unchecked for doc in documents})
+    return screen_with_fallback(checker, documents)
 
 
 def _retraction_payload(screen: RetractionScreen | None) -> dict[str, Any]:
@@ -523,10 +533,10 @@ def _fact_check_result(
     Returns:
         The tool result.
     """
-    qualified = with_analysis_shortfall_notice(report, analysis_shortfalls)
+    # Text order: search notice, analysis notice, retraction notice, body
+    qualified = with_retraction_notice(report, screen) if screen is not None else report
+    qualified = with_analysis_shortfall_notice(qualified, analysis_shortfalls)
     qualified = with_search_shortfall_notice(qualified, shortfalls)
-    if screen is not None:
-        qualified = with_retraction_notice(qualified, screen)
     return {
         "report": qualified,
         "search_query": search_query,
@@ -838,9 +848,18 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
         return failed
 
     title = result.article_info.title if result.article_info else "Unknown"
+    # What discovery learned stands in for an identifier the request lacked
+    info = result.article_info
     check = _paper_check(
         ctx,
-        LiteDocument(id=doc_id, title=title, abstract="", doi=doi, pmid=pmid, pmc_id=pmc_id),
+        LiteDocument(
+            id=doc_id,
+            title=title,
+            abstract="",
+            doi=doi or (info.doi if info else None),
+            pmid=pmid or (info.pmid if info else None),
+            pmc_id=pmc_id,
+        ),
     )
 
     payload: dict[str, Any] = {

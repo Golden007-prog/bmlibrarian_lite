@@ -18,6 +18,9 @@ from bmlibrarian_lite.identifiers import (
     read_caller_ids,
     refused_pmid_sentence,
 )
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 CONTRACT = (
     Path(__file__).resolve().parent.parent

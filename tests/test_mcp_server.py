@@ -45,6 +45,9 @@ from bmlibrarian_lite.mcp_server import (
     _handle_search,
     _ProgressReporter,
 )
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 # -- Fixtures ----------------------------------------------------------------
 
