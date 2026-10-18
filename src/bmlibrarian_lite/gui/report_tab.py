@@ -96,6 +96,7 @@ from ..retraction_text import (
     CHECK_AGAIN_NOT_SAVED,
     NO_AUDIT_RECORD_LINE,
     CHECKING_AGAIN_LINE,
+    not_checked_again_clause,
     plain_title,
     saved_work_line,
     saved_work_warning,
@@ -136,8 +137,9 @@ class ReportTab(QWidget):
 
     Signals:
         document_requested: Emitted when user clicks a citation (document_id)
-        retraction_rechecked: Emitted with a reopened run's new snapshot rows
-            by document id after *Check again*, for the audit trail
+        retraction_rechecked: Emitted with a reopened question's new snapshot
+            rows by document id after *Check again*, for the audit trail (never
+            for a loaded report file, which the audit trail does not show)
     """
 
     # Emitted when user clicks a citation link in the report
@@ -517,10 +519,20 @@ class ReportTab(QWidget):
             note = CHECK_AGAIN_NOT_SAVED
         if not showing:
             return  # the reader moved on; the run's record is still updated
+        # a decided row kept over an unchecked answer: no source could be reached for it
+        missed = sum(
+            1
+            for row in updated.rows
+            if (answer := screen.checks.get(row["document_id"])) is not None
+            and answer.verdict.status is RetractionStatus.UNCHECKED
+            and row["status"] != RetractionStatus.UNCHECKED.value
+        )
         rows = RetractionScreen.from_snapshot(updated.to_snapshot())
         self._retraction_snapshot = rows
-        self._show_saved_retraction(latest_checks(rows, screen.checks), note)
-        self.retraction_rechecked.emit(rows)
+        self._show_saved_retraction(latest_checks(rows, screen.checks), not_checked_again_clause(missed) + note)
+        if not checkpoint_id.startswith(FILE_ID_PREFIX):
+            # the audit trail tab shows the reopened question, never a loaded file
+            self.retraction_rechecked.emit(rows)
 
     @staticmethod
     def _rewrite_audit_snapshot(

@@ -225,6 +225,13 @@ CHECK_AGAIN_NOT_SAVED = "; the new status could not be saved with this run"
 NO_AUDIT_RECORD_LINE = "Retraction status not recorded for this report"
 
 
+def not_checked_again_clause(count: int) -> str:
+    """*Check again*'s note for papers no source answered, whose record stays as it was; "" for none."""
+    if not count:
+        return ""
+    return f"; {'1 paper' if count == 1 else f'{count:,} papers'} could not be checked again"
+
+
 def saved_work_warning(
     changed: Sequence[tuple[str, PaperCheck]], titles: Mapping[str, str]
 ) -> str | None:

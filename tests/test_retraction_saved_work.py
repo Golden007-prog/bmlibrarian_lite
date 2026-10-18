@@ -536,7 +536,32 @@ def test_an_outage_during_check_again_leaves_the_record_and_line(
     run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.UNCHECKED, NOW) for d in DOCUMENTS})
     rows = recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata)
     assert rows == recorded_retraction_snapshot(json.loads(json.dumps(metadata)))
-    assert tab.retraction_line.text() == "Retraction status checked 2026-10-01"
+    assert tab.retraction_line.text() == (
+        "Retraction status checked 2026-10-01; 3 papers could not be checked again"
+    )
+
+
+def test_an_outage_over_an_all_clear_snapshot_says_how_many_could_not_be_checked_again(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No source answered: the old date stays, and the line counts the papers not checked again."""
+    clear = screen_documents(DOCUMENTS, {d.id: check(RetractionStatus.CLEAR, RUN) for d in DOCUMENTS})
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, clear)
+    checkpoint_id = saved_checkpoint(storage, metadata)
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.UNCHECKED, NOW) for d in DOCUMENTS})
+    assert tab.retraction_line.text() == (
+        "Retraction status checked 2026-10-01; 3 papers could not be checked again"
+    )
+    # control: one paper served, two not
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    run_check_again(
+        tab,
+        storage,
+        monkeypatch,
+        {**{d.id: check(RetractionStatus.UNCHECKED, NOW) for d in DOCUMENTS}, CITED.id: check(RetractionStatus.CLEAR, NOW)},
+    )
+    assert tab.retraction_line.text().endswith("; 2 papers could not be checked again")
 
 
 def test_a_late_result_for_another_question_changes_neither_view_nor_audit_trail(
@@ -908,6 +933,19 @@ def test_check_again_on_a_loaded_report_rewrites_only_the_audit_json_snapshot(
     assert storage.retraction_checks([paper_key(CITED)])[paper_key(CITED)].verdict.status is (
         RetractionStatus.RETRACTED
     )
+
+
+def test_a_files_check_again_leaves_the_audit_trail_tab(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The audit trail tab shows another run: a loaded file's new snapshot is not pushed to it."""
+    report_path = save_report(tab, run_snapshot())
+    load(tab, report_path, monkeypatch)
+    rechecked: list[Any] = []
+    tab.retraction_rechecked.connect(rechecked.append)
+    run_check_again(tab, storage, monkeypatch, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    assert rechecked == []
+    assert CITED.title in tab.retraction_warning.text()  # the file's own view did update
 
 
 def test_a_failed_write_tells_the_reader_and_leaves_the_file(
