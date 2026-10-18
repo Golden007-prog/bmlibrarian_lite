@@ -526,6 +526,16 @@ def test_a_cancelled_check_again_saves_nothing(qapp: Any) -> None:
     assert got == [("cancelled", ("cp",))]
 
 
+def test_quit_cancels_check_again_and_leaves_the_one_bounded_wait_to_the_keeper() -> None:
+    """The keeper holds the worker and waits for it at quit: the tab cancels and never waits a second time."""
+    worker = MagicMock()
+    worker.isRunning.return_value = True
+    worker.wait.side_effect = lambda *_a: pytest.fail("the tab waited for the worker itself")
+    ReportTab._cancel_at_quit(SimpleNamespace(_recheck_worker=worker))
+    worker.cancel.assert_called_once_with()
+    ReportTab._cancel_at_quit(SimpleNamespace(_recheck_worker=None))  # nothing running: nothing to do
+
+
 def test_an_outage_during_check_again_leaves_the_record_and_line(
     tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
 ) -> None:

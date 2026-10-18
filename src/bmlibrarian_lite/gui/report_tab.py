@@ -53,7 +53,7 @@ from bmlib.publications.retraction_status import RetractionStatus
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 
 from ..config import LiteConfig
-from ..constants import DEFAULT_MIN_SCORE, KEPT_THREAD_EXIT_WAIT_MS, SCORE_MAX
+from ..constants import DEFAULT_MIN_SCORE, SCORE_MAX
 from ..exceptions import SQLiteError
 from ..storage import LiteStorage
 from ..data_models import (
@@ -591,11 +591,16 @@ class ReportTab(QWidget):
             self._show_saved_retraction()
 
     def _cancel_at_quit(self) -> None:
-        """Cancel a running *Check again* and wait for it a bounded time."""
+        """Cancel a running *Check again*; the thread keeper does the one bounded wait.
+
+        Every started worker is kept (``keep_until_finished``), and the keeper
+        waits for its threads at quit within one ``KEPT_THREAD_EXIT_WAIT_MS``.
+        This slot connects when the main window builds the tab, before the
+        first kept thread hooks the keeper's wait, so the cancel comes first.
+        """
         worker = self._recheck_worker
         if worker is not None and worker.isRunning():
             worker.cancel()
-            worker.wait(KEPT_THREAD_EXIT_WAIT_MS)
 
     def _make_citations_clickable(self, markdown_report: str) -> str:
         """
