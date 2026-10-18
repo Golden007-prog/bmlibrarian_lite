@@ -92,6 +92,8 @@ def test_snapshot_round_trips():
     assert back["a"]["checked_at"] == WHEN.isoformat()
     assert RetractionEvidence.from_dict(back["a"]["deciding"]) == _evidence()
     assert back["b"]["deciding"] is None
+    assert back["a"]["excluded"] is True
+    assert back["b"]["excluded"] is False
 
 
 def test_snapshot_tolerates_older_rows(caplog):

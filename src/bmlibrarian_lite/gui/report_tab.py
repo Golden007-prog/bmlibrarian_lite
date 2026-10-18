@@ -62,13 +62,13 @@ from ..audit_records import (
     EXTRACTION_FAILED_COUNT_KEY,
     DocumentOutcomes,
     classify_document_outcomes,
+    excluded_in_snapshot,
     extraction_failure_record,
     extraction_failure_summary,
     outcome_entries,
     outcome_summary,
     predates_outcome_split,
     readable_extraction_failures,
-    retracted_in_snapshot,
     score_failure_reason,
     without_invented_reason,
 )
@@ -506,7 +506,7 @@ class ReportTab(QWidget):
             self._documents_found,
             self._all_scored_documents,
             DEFAULT_MIN_SCORE if recorded is None else recorded,
-            excluded_retracted=retracted_in_snapshot(
+            excluded_retracted=excluded_in_snapshot(
                 self._documents_found, self._retraction_snapshot
             ),
         )

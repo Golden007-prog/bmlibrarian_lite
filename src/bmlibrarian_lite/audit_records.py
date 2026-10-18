@@ -547,15 +547,19 @@ def recorded_retraction_snapshot(checkpoint_metadata: object) -> dict[str, dict[
     return RetractionScreen.from_snapshot(rows)
 
 
-def retracted_in_snapshot(
+def excluded_in_snapshot(
     documents: Sequence[LiteDocument],
     retraction_snapshot: Mapping[str, Mapping[str, Any]] | None,
 ) -> list[LiteDocument]:
-    """The documents a run's snapshot records as retracted, i.e. left out.
+    """The documents a run's snapshot records it left out as retracted.
+
+    Read from the row's ``excluded`` flag, never its status: *Check again*
+    rewrites the status, but not what the run did.
 
     Args:
         documents: The run's documents.
-        retraction_snapshot: Its snapshot rows by document id, or None.
+        retraction_snapshot: Its snapshot rows by document id, or None. A row
+            without the flag reads as not excluded.
 
     Returns:
         Those documents, in order.
@@ -564,7 +568,7 @@ def retracted_in_snapshot(
     return [
         document
         for document in documents
-        if rows.get(document.id, {}).get("status") == RetractionStatus.RETRACTED
+        if rows.get(document.id, {}).get("excluded") is True
     ]
 
 

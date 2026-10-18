@@ -429,3 +429,12 @@ def test_a_fresh_concern_does_not_replace_a_stored_retraction_during_an_outage(
     old = _store(storage, RetractionStatus.RETRACTED, _NOTICE, key="doi:10.9/concern")
     check, row = _recheck(storage, tmp_path, _doc("a", doi="10.9/concern"))
     assert check == old and row == old
+
+
+def test_close_closes_the_session(storage, tmp_path):
+    """A checker built for one run releases its session when told."""
+    from unittest.mock import MagicMock
+
+    session = MagicMock()
+    _checker(storage, tmp_path, session).close()
+    session.close.assert_called_once_with()

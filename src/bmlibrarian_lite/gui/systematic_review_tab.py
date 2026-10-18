@@ -773,7 +773,8 @@ class WorkflowWorker(QThread):
         """Check the gathered documents and leave the retracted ones out.
 
         A check that fails never stops the review: every document is then
-        unchecked, goes on, and is counted as such.
+        unchecked, goes on, and is counted as such. The checker is built for
+        this one run, so it is closed when the check is done.
 
         Args:
             checker: The run's retraction checker.
@@ -796,6 +797,8 @@ class WorkflowWorker(QThread):
                 None,
             )
             checks = {doc.id: unchecked for doc in documents}
+        finally:
+            checker.close()
         return screen_documents(documents, checks)
 
     def _report_incomplete_search(self, metadata: ReportMetadata) -> None:

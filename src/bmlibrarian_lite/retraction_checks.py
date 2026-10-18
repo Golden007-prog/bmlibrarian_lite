@@ -113,6 +113,10 @@ class RetractionChecker:
         self._now = now
         self._refresh_tried = False
 
+    def close(self) -> None:
+        """Close the session; for a checker built for one use."""
+        self._session.close()
+
     def _today(self) -> date:
         return self._now().astimezone(UTC).date()
 

@@ -69,12 +69,16 @@ class RetractionScreen:
         """Rows for the report and audit trail, one per held document.
 
         A document with no check is an unchecked row with ``checked_at`` ``None``.
+        ``excluded`` is a fact of the run: a later *Check again* may rewrite
+        ``status``, never this, so readers decide exclusion from it alone.
 
         Returns:
             JSON-safe dicts: document_id, title, doi, pmid, status,
-            checked_at (ISO or ``None``) and deciding (evidence dict or ``None``).
+            checked_at (ISO or ``None``), deciding (evidence dict or ``None``)
+            and excluded (whether this run left the document out).
         """
         rows = []
+        excluded_ids = {doc.id for doc in self.excluded}
         for doc in (*self.kept, *self.excluded):
             check = self.checks.get(doc.id)
             deciding = check.verdict.deciding if check else None
@@ -87,6 +91,7 @@ class RetractionScreen:
                     "status": (check.verdict.status if check else RetractionStatus.UNCHECKED).value,
                     "checked_at": as_utc(check.checked_at).isoformat() if check else None,
                     "deciding": deciding.to_dict() if deciding else None,
+                    "excluded": doc.id in excluded_ids,
                 }
             )
         return rows

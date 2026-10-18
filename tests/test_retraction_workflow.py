@@ -33,6 +33,7 @@ from bmlib.publications.retraction_status import (  # noqa: E402
 from bmlibrarian_lite.audit_records import recorded_retraction_snapshot  # noqa: E402
 from bmlibrarian_lite.config import LiteConfig  # noqa: E402
 from bmlibrarian_lite.data_models import (  # noqa: E402
+    CitationOutcome,
     DocumentSource,
     LiteDocument,
     ReportMetadata,
@@ -100,6 +101,11 @@ class FakeChecker:
         self.error = error
         self.during = during
         self.asked: list[list[str]] = []
+        self.closed = False
+
+    def close(self) -> None:
+        """Record that the run released the checker."""
+        self.closed = True
 
     def check(
         self,
@@ -130,11 +136,13 @@ def run_review(
     storage: LiteStorage,
     checker: FakeChecker,
     cancel_in_check: bool = False,
+    score_value: int = 1,
 ) -> tuple[WorkflowWorker, list[str], dict[str, list[tuple[Any, ...]]]]:
-    """Run a review over preloaded documents that ends after scoring.
+    """Run a review over preloaded documents.
 
-    Every document scores below the threshold, so the run ends before any
-    citation or report call.
+    By default every document scores below the threshold, so the run ends
+    before any citation or report call; a higher ``score_value`` takes it
+    through extraction and the report, both stood in for.
 
     Returns:
         The worker, the ids the scorer saw, and the signals emitted.
@@ -143,13 +151,23 @@ def run_review(
 
     def score(question: str, doc: LiteDocument) -> ScoredDocument:
         scored.append(doc.id)
-        return ScoredDocument(document=doc, score=1, explanation="Off topic.")
+        return ScoredDocument(document=doc, score=score_value, explanation="Scored.")
 
     scoring_agent = MagicMock()
     scoring_agent.score_document.side_effect = score
     monkeypatch.setattr(systematic_review_tab, "LiteScoringAgent", lambda **_: scoring_agent)
+    citation_agent = MagicMock()
+    citation_agent.extract_all_citations.return_value = CitationOutcome(
+        citations=[], documents_attempted=0, failed=()
+    )
+    monkeypatch.setattr(systematic_review_tab, "LiteCitationAgent", lambda **_: citation_agent)
+    reporting_agent = MagicMock()
+    reporting_agent.generate_report.return_value = "## Findings"
+    monkeypatch.setattr(systematic_review_tab, "LiteReportingAgent", lambda **_: reporting_agent)
     config = LiteConfig()
     monkeypatch.setattr(config.parallel, "get_scoring_workers", lambda provider: 1)
+    monkeypatch.setattr(config.parallel, "get_citation_workers", lambda provider: 1)
+    monkeypatch.setattr(config.transparency, "enabled", False)
     worker = WorkflowWorker(
         question=QUESTION,
         config=config,
@@ -208,6 +226,31 @@ class TestTheChokePoint:
         assert set(snapshot) == {d.id for d in DOCUMENTS}
         assert snapshot[LEFT_OUT.id]["status"] == "retracted"
         assert snapshot[UNKNOWN.id]["status"] == "unchecked"
+        assert {k for k, row in snapshot.items() if row["excluded"]} == {LEFT_OUT.id}
+
+    def test_the_snapshot_survives_the_extraction_record(
+        self, monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
+    ) -> None:
+        """Recording extraction failures rewrites the metadata whole; the snapshot stays."""
+        _, _, seen = run_review(monkeypatch, storage, FakeChecker(), score_value=4)
+
+        assert seen["finished"][0][0] == "## Findings"
+        checkpoint = storage.get_checkpoint_for_question(QUESTION)
+        assert checkpoint is not None
+        assert "citation_extraction_failed" in checkpoint.metadata
+        assert set(snapshot_of(storage)) == {d.id for d in DOCUMENTS}
+
+    @pytest.mark.parametrize("outcome", ["answered", "raised", "cancelled"])
+    def test_the_checker_is_closed_when_the_check_is_done(
+        self, monkeypatch: pytest.MonkeyPatch, storage: LiteStorage, outcome: str
+    ) -> None:
+        """Its session is built for one run and released after it."""
+        checker = FakeChecker(
+            error=sqlite3.OperationalError("locked") if outcome == "raised" else None
+        )
+        run_review(monkeypatch, storage, checker, cancel_in_check=outcome == "cancelled")
+
+        assert checker.closed
 
     def test_unchecked_document_is_scored_and_counted(
         self, monkeypatch: pytest.MonkeyPatch, storage: LiteStorage

@@ -1084,6 +1084,46 @@ class TestRetractedDocuments:
         ]
         assert entries["unscored_documents"] == []
 
+    def test_an_excluded_paper_stays_excluded_after_its_status_is_rewritten(self) -> None:
+        """*Check again* may find it reinstated; the run still left it out."""
+        from bmlibrarian_lite.audit_records import excluded_in_snapshot
+        from bmlibrarian_lite.retraction_screen import RetractionScreen
+
+        documents = [make_document("1"), make_document("2")]
+        snapshot = RetractionScreen.from_snapshot(
+            self.screen_of(documents, {"doc-2"}).to_snapshot()
+        )
+        snapshot["doc-2"]["status"] = "clear"
+
+        assert excluded_in_snapshot(documents, snapshot) == [documents[1]]
+
+    def test_a_scored_paper_found_retracted_later_is_not_excluded(self) -> None:
+        """The run scored it; a rewritten status must not file it twice."""
+        from bmlibrarian_lite.audit_records import excluded_in_snapshot
+        from bmlibrarian_lite.retraction_screen import RetractionScreen
+
+        documents = [make_document("1"), make_document("2")]
+        snapshot = RetractionScreen.from_snapshot(
+            self.screen_of(documents, {"doc-2"}).to_snapshot()
+        )
+        snapshot["doc-1"]["status"] = "retracted"
+
+        excluded = excluded_in_snapshot(documents, snapshot)
+        outcomes = classify_document_outcomes(
+            documents, [accepted("1")], MIN_SCORE, excluded_retracted=excluded
+        )
+
+        assert [d.id for d in outcomes.excluded_retracted] == ["doc-2"]
+        assert [s.document.id for s in outcomes.accepted] == ["doc-1"]
+
+    def test_a_row_without_the_flag_is_not_excluded(self) -> None:
+        """Status alone never decides exclusion."""
+        from bmlibrarian_lite.audit_records import excluded_in_snapshot
+
+        rows = {"doc-1": {"document_id": "doc-1", "status": "retracted"}}
+
+        assert excluded_in_snapshot([make_document("1")], rows) == []
+
     def test_a_run_that_recorded_no_snapshot_says_so(self) -> None:
         """None states "not recorded", never "none left out"."""
         outcomes = classify_document_outcomes([make_document("1")], [accepted("1")], MIN_SCORE)
