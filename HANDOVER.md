@@ -29,16 +29,17 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Next: retraction checking** (Phase 7 of
-`doc/plans/2026-10-17-port-bmlib-advances.md`, approved 2026-10-17; ledger row
-`bmlib:0.7.0-retraction-watch`). bmlib has `bmlib.publications.retractions`
-(Retraction Watch); no platform here warns about a retracted paper. Spec and
-plan first, then code.
+**Next: retraction checking** (Phase 7; ledger row
+`bmlib:0.7.0-retraction-watch`). Spec of the 2026-10-18 decisions:
+`docs/superpowers/specs/2026-10-18-retraction-checking-design.md`. It checks
+the Retraction Watch export, Crossref's `updated-by` and PubMed's label,
+because measurement showed neither of the first two contains the other.
+**Blocked on bmlib#504**, which the maintainer will do in bmlib: one rule and
+one fixture in Python and Rust, which the apps consume through UniFFI. After
+it lands: refresh lite's bmlib pin (**#583**), write the plan with
+superpowers:writing-plans, then build in the spec's PR order.
 
 ## Recently landed (context)
-
-Compressed once merged: the rules that still bind. Git history and the
-`doc/cross_platform/` READMEs carry the rest.
 
 - **The bmlib port set** (PRs #564–#570, #572; Phases 0–2 of the plan).
   **`doc/cross_platform/bmlib_sync/ledger.json` records every bmlib change
@@ -211,7 +212,7 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
-- **Retraction checking** (above); then the plan's work packages: Phase 3
+- **Retraction checking** (above, waits on bmlib#504); then the plan's work packages: Phase 3
   (transparency), Phase 4 (JATS, as adapter work over the Rust parser after
   **#583**), Phase 5 (retrieval), Phase 6 (LLM plumbing). The bmlib audit's
   leftovers are **#571**, **#573**–**#581**, **#585**.
@@ -464,8 +465,6 @@ enables DEBUG; **#245** the transparency CLIs take the NCBI key only as
   the store in an **earlier build's** model shape first (`StoreMigrationTests`
   shows how, with a snapshot `@Model` in the test); that is the only path that
   reaches the duplicate-checksum exception and an unclassified migration error.
-- **A silent SwiftPM hang** is `syspolicyd` (7–11 min per binary):
-  `swiftc -typecheck` first, then chain build, test and `xcodebuild` once.
 - **`swift test` compiles neither app target's platform-guarded sources.** On a
   macOS host every `#if os(iOS)` file becomes nothing, and the SPM target excludes
   `Sources/macOS` — so a break behind either guard is invisible to it *and* to
