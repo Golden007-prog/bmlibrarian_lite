@@ -33,22 +33,23 @@ have landed):
 `docs/superpowers/plans/2026-10-18-retraction-checking-desktop.md`, spec
 `docs/superpowers/specs/2026-10-18-retraction-checking-design.md`; all 14
 tasks done subagent-driven, every task and each PR whole-branch reviewed).
-- **PR 1 = #594** (open): bmlib git dependency (`f767215`, no PyPI release
+- **PR 1 = #594, merged**: bmlib git dependency (`f767215`, no PyPI release
   yet; a git pin blocks a PyPI upload), the contract copy
-  `doc/cross_platform/retraction_parity/`, ledger synced, publication types
-  stored (`documents.publication_types`), the incremental search stores
-  everything it fetches, the document upsert keeps rowid and never blanks a
-  field. Lodged #591 (Tier 1 never sees types), #592, #593, #590 (other
-  memory-only facts).
-- **PR 2** (local branch `feat/retraction-desktop-2`, head `98a1178b`, in the
-  worktree `.claude/worktrees/retraction-desktop`): export copy, Crossref
-  lookups, the checker and `retraction_checks` table, screening, the review
-  choke point, audit, report, MCP, badges/banner, `bmll retractions-update`.
-  **Open it against master after #594 merges** (rebase first). Lodged #595.
+  `doc/cross_platform/retraction_parity/`, publication types stored
+  (`documents.publication_types`), the incremental search stores everything
+  it fetches, the document upsert keeps rowid and never blanks a field.
+  Lodged #590–#593.
+- **PR 2, open** (`feat/retraction-desktop-2`, rebased on master after #594):
+  export copy, Crossref lookups, the checker and `retraction_checks` table,
+  screening, the review choke point, audit, report, MCP, badges/banner,
+  `bmll retractions-update`. Lodged #595.
 - **PR 3** (local `feat/retraction-desktop-3`, head `1d12734b`, cut from
-  PR 2): saved work (reopened question, saved report file, *Check again*;
-  snapshot rows keep `run_status`/`run_deciding` as facts of the run) and
-  the Research Questions passes screened. Open after PR 2 merges.
+  PR 2's pre-rebase head `98a1178b`, in the worktree
+  `.claude/worktrees/retraction-desktop`): saved work (reopened question,
+  saved report file, *Check again*; snapshot rows keep
+  `run_status`/`run_deciding` as facts of the run) and the Research
+  Questions passes screened. **After PR 2 merges:** `git rebase --onto
+  origin/master 98a1178b feat/retraction-desktop-3`, then open it.
 - The SDD ledger with every ruling is in that worktree's
   `.superpowers/sdd/2026-10-18-retraction-checking-desktop/progress.md`
   (git-ignored): keep it until PR 3 is open, then delete the worktree.
