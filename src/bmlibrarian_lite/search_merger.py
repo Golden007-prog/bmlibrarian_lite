@@ -75,6 +75,8 @@ class MergedArticle:
         has_fulltext_xml: Whether Europe PMC offers JATS XML full text: its
             record does not state that it lacks the text or holds it closed
             access (see ``europepmc.offers_fulltext_xml``)
+        publication_types: Union of both sources' labels in first-seen
+            order; ``None`` when neither source gave a list
     """
 
     pmid: str | None = None
@@ -90,6 +92,7 @@ class MergedArticle:
     sources: set[str] = field(default_factory=set)
     is_preprint: bool = False
     has_fulltext_xml: bool = False
+    publication_types: list[str] | None = None
 
     @property
     def primary_source(self) -> DocumentSource:
@@ -131,6 +134,7 @@ class MergedArticle:
             mesh_terms=self.mesh_terms,
             source=self.primary_source,
             is_preprint=self.is_preprint,
+            publication_types=self.publication_types,
             metadata={
                 "sources": list(self.sources),
                 "has_fulltext_xml": self.has_fulltext_xml,
@@ -300,6 +304,7 @@ class SearchResultMerger:
                     sources={source},
                     is_preprint=False,
                     has_fulltext_xml=False,
+                    publication_types=article.publication_types,
                 )
             else:
                 # Europe PMC article
@@ -317,6 +322,7 @@ class SearchResultMerger:
                     sources={source},
                     is_preprint=article.is_preprint,
                     has_fulltext_xml=article.has_fulltext_xml,
+                    publication_types=article.publication_types,
                 )
         except Exception as e:
             logger.warning(f"Failed to convert article: {e}")
@@ -353,6 +359,12 @@ class SearchResultMerger:
             for term in new.mesh_terms:
                 if term not in existing_terms:
                     existing.mesh_terms.append(term)
+
+        # Union of publication types, first-seen order; None stays None
+        if new.publication_types is not None:
+            existing.publication_types = list(
+                dict.fromkeys((existing.publication_types or []) + new.publication_types)
+            )
 
         # Update flags
         existing.has_fulltext_xml = existing.has_fulltext_xml or new.has_fulltext_xml

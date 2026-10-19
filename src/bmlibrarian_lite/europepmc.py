@@ -530,6 +530,8 @@ class ArticleInfo:
         pdf_render_url: Free PDF URL from Europe PMC fullTextUrlList
         europepmc_id: Europe PMC's own record ID: the PMID for a MED
             record, ``PPR1316954`` for a preprint.
+        publication_types: The record's ``pubTypeList`` labels, verbatim;
+            ``None`` when the record has no list
     """
 
     pmid: str | None = None
@@ -547,6 +549,7 @@ class ArticleInfo:
     source: str = ""
     pdf_render_url: str | None = None
     europepmc_id: str | None = None
+    publication_types: list[str] | None = None
 
     @property
     def fulltext_accession(self) -> str | None:
@@ -672,6 +675,13 @@ def _article_info_from_result(result: dict[str, Any]) -> ArticleInfo:
         except ValueError:
             pass
 
+    raw_types = (result.get("pubTypeList") or {}).get("pubType")
+    publication_types = (
+        [raw_types] if isinstance(raw_types, str)
+        else [t for t in raw_types if isinstance(t, str)]
+        if isinstance(raw_types, list) else None
+    )
+
     source = result.get("source", "")
     return ArticleInfo(
         pmid=result.get("pmid"),
@@ -689,6 +699,7 @@ def _article_info_from_result(result: dict[str, Any]) -> ArticleInfo:
         source=source,
         pdf_render_url=_extract_free_pdf_url(result),
         europepmc_id=result.get("id"),
+        publication_types=publication_types,
     )
 
 

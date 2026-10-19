@@ -60,6 +60,10 @@ dependencies = [
     "pygments>=2.17.0",
     # MCP server
     "mcp>=1.0.0,<2.0",
+    # The maintainer's shared library: owns the retraction rule
+    # (bmlib.publications.retraction_status). Pinned to a commit until
+    # bmlib 0.12.0 is on PyPI; then "bmlib>=0.12.0" and drop the hatch setting.
+    "bmlib @ git+https://github.com/hherb/bmlib@f76721545a76eceb683d9c460fb1f47e5c925cdb",
 ]
 
 [project.optional-dependencies]
@@ -89,6 +93,9 @@ Issues = "https://github.com/hherb/bmlibrarian_lite/issues"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.version]
 path = "src/bmlibrarian_lite/__init__.py"

@@ -1645,6 +1645,10 @@ class LiteDocument:
         source: Source of the document (PubMed, Europe PMC, local PDF, etc.)
         is_preprint: Whether this document is a preprint (Europe PMC only)
         metadata: Additional custom metadata
+        publication_types: The record's own publication-type labels.
+            ``None`` means not recorded; ``[]`` means the record had none.
+            Deliberately not in ``metadata``, which Tier 1 quality
+            classification reads.
     """
 
     id: str  # Unique identifier (e.g., "pmid-12345" or UUID)
@@ -1661,6 +1665,7 @@ class LiteDocument:
     source: DocumentSource = DocumentSource.PUBMED
     is_preprint: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    publication_types: list[str] | None = None
 
     @property
     def formatted_authors(self) -> str:
@@ -1714,6 +1719,7 @@ class LiteDocument:
             "source": self.source.value,
             "is_preprint": self.is_preprint,
             "metadata": self.metadata,
+            "publication_types": self.publication_types,
         }
 
     @classmethod
@@ -1742,6 +1748,7 @@ class LiteDocument:
             source=DocumentSource(data.get("source", "pubmed")),
             is_preprint=data.get("is_preprint", False),
             metadata=data.get("metadata", {}),
+            publication_types=data.get("publication_types"),
         )
 
 

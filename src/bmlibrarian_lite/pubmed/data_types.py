@@ -331,6 +331,8 @@ class ArticleMetadata:
         keywords: Author-provided keywords
         pmc_id: PubMed Central ID (if available)
         relevance_rank: Position in search results (if applicable)
+        publication_types: PubMed's publication-type labels; ``None`` when
+            the record carries no list
     """
 
     pmid: str
@@ -345,6 +347,7 @@ class ArticleMetadata:
     keywords: List[str] = field(default_factory=list)
     pmc_id: Optional[str] = None
     relevance_rank: Optional[int] = None
+    publication_types: list[str] | None = None
 
     def __post_init__(self) -> None:
         """Set URL if not provided."""

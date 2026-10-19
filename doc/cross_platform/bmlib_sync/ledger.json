@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "bmlib_commit": "8edd3d76e877a7c00f5483030d9468611118d391",
+  "bmlib_commit": "f76721545a76eceb683d9c460fb1f47e5c925cdb",
   "from_bmlib": [
     {
       "id": "lite:pubmed-articleid-reference-list",
@@ -657,7 +657,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "WP 7. Spec docs/superpowers/specs/2026-10-18-retraction-checking-design.md; waits on bmlib#504 (rule over the export, Crossref updated-by and the PubMed label, in Python and Rust)."
+      "note": "WP 7. Spec docs/superpowers/specs/2026-10-18-retraction-checking-design.md; the rule is bmlib#504 (see its row). The desktop plan consumes it; the apps are the next plans."
     },
     {
       "id": "bmlib:0.8.0-citation-styles",
@@ -1756,6 +1756,51 @@
       "android": "n/a",
       "issue": "#585",
       "note": "bmlib `[Unreleased]` after 0.11.0 (bmlib PR #499). Python names the markdown and PDF caches from an unstripped PMC ID, PMID or DOI (`pdf_utils.generate_fulltext_path`, `generate_pdf_path`), so a whitespace-only one is a file shared across documents. Swift's fetch caches refuse a blank id (`ArticleCacheKey.usable()`), but its upload path names the copy `\"\\(document.pmid).pdf\"` (`ScoredDocumentsView.swift`). Android names PDFs by the document's UUID."
+    },
+    {
+      "id": "bmlib#489",
+      "title": "A failed Tier 3 no longer replaces a conclusive Tier 1",
+      "python": "ported",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "The desktop's `QualityManager.assess_document` keeps the metadata classification when the detailed assessment fails (landed with bmlib#295, lite PR #568). The apps run no tiered quality assessment."
+    },
+    {
+      "id": "bmlib#490",
+      "title": "XCFramework build of the Rust library",
+      "python": "n/a",
+      "swift": "n/a",
+      "android": "n/a",
+      "issue": null,
+      "note": "FFI build for the apps; lite #583 consumed it. The desktop is Python."
+    },
+    {
+      "id": "bmlib#494",
+      "title": "Tier 1d fetches Europe PMC's own PDF, not another host's",
+      "python": "ported",
+      "swift": "ported",
+      "android": "ported",
+      "issue": null,
+      "note": "Contract `fulltext_parity/europepmc_free_pdf.json` (lite PR #569): the desktop takes `site == Europe_PMC` only (`EUROPE_PMC_OWN_PDF_SITE`); Swift `europePMCOwnPDFSite`; Android `EuropePmcFreePdfTest`."
+    },
+    {
+      "id": "bmlib#497",
+      "title": "Europe PMC's injected `associated-data` sec printed twice",
+      "python": "owed",
+      "swift": "owed",
+      "android": "owed",
+      "issue": "#587",
+      "note": "Swift measured (`BmlibJATSParityTests`); Kotlin and the desktop (`jats_markdown.py`) unchecked, so owed until measured. Lite #587."
+    },
+    {
+      "id": "bmlib#504",
+      "title": "Retraction status rule over the Retraction Watch export, Crossref updated-by and the PubMed label",
+      "python": "ported",
+      "swift": "owed",
+      "android": "owed",
+      "issue": null,
+      "note": "The rule lives in bmlib (`bmlib.publications.retraction_status`); the desktop consumes it by import and tests its copy of the contract `retraction_parity/retraction_status.json`. The apps are the next plans (spec docs/superpowers/specs/2026-10-18-retraction-checking-design.md)."
     }
   ],
   "to_bmlib": [
