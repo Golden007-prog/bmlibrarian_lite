@@ -652,34 +652,6 @@ internal open class UniffiForeignFutureResultVoid(
 internal interface UniffiForeignFutureCompleteVoid : com.sun.jna.Callback {
     fun callback(`callbackData`: Long,`result`: UniffiForeignFutureResultVoid.UniffiByValue,)
 }
-internal interface UniffiCallbackInterfaceForeignHttpClientMethod0 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
-}
-internal interface UniffiCallbackInterfaceForeignHttpClientMethod1 : com.sun.jna.Callback {
-    fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`bodyJson`: RustBuffer.ByValue,`headers`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,)
-}
-@Structure.FieldOrder("uniffiFree", "uniffiClone", "get", "postJson")
-internal open class UniffiVTableCallbackInterfaceForeignHttpClient(
-    @JvmField internal var `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-    @JvmField internal var `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-    @JvmField internal var `get`: UniffiCallbackInterfaceForeignHttpClientMethod0? = null,
-    @JvmField internal var `postJson`: UniffiCallbackInterfaceForeignHttpClientMethod1? = null,
-) : Structure() {
-    class UniffiByValue(
-        `uniffiFree`: UniffiCallbackInterfaceFree? = null,
-        `uniffiClone`: UniffiCallbackInterfaceClone? = null,
-        `get`: UniffiCallbackInterfaceForeignHttpClientMethod0? = null,
-        `postJson`: UniffiCallbackInterfaceForeignHttpClientMethod1? = null,
-    ): UniffiVTableCallbackInterfaceForeignHttpClient(`uniffiFree`,`uniffiClone`,`get`,`postJson`,), Structure.ByValue
-
-   internal fun uniffiSetValue(other: UniffiVTableCallbackInterfaceForeignHttpClient) {
-        `uniffiFree` = other.`uniffiFree`
-        `uniffiClone` = other.`uniffiClone`
-        `get` = other.`get`
-        `postJson` = other.`postJson`
-    }
-
-}
 
 // A JNA Library to expose the extern-C FFI definitions.
 // This is an implementation detail which will be called internally by the public API.
@@ -711,13 +683,23 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_bmlib_ffi_checksum_func_parse_jats_audited(
     ): Int
-    external fun uniffi_bmlib_ffi_checksum_method_bmlibfulltextservice_fetch_status(
+    external fun uniffi_bmlib_ffi_checksum_func_build_retraction_index(
     ): Int
-    external fun uniffi_bmlib_ffi_checksum_method_foreignhttpclient_get(
+    external fun uniffi_bmlib_ffi_checksum_func_crossref_retraction_requests(
     ): Int
-    external fun uniffi_bmlib_ffi_checksum_method_foreignhttpclient_post_json(
+    external fun uniffi_bmlib_ffi_checksum_func_parse_crossref_retraction_response(
     ): Int
-    external fun uniffi_bmlib_ffi_checksum_constructor_bmlibfulltextservice_new(
+    external fun uniffi_bmlib_ffi_checksum_func_retraction_status(
+    ): Int
+    external fun uniffi_bmlib_ffi_checksum_method_retractionindex_data_as_of(
+    ): Int
+    external fun uniffi_bmlib_ffi_checksum_method_retractionindex_lookup(
+    ): Int
+    external fun uniffi_bmlib_ffi_checksum_method_retractionindex_notice_count(
+    ): Int
+    external fun uniffi_bmlib_ffi_checksum_method_retractionindex_to_bytes(
+    ): Int
+    external fun uniffi_bmlib_ffi_checksum_constructor_retractionindex_from_bytes(
     ): Int
     external fun ffi_bmlib_ffi_uniffi_contract_version(
     ): Int
@@ -735,34 +717,37 @@ internal object UniffiLib {
 
     init {
         Native.register(UniffiLib::class.java, findLibraryName(componentName = "bmlib_ffi"))
-        uniffiCallbackInterfaceForeignHttpClient.register(this)
         
     }
 
     internal fun ensureInitialized() = Unit
-    external fun uniffi_bmlib_ffi_fn_clone_bmlibfulltextservice(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_bmlib_ffi_fn_clone_retractionindex(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-    external fun uniffi_bmlib_ffi_fn_free_bmlibfulltextservice(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_bmlib_ffi_fn_free_retractionindex(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): Unit
-    external fun uniffi_bmlib_ffi_fn_constructor_bmlibfulltextservice_new(`client`: Long,`email`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_bmlib_ffi_fn_constructor_retractionindex_from_bytes(`bytes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): Long
-    external fun uniffi_bmlib_ffi_fn_method_bmlibfulltextservice_fetch_status(`ptr`: Long,`url`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): Int
-    external fun uniffi_bmlib_ffi_fn_clone_foreignhttpclient(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Long
-    external fun uniffi_bmlib_ffi_fn_free_foreignhttpclient(`handle`: Long,uniffi_out_err: UniffiRustCallStatus, 
-    ): Unit
-    external fun uniffi_bmlib_ffi_fn_init_callback_vtable_foreignhttpclient(`vtable`: UniffiVTableCallbackInterfaceForeignHttpClient,
-    ): Unit
-    external fun uniffi_bmlib_ffi_fn_method_foreignhttpclient_get(`ptr`: Long,`url`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_bmlib_ffi_fn_method_retractionindex_data_as_of(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
-    external fun uniffi_bmlib_ffi_fn_method_foreignhttpclient_post_json(`ptr`: Long,`url`: RustBuffer.ByValue,`bodyJson`: RustBuffer.ByValue,`headers`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    external fun uniffi_bmlib_ffi_fn_method_retractionindex_lookup(`ptr`: Long,`doi`: RustBuffer.ByValue,`pmid`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_bmlib_ffi_fn_method_retractionindex_notice_count(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): Long
+    external fun uniffi_bmlib_ffi_fn_method_retractionindex_to_bytes(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_bmlib_ffi_fn_func_bmlib_version(uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_bmlib_ffi_fn_func_parse_jats(`xml`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_bmlib_ffi_fn_func_parse_jats_audited(`xml`: RustBuffer.ByValue,`knownPmcId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_bmlib_ffi_fn_func_build_retraction_index(`csv`: RustBuffer.ByValue,`dataAsOf`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_bmlib_ffi_fn_func_crossref_retraction_requests(`dois`: RustBuffer.ByValue,`mailto`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_bmlib_ffi_fn_func_parse_crossref_retraction_response(`status`: Short,`body`: RustBuffer.ByValue,`requestedDois`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_bmlib_ffi_fn_func_retraction_status(`doi`: RustBuffer.ByValue,`export`: RustBuffer.ByValue,`crossref`: RustBuffer.ByValue,`publicationTypes`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_bmlib_ffi_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -883,25 +868,40 @@ private fun uniffiCheckContractApiVersion(lib: IntegrityCheckingUniffiLib) {
 }
 @Suppress("UNUSED_PARAMETER")
 private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
-    if ((lib.uniffi_bmlib_ffi_checksum_func_bmlib_version() and 0xFFFF) != 60469) {
+    if ((lib.uniffi_bmlib_ffi_checksum_func_bmlib_version() and 0xFFFF) != 42428) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_bmlib_ffi_checksum_func_parse_jats() and 0xFFFF) != 1073) {
+    if ((lib.uniffi_bmlib_ffi_checksum_func_parse_jats() and 0xFFFF) != 30685) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_bmlib_ffi_checksum_func_parse_jats_audited() and 0xFFFF) != 38158) {
+    if ((lib.uniffi_bmlib_ffi_checksum_func_parse_jats_audited() and 0xFFFF) != 54867) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_bmlib_ffi_checksum_method_bmlibfulltextservice_fetch_status() and 0xFFFF) != 17669) {
+    if ((lib.uniffi_bmlib_ffi_checksum_func_build_retraction_index() and 0xFFFF) != 8662) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_bmlib_ffi_checksum_method_foreignhttpclient_get() and 0xFFFF) != 64393) {
+    if ((lib.uniffi_bmlib_ffi_checksum_func_crossref_retraction_requests() and 0xFFFF) != 23667) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_bmlib_ffi_checksum_method_foreignhttpclient_post_json() and 0xFFFF) != 2658) {
+    if ((lib.uniffi_bmlib_ffi_checksum_func_parse_crossref_retraction_response() and 0xFFFF) != 59883) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if ((lib.uniffi_bmlib_ffi_checksum_constructor_bmlibfulltextservice_new() and 0xFFFF) != 23256) {
+    if ((lib.uniffi_bmlib_ffi_checksum_func_retraction_status() and 0xFFFF) != 39250) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_bmlib_ffi_checksum_method_retractionindex_data_as_of() and 0xFFFF) != 7573) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_bmlib_ffi_checksum_method_retractionindex_lookup() and 0xFFFF) != 24950) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_bmlib_ffi_checksum_method_retractionindex_notice_count() and 0xFFFF) != 61427) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_bmlib_ffi_checksum_method_retractionindex_to_bytes() and 0xFFFF) != 45359) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_bmlib_ffi_checksum_constructor_retractionindex_from_bytes() and 0xFFFF) != 29137) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
 }
@@ -995,38 +995,7 @@ object UniffiWithHandle
  *
  * @suppress
  * */
-object NoHandle// Magic number for the Rust proxy to call using the same mechanism as every other method,
-// to free the callback once it's dropped by Rust.
-internal const val IDX_CALLBACK_FREE = 0
-// Callback return codes
-internal const val UNIFFI_CALLBACK_SUCCESS = 0
-internal const val UNIFFI_CALLBACK_ERROR = 1
-internal const val UNIFFI_CALLBACK_UNEXPECTED_ERROR = 2
-
-/**
- * @suppress
- */
-public abstract class FfiConverterCallbackInterface<CallbackInterface: Any>: FfiConverter<CallbackInterface, Long> {
-    internal val handleMap = UniffiHandleMap<CallbackInterface>()
-
-    internal fun drop(handle: Long) {
-        handleMap.remove(handle)
-    }
-
-    override fun lift(value: Long): CallbackInterface {
-        return handleMap.get(value)
-    }
-
-    override fun read(buf: ByteBuffer) = lift(buf.getLong())
-
-    override fun lower(value: CallbackInterface) = handleMap.insert(value)
-
-    override fun allocationSize(value: CallbackInterface) = 8UL
-
-    override fun write(value: CallbackInterface, buf: ByteBuffer) {
-        buf.putLong(lower(value))
-    }
-}
+object NoHandle
 /**
  * The cleaner interface for Object finalization code to run.
  * This is the entry point to any implementation that we're using.
@@ -1338,27 +1307,40 @@ public object FfiConverterByteArray: FfiConverterRustBuffer<ByteArray> {
 
 
 /**
- * bmlib's full-text tier chain over the app's transport. SKETCH: only the
- * constructor and the cheap `fetch_status` probe are exposed, to prove the
- * callback interface crosses the boundary in both directions.
+ * The Retraction Watch export as one file the app stores.
  */
-public interface BmlibFullTextServiceInterface {
+public interface RetractionIndexInterface {
     
     /**
-     * GET `url` through bmlib's side of the bridge and return the status:
-     * Rust → foreign transport → Rust. A probe for the round trip, nothing more.
+     * The date given when the index was built.
      */
-    fun `fetchStatus`(`url`: kotlin.String): kotlin.UShort
+    fun `dataAsOf`(): kotlin.String
+    
+    /**
+     * Every notice about one paper, by DOI **or** PMID. `None` when neither
+     * is usable, or when a PMID is given that is not ASCII digits: the export
+     * was then not consulted for this paper. Pass the result straight to
+     * [`retraction_status`]'s `export`.
+     */
+    fun `lookup`(`doi`: kotlin.String?, `pmid`: kotlin.String?): List<RetractionEvidence>?
+    
+    /**
+     * The number of notices indexed.
+     */
+    fun `noticeCount`(): kotlin.ULong
+    
+    /**
+     * The bytes to store.
+     */
+    fun `toBytes`(): kotlin.ByteArray
     
     companion object
 }
 
 /**
- * bmlib's full-text tier chain over the app's transport. SKETCH: only the
- * constructor and the cheap `fetch_status` probe are exposed, to prove the
- * callback interface crosses the boundary in both directions.
+ * The Retraction Watch export as one file the app stores.
  */
-open class BmlibFullTextService: Disposable, AutoCloseable, BmlibFullTextServiceInterface
+open class RetractionIndex: Disposable, AutoCloseable, RetractionIndexInterface
 {
 
     @Suppress("UNUSED_PARAMETER")
@@ -1382,19 +1364,6 @@ open class BmlibFullTextService: Disposable, AutoCloseable, BmlibFullTextService
         this.handle = 0
         this.cleanable = null
     }
-    /**
-     * Build the service over the app's transport.
-     */
-    constructor(`client`: ForeignHttpClient, `email`: kotlin.String) :
-        this(UniffiWithHandle, 
-    uniffiRustCall() { _status ->
-    UniffiLib.uniffi_bmlib_ffi_fn_constructor_bmlibfulltextservice_new(
-    
-        
-        FfiConverterTypeForeignHttpClient.lower(`client`),
-        FfiConverterString.lower(`email`),_status)
-}
-    )
 
     protected val handle: Long
     protected val cleanable: UniffiCleaner.Cleanable?
@@ -1455,7 +1424,7 @@ open class BmlibFullTextService: Disposable, AutoCloseable, BmlibFullTextService
                 return;
             }
             uniffiRustCall { status ->
-                UniffiLib.uniffi_bmlib_ffi_fn_free_bmlibfulltextservice(handle, status)
+                UniffiLib.uniffi_bmlib_ffi_fn_free_retractionindex(handle, status)
             }
         }
     }
@@ -1468,23 +1437,73 @@ open class BmlibFullTextService: Disposable, AutoCloseable, BmlibFullTextService
             throw InternalException("uniffiCloneHandle() called on NoHandle object");
         }
         return uniffiRustCall() { status ->
-            UniffiLib.uniffi_bmlib_ffi_fn_clone_bmlibfulltextservice(handle, status)
+            UniffiLib.uniffi_bmlib_ffi_fn_clone_retractionindex(handle, status)
         }
     }
 
     
     /**
-     * GET `url` through bmlib's side of the bridge and return the status:
-     * Rust → foreign transport → Rust. A probe for the round trip, nothing more.
-     */
-    @Throws(ForeignHttpException::class)override fun `fetchStatus`(`url`: kotlin.String): kotlin.UShort {
-            return FfiConverterUShort.lift(
+     * The date given when the index was built.
+     */override fun `dataAsOf`(): kotlin.String {
+            return FfiConverterString.lift(
     callWithHandle {
-    uniffiRustCallWithError(ForeignHttpException) { _status ->
-    UniffiLib.uniffi_bmlib_ffi_fn_method_bmlibfulltextservice_fetch_status(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_method_retractionindex_data_as_of(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Every notice about one paper, by DOI **or** PMID. `None` when neither
+     * is usable, or when a PMID is given that is not ASCII digits: the export
+     * was then not consulted for this paper. Pass the result straight to
+     * [`retraction_status`]'s `export`.
+     */override fun `lookup`(`doi`: kotlin.String?, `pmid`: kotlin.String?): List<RetractionEvidence>? {
+            return FfiConverterOptionalSequenceTypeRetractionEvidence.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_method_retractionindex_lookup(
         it,
         
-        FfiConverterString.lower(`url`),_status)
+        FfiConverterOptionalString.lower(`doi`),
+        FfiConverterOptionalString.lower(`pmid`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The number of notices indexed.
+     */override fun `noticeCount`(): kotlin.ULong {
+            return FfiConverterULong.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_method_retractionindex_notice_count(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * The bytes to store.
+     */override fun `toBytes`(): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_method_retractionindex_to_bytes(
+        it,
+        _status)
 }
     }
     )
@@ -1497,11 +1516,31 @@ open class BmlibFullTextService: Disposable, AutoCloseable, BmlibFullTextService
 
 
     
-    
+    companion object {
+        
     /**
-     * @suppress
+     * Reopen a stored index.
+     *
+     * # Errors
+     *
+     * Not an index, another format version, empty, or holding an entry no
+     * lookup could find: rebuild it, and until then treat the export as not
+     * consulted.
      */
-    companion object
+    @Throws(RetractionIndexException::class) fun `fromBytes`(`bytes`: kotlin.ByteArray): RetractionIndex {
+            return FfiConverterTypeRetractionIndex.lift(
+    uniffiRustCallWithError(RetractionIndexException) { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_constructor_retractionindex_from_bytes(
+    
+        
+        FfiConverterByteArray.lower(`bytes`),_status)
+}
+    )
+    }
+    
+
+        
+    }
     
 }
 
@@ -1509,411 +1548,22 @@ open class BmlibFullTextService: Disposable, AutoCloseable, BmlibFullTextService
 /**
  * @suppress
  */
-public object FfiConverterTypeBmlibFullTextService: FfiConverter<BmlibFullTextService, Long> {
-    override fun lower(value: BmlibFullTextService): Long {
+public object FfiConverterTypeRetractionIndex: FfiConverter<RetractionIndex, Long> {
+    override fun lower(value: RetractionIndex): Long {
         return value.uniffiCloneHandle()
     }
 
-    override fun lift(value: Long): BmlibFullTextService {
-        return BmlibFullTextService(UniffiWithHandle, value)
+    override fun lift(value: Long): RetractionIndex {
+        return RetractionIndex(UniffiWithHandle, value)
     }
 
-    override fun read(buf: ByteBuffer): BmlibFullTextService {
+    override fun read(buf: ByteBuffer): RetractionIndex {
         return lift(buf.getLong())
     }
 
-    override fun allocationSize(value: BmlibFullTextService) = 8UL
+    override fun allocationSize(value: RetractionIndex) = 8UL
 
-    override fun write(value: BmlibFullTextService, buf: ByteBuffer) {
-        buf.putLong(lower(value))
-    }
-}
-
-
-// This template implements a class for working with a Rust struct via a handle
-// to the live Rust struct on the other side of the FFI.
-//
-// There's some subtlety here, because we have to be careful not to operate on a Rust
-// struct after it has been dropped, and because we must expose a public API for freeing
-// theq Kotlin wrapper object in lieu of reliable finalizers. The core requirements are:
-//
-//   * Each instance holds an opaque handle to the underlying Rust struct.
-//     Method calls need to read this handle from the object's state and pass it in to
-//     the Rust FFI.
-//
-//   * When an instance is no longer needed, its handle should be passed to a
-//     special destructor function provided by the Rust FFI, which will drop the
-//     underlying Rust struct.
-//
-//   * Given an instance, calling code is expected to call the special
-//     `destroy` method in order to free it after use, either by calling it explicitly
-//     or by using a higher-level helper like the `use` method. Failing to do so risks
-//     leaking the underlying Rust struct.
-//
-//   * We can't assume that calling code will do the right thing, and must be prepared
-//     to handle Kotlin method calls executing concurrently with or even after a call to
-//     `destroy`, and to handle multiple (possibly concurrent!) calls to `destroy`.
-//
-//   * We must never allow Rust code to operate on the underlying Rust struct after
-//     the destructor has been called, and must never call the destructor more than once.
-//     Doing so may trigger memory unsafety.
-//
-//   * To mitigate many of the risks of leaking memory and use-after-free unsafety, a `Cleaner`
-//     is implemented to call the destructor when the Kotlin object becomes unreachable.
-//     This is done in a background thread. This is not a panacea, and client code should be aware that
-//      1. the thread may starve if some there are objects that have poorly performing
-//     `drop` methods or do significant work in their `drop` methods.
-//      2. the thread is shared across the whole library. This can be tuned by using `android_cleaner = true`,
-//         or `android = true` in the [`kotlin` section of the `uniffi.toml` file](https://mozilla.github.io/uniffi-rs/kotlin/configuration.html).
-//
-// If we try to implement this with mutual exclusion on access to the handle, there is the
-// possibility of a race between a method call and a concurrent call to `destroy`:
-//
-//    * Thread A starts a method call, reads the value of the handle, but is interrupted
-//      before it can pass the handle over the FFI to Rust.
-//    * Thread B calls `destroy` and frees the underlying Rust struct.
-//    * Thread A resumes, passing the already-read handle value to Rust and triggering
-//      a use-after-free.
-//
-// One possible solution would be to use a `ReadWriteLock`, with each method call taking
-// a read lock (and thus allowed to run concurrently) and the special `destroy` method
-// taking a write lock (and thus blocking on live method calls). However, we aim not to
-// generate methods with any hidden blocking semantics, and a `destroy` method that might
-// block if called incorrectly seems to meet that bar.
-//
-// So, we achieve our goals by giving each instance an associated `AtomicLong` counter to track
-// the number of in-flight method calls, and an `AtomicBoolean` flag to indicate whether `destroy`
-// has been called. These are updated according to the following rules:
-//
-//    * The initial value of the counter is 1, indicating a live object with no in-flight calls.
-//      The initial value for the flag is false.
-//
-//    * At the start of each method call, we atomically check the counter.
-//      If it is 0 then the underlying Rust struct has already been destroyed and the call is aborted.
-//      If it is nonzero them we atomically increment it by 1 and proceed with the method call.
-//
-//    * At the end of each method call, we atomically decrement and check the counter.
-//      If it has reached zero then we destroy the underlying Rust struct.
-//
-//    * When `destroy` is called, we atomically flip the flag from false to true.
-//      If the flag was already true we silently fail.
-//      Otherwise we atomically decrement and check the counter.
-//      If it has reached zero then we destroy the underlying Rust struct.
-//
-// Astute readers may observe that this all sounds very similar to the way that Rust's `Arc<T>` works,
-// and indeed it is, with the addition of a flag to guard against multiple calls to `destroy`.
-//
-// The overall effect is that the underlying Rust struct is destroyed only when `destroy` has been
-// called *and* all in-flight method calls have completed, avoiding violating any of the expectations
-// of the underlying Rust code.
-//
-// This makes a cleaner a better alternative to _not_ calling `destroy()` as
-// and when the object is finished with, but the abstraction is not perfect: if the Rust object's `drop`
-// method is slow, and/or there are many objects to cleanup, and it's on a low end Android device, then the cleaner
-// thread may be starved, and the app will leak memory.
-//
-// In this case, `destroy`ing manually may be a better solution.
-//
-// The cleaner can live side by side with the manual calling of `destroy`. In the order of responsiveness, uniffi objects
-// with Rust peers are reclaimed:
-//
-// 1. By calling the `destroy` method of the object, which calls `rustObject.free()`. If that doesn't happen:
-// 2. When the object becomes unreachable, AND the Cleaner thread gets to call `rustObject.free()`. If the thread is starved then:
-// 3. The memory is reclaimed when the process terminates.
-//
-// [1] https://stackoverflow.com/questions/24376768/can-java-finalize-an-object-when-it-is-still-in-scope/24380219
-//
-
-
-/**
- * The app's HTTP transport, implemented in Swift (`URLSession`) or Kotlin
- * (`OkHttp`). bmlib's polite pacing, retries and the 429 handling the apps
- * already own stay on the app side.
- *
- * Blocking by design: bmlib's `HttpClient` is synchronous, so the foreign
- * implementation is called on whatever thread called into Rust and must block
- * that thread (Swift: a semaphore around a `URLSession` task; Kotlin:
- * `OkHttp`'s `execute()`). Call into Rust off the main thread.
- */
-public interface ForeignHttpClient {
-    
-    /**
-     * GET `url`.
-     */
-    fun `get`(`url`: kotlin.String): ForeignHttpResponse
-    
-    /**
-     * POST a JSON body.
-     */
-    fun `postJson`(`url`: kotlin.String, `bodyJson`: kotlin.String, `headers`: Map<kotlin.String, kotlin.String>): ForeignHttpResponse
-    
-    companion object
-}
-
-/**
- * The app's HTTP transport, implemented in Swift (`URLSession`) or Kotlin
- * (`OkHttp`). bmlib's polite pacing, retries and the 429 handling the apps
- * already own stay on the app side.
- *
- * Blocking by design: bmlib's `HttpClient` is synchronous, so the foreign
- * implementation is called on whatever thread called into Rust and must block
- * that thread (Swift: a semaphore around a `URLSession` task; Kotlin:
- * `OkHttp`'s `execute()`). Call into Rust off the main thread.
- */
-open class ForeignHttpClientImpl: Disposable, AutoCloseable, ForeignHttpClient
-{
-
-    @Suppress("UNUSED_PARAMETER")
-    /**
-     * @suppress
-     */
-    constructor(withHandle: UniffiWithHandle, handle: Long) {
-        this.handle = handle
-        this.cleanable = UniffiLib.CLEANER.register(this, UniffiCleanAction(handle))
-    }
-
-    /**
-     * @suppress
-     *
-     * This constructor can be used to instantiate a fake object. Only used for tests. Any
-     * attempt to actually use an object constructed this way will fail as there is no
-     * connected Rust object.
-     */
-    @Suppress("UNUSED_PARAMETER")
-    constructor(noHandle: NoHandle) {
-        this.handle = 0
-        this.cleanable = null
-    }
-
-    protected val handle: Long
-    protected val cleanable: UniffiCleaner.Cleanable?
-
-    private val wasDestroyed = AtomicBoolean(false)
-    private val callCounter = AtomicLong(1)
-
-    /**
-     * Whether the current object has been destroyed and its reference is gone in the Rust side.
-     */
-    val uniffiIsDestroyed: Boolean get() = wasDestroyed.get()
-
-    override fun destroy() {
-        // Only allow a single call to this method.
-        // TODO: maybe we should log a warning if called more than once?
-        if (this.wasDestroyed.compareAndSet(false, true)) {
-            // This decrement always matches the initial count of 1 given at creation time.
-            if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
-            }
-        }
-    }
-
-    @Synchronized
-    override fun close() {
-        this.destroy()
-    }
-
-    internal inline fun <R> callWithHandle(block: (handle: Long) -> R): R {
-        // Check and increment the call counter, to keep the object alive.
-        // This needs a compare-and-set retry loop in case of concurrent updates.
-        do {
-            val c = this.callCounter.get()
-            if (c == 0L) {
-                throw IllegalStateException("${this.javaClass.simpleName} object has already been destroyed")
-            }
-            if (c == Long.MAX_VALUE) {
-                throw IllegalStateException("${this.javaClass.simpleName} call counter would overflow")
-            }
-        } while (! this.callCounter.compareAndSet(c, c + 1L))
-        // Now we can safely do the method call without the handle being freed concurrently.
-        try {
-            return block(this.uniffiCloneHandle())
-        } finally {
-            // This decrement always matches the increment we performed above.
-            if (this.callCounter.decrementAndGet() == 0L) {
-                cleanable?.clean()
-            }
-        }
-    }
-
-    // Use a static inner class instead of a closure so as not to accidentally
-    // capture `this` as part of the cleanable's action.
-    private class UniffiCleanAction(private val handle: Long) : Runnable {
-        override fun run() {
-            if (handle == 0.toLong()) {
-                // Fake object created with `NoHandle`, don't try to free.
-                return;
-            }
-            uniffiRustCall { status ->
-                UniffiLib.uniffi_bmlib_ffi_fn_free_foreignhttpclient(handle, status)
-            }
-        }
-    }
-
-    /**
-     * @suppress
-     */
-    fun uniffiCloneHandle(): Long {
-        if (handle == 0.toLong()) {
-            throw InternalException("uniffiCloneHandle() called on NoHandle object");
-        }
-        return uniffiRustCall() { status ->
-            UniffiLib.uniffi_bmlib_ffi_fn_clone_foreignhttpclient(handle, status)
-        }
-    }
-
-    
-    /**
-     * GET `url`.
-     */
-    @Throws(ForeignHttpException::class)override fun `get`(`url`: kotlin.String): ForeignHttpResponse {
-            return FfiConverterTypeForeignHttpResponse.lift(
-    callWithHandle {
-    uniffiRustCallWithError(ForeignHttpException) { _status ->
-    UniffiLib.uniffi_bmlib_ffi_fn_method_foreignhttpclient_get(
-        it,
-        
-        FfiConverterString.lower(`url`),_status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
-     * POST a JSON body.
-     */
-    @Throws(ForeignHttpException::class)override fun `postJson`(`url`: kotlin.String, `bodyJson`: kotlin.String, `headers`: Map<kotlin.String, kotlin.String>): ForeignHttpResponse {
-            return FfiConverterTypeForeignHttpResponse.lift(
-    callWithHandle {
-    uniffiRustCallWithError(ForeignHttpException) { _status ->
-    UniffiLib.uniffi_bmlib_ffi_fn_method_foreignhttpclient_post_json(
-        it,
-        
-        FfiConverterString.lower(`url`),
-        FfiConverterString.lower(`bodyJson`),
-        FfiConverterMapStringString.lower(`headers`),_status)
-}
-    }
-    )
-    }
-    
-
-    
-
-    
-
-
-    
-    
-    /**
-     * @suppress
-     */
-    companion object
-    
-}
-
-
-
-// Put the implementation in an object so we don't pollute the top-level namespace
-internal object uniffiCallbackInterfaceForeignHttpClient {
-    internal object `get`: UniffiCallbackInterfaceForeignHttpClientMethod0 {
-        override fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
-            val uniffiObj = FfiConverterTypeForeignHttpClient.handleMap.get(uniffiHandle)
-            val makeCall = { ->
-                uniffiObj.`get`(
-                    FfiConverterString.lift(`url`),
-                )
-            }
-            val writeReturn = { value: ForeignHttpResponse -> uniffiOutReturn.setValue(FfiConverterTypeForeignHttpResponse.lower(value)) }
-            uniffiTraitInterfaceCallWithError(
-                uniffiCallStatus,
-                makeCall,
-                writeReturn,
-                { e: ForeignHttpException -> FfiConverterTypeForeignHttpError.lower(e) }
-            )
-        }
-    }
-    internal object `postJson`: UniffiCallbackInterfaceForeignHttpClientMethod1 {
-        override fun callback(`uniffiHandle`: Long,`url`: RustBuffer.ByValue,`bodyJson`: RustBuffer.ByValue,`headers`: RustBuffer.ByValue,`uniffiOutReturn`: RustBuffer,uniffiCallStatus: UniffiRustCallStatus,) {
-            val uniffiObj = FfiConverterTypeForeignHttpClient.handleMap.get(uniffiHandle)
-            val makeCall = { ->
-                uniffiObj.`postJson`(
-                    FfiConverterString.lift(`url`),
-                    FfiConverterString.lift(`bodyJson`),
-                    FfiConverterMapStringString.lift(`headers`),
-                )
-            }
-            val writeReturn = { value: ForeignHttpResponse -> uniffiOutReturn.setValue(FfiConverterTypeForeignHttpResponse.lower(value)) }
-            uniffiTraitInterfaceCallWithError(
-                uniffiCallStatus,
-                makeCall,
-                writeReturn,
-                { e: ForeignHttpException -> FfiConverterTypeForeignHttpError.lower(e) }
-            )
-        }
-    }
-
-    internal object uniffiFree: UniffiCallbackInterfaceFree {
-        override fun callback(handle: Long) {
-            FfiConverterTypeForeignHttpClient.handleMap.remove(handle)
-        }
-    }
-
-    internal object uniffiClone: UniffiCallbackInterfaceClone {
-        override fun callback(handle: Long): Long {
-            return FfiConverterTypeForeignHttpClient.handleMap.clone(handle)
-        }
-    }
-
-    internal var vtable = UniffiVTableCallbackInterfaceForeignHttpClient.UniffiByValue(
-        uniffiFree,
-        uniffiClone,
-        `get`,
-        `postJson`,
-    )
-
-    // Registers the foreign callback with the Rust side.
-    // This method is generated for each callback interface.
-    internal fun register(lib: UniffiLib) {
-        lib.uniffi_bmlib_ffi_fn_init_callback_vtable_foreignhttpclient(vtable)
-    }
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypeForeignHttpClient: FfiConverter<ForeignHttpClient, Long> {
-    internal val handleMap = UniffiHandleMap<ForeignHttpClient>()
-
-    override fun lower(value: ForeignHttpClient): Long {
-        if (value is ForeignHttpClientImpl) {
-             // Rust-implemented object.  Clone the handle and return it
-            return value.uniffiCloneHandle()
-         } else {
-            // Kotlin object, generate a new vtable handle and return that.
-            return handleMap.insert(value)
-         }
-    }
-
-    override fun lift(value: Long): ForeignHttpClient {
-        if ((value and 1.toLong()) == 0.toLong()) {
-            // Rust-generated handle, construct a new class that uses the handle to implement the
-            // interface
-            return ForeignHttpClientImpl(UniffiWithHandle, value)
-        } else {
-            // Kotlin-generated handle, get the object from the handle map
-            return handleMap.remove(value)
-        }
-    }
-
-    override fun read(buf: ByteBuffer): ForeignHttpClient {
-        return lift(buf.getLong())
-    }
-
-    override fun allocationSize(value: ForeignHttpClient) = 8UL
-
-    override fun write(value: ForeignHttpClient, buf: ByteBuffer) {
+    override fun write(value: RetractionIndex, buf: ByteBuffer) {
         buf.putLong(lower(value))
     }
 }
@@ -1921,18 +1571,19 @@ public object FfiConverterTypeForeignHttpClient: FfiConverter<ForeignHttpClient,
 
 
 /**
- * A response from the app's transport.
+ * One request URL and the DOIs it asks about.
  */
-data class ForeignHttpResponse (
+data class CrossrefBatch (
     /**
-     * HTTP status.
+     * The URL to GET, with your own User-Agent (it carries `mailto` only if
+     * you passed one).
      */
-    val `status`: kotlin.UShort
+    val `url`: kotlin.String
     , 
     /**
-     * Raw body bytes (a PDF is not a string).
+     * The normalised DOIs to hand back to [`parse_crossref_retraction_response`].
      */
-    val `body`: kotlin.ByteArray
+    val `dois`: List<kotlin.String>
     
 ){
     
@@ -1946,22 +1597,70 @@ data class ForeignHttpResponse (
 /**
  * @suppress
  */
-public object FfiConverterTypeForeignHttpResponse: FfiConverterRustBuffer<ForeignHttpResponse> {
-    override fun read(buf: ByteBuffer): ForeignHttpResponse {
-        return ForeignHttpResponse(
-            FfiConverterUShort.read(buf),
-            FfiConverterByteArray.read(buf),
+public object FfiConverterTypeCrossrefBatch: FfiConverterRustBuffer<CrossrefBatch> {
+    override fun read(buf: ByteBuffer): CrossrefBatch {
+        return CrossrefBatch(
+            FfiConverterString.read(buf),
+            FfiConverterSequenceString.read(buf),
         )
     }
 
-    override fun allocationSize(value: ForeignHttpResponse) = (
-            FfiConverterUShort.allocationSize(value.`status`) +
-            FfiConverterByteArray.allocationSize(value.`body`)
+    override fun allocationSize(value: CrossrefBatch) = (
+            FfiConverterString.allocationSize(value.`url`) +
+            FfiConverterSequenceString.allocationSize(value.`dois`)
     )
 
-    override fun write(value: ForeignHttpResponse, buf: ByteBuffer) {
-            FfiConverterUShort.write(value.`status`, buf)
-            FfiConverterByteArray.write(value.`body`, buf)
+    override fun write(value: CrossrefBatch, buf: ByteBuffer) {
+            FfiConverterString.write(value.`url`, buf)
+            FfiConverterSequenceString.write(value.`dois`, buf)
+    }
+}
+
+
+
+/**
+ * The batches to send, and the DOIs no batch can carry.
+ */
+data class CrossrefRequests (
+    /**
+     * The requests.
+     */
+    val `batches`: List<CrossrefBatch>
+    , 
+    /**
+     * DOIs containing a comma, which a filter list cannot carry. Crossref has
+     * not answered for them: pass `None` as their Crossref result.
+     */
+    val `unsendable`: List<kotlin.String>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCrossrefRequests: FfiConverterRustBuffer<CrossrefRequests> {
+    override fun read(buf: ByteBuffer): CrossrefRequests {
+        return CrossrefRequests(
+            FfiConverterSequenceTypeCrossrefBatch.read(buf),
+            FfiConverterSequenceString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: CrossrefRequests) = (
+            FfiConverterSequenceTypeCrossrefBatch.allocationSize(value.`batches`) +
+            FfiConverterSequenceString.allocationSize(value.`unsendable`)
+    )
+
+    override fun write(value: CrossrefRequests, buf: ByteBuffer) {
+            FfiConverterSequenceTypeCrossrefBatch.write(value.`batches`, buf)
+            FfiConverterSequenceString.write(value.`unsendable`, buf)
     }
 }
 
@@ -1972,12 +1671,12 @@ public object FfiConverterTypeForeignHttpResponse: FfiConverterRustBuffer<Foreig
  */
 data class JatsAbstractSection (
     /**
-     * Section title; empty for an unstructured abstract with no `<title>`.
+     * The heading the abstract deposited; empty for an unstructured abstract.
      */
     val `title`: kotlin.String
     , 
     /**
-     * The section's text.
+     * The section's prose.
      */
     val `content`: kotlin.String
     
@@ -2015,7 +1714,7 @@ public object FfiConverterTypeJatsAbstractSection: FfiConverterRustBuffer<JatsAb
 
 
 /**
- * A parsed JATS article.
+ * A parsed JATS article. Field order follows bmlib's `JATSArticle`.
  */
 data class JatsArticle (
     /**
@@ -2044,7 +1743,8 @@ data class JatsArticle (
     val `issue`: kotlin.String
     , 
     /**
-     * `fpage-lpage`.
+     * The page range as deposited: `fpage-lpage`, `fpage` alone, or empty —
+     * an article located by `elocation_id` usually has no pages.
      */
     val `pages`: kotlin.String
     , 
@@ -2059,7 +1759,9 @@ data class JatsArticle (
     val `doi`: kotlin.String
     , 
     /**
-     * PMC id, `PMC`-prefixed.
+     * PMC id. A `known_pmc_id` passed to [`parse_jats_audited`] is
+     * `PMC`-prefixed when given bare and wins over the document's own; a value
+     * read from the document is stored as deposited; empty when neither.
      */
     val `pmcId`: kotlin.String
     , 
@@ -2069,17 +1771,12 @@ data class JatsArticle (
     val `pmid`: kotlin.String
     , 
     /**
-     * `<elocation-id>`.
-     */
-    val `elocationId`: kotlin.String
-    , 
-    /**
      * Abstract sections.
      */
     val `abstractSections`: List<JatsAbstractSection>
     , 
     /**
-     * Body and back-matter sections.
+     * Front matter, body and back matter sections, in document order.
      */
     val `bodySections`: List<JatsBodySection>
     , 
@@ -2099,14 +1796,26 @@ data class JatsArticle (
     val `references`: List<JatsReference>
     , 
     /**
-     * Did the article have a `<body>` at all?
+     * Did body prose survive parsing — at least one non-empty `<p>` in
+     * `<body>`? **Not** "was there a `<body>`": a document of `<front>` and
+     * `<back>` only (medRxiv serves some) is `false` even though
+     * `body_sections` may carry its front and back matter. This is the field
+     * that says whether the article is full text.
      */
     val `hasBody`: kotlin.Boolean
     , 
     /**
-     * Nested `<article>`s whose content was suppressed.
+     * How many `<sub-article>`/`<response>` regions were skipped (a nested one
+     * counted separately) — peer-review rounds, translations. Their prose is
+     * in no field; this is the one field that says they were there.
      */
     val `suppressedNestedArticles`: kotlin.ULong
+    , 
+    /**
+     * The article's own `<elocation-id>`, the electronic locator deposited in
+     * place of a page range.
+     */
+    val `elocationId`: kotlin.String
     , 
     /**
      * `<funding-statement>` texts.
@@ -2143,7 +1852,6 @@ public object FfiConverterTypeJatsArticle: FfiConverterRustBuffer<JatsArticle> {
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
-            FfiConverterString.read(buf),
             FfiConverterSequenceTypeJatsAbstractSection.read(buf),
             FfiConverterSequenceTypeJatsBodySection.read(buf),
             FfiConverterSequenceTypeJatsFigure.read(buf),
@@ -2151,6 +1859,7 @@ public object FfiConverterTypeJatsArticle: FfiConverterRustBuffer<JatsArticle> {
             FfiConverterSequenceTypeJatsReference.read(buf),
             FfiConverterBoolean.read(buf),
             FfiConverterULong.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterSequenceString.read(buf),
             FfiConverterSequenceTypeJatsFundingAward.read(buf),
         )
@@ -2167,7 +1876,6 @@ public object FfiConverterTypeJatsArticle: FfiConverterRustBuffer<JatsArticle> {
             FfiConverterString.allocationSize(value.`doi`) +
             FfiConverterString.allocationSize(value.`pmcId`) +
             FfiConverterString.allocationSize(value.`pmid`) +
-            FfiConverterString.allocationSize(value.`elocationId`) +
             FfiConverterSequenceTypeJatsAbstractSection.allocationSize(value.`abstractSections`) +
             FfiConverterSequenceTypeJatsBodySection.allocationSize(value.`bodySections`) +
             FfiConverterSequenceTypeJatsFigure.allocationSize(value.`figures`) +
@@ -2175,6 +1883,7 @@ public object FfiConverterTypeJatsArticle: FfiConverterRustBuffer<JatsArticle> {
             FfiConverterSequenceTypeJatsReference.allocationSize(value.`references`) +
             FfiConverterBoolean.allocationSize(value.`hasBody`) +
             FfiConverterULong.allocationSize(value.`suppressedNestedArticles`) +
+            FfiConverterString.allocationSize(value.`elocationId`) +
             FfiConverterSequenceString.allocationSize(value.`fundingStatements`) +
             FfiConverterSequenceTypeJatsFundingAward.allocationSize(value.`fundingAwards`)
     )
@@ -2190,7 +1899,6 @@ public object FfiConverterTypeJatsArticle: FfiConverterRustBuffer<JatsArticle> {
             FfiConverterString.write(value.`doi`, buf)
             FfiConverterString.write(value.`pmcId`, buf)
             FfiConverterString.write(value.`pmid`, buf)
-            FfiConverterString.write(value.`elocationId`, buf)
             FfiConverterSequenceTypeJatsAbstractSection.write(value.`abstractSections`, buf)
             FfiConverterSequenceTypeJatsBodySection.write(value.`bodySections`, buf)
             FfiConverterSequenceTypeJatsFigure.write(value.`figures`, buf)
@@ -2198,6 +1906,7 @@ public object FfiConverterTypeJatsArticle: FfiConverterRustBuffer<JatsArticle> {
             FfiConverterSequenceTypeJatsReference.write(value.`references`, buf)
             FfiConverterBoolean.write(value.`hasBody`, buf)
             FfiConverterULong.write(value.`suppressedNestedArticles`, buf)
+            FfiConverterString.write(value.`elocationId`, buf)
             FfiConverterSequenceString.write(value.`fundingStatements`, buf)
             FfiConverterSequenceTypeJatsFundingAward.write(value.`fundingAwards`, buf)
     }
@@ -2206,37 +1915,43 @@ public object FfiConverterTypeJatsArticle: FfiConverterRustBuffer<JatsArticle> {
 
 
 /**
- * One contributor. `full_name` is bmlib's `author_full_name`, precomputed so
- * the apps do not re-derive the structured-name-wins rule.
+ * One contributor. Every author a parse returns carries some spelling of a
+ * name, so `full_name` is never blank.
  */
 data class JatsAuthor (
     /**
-     * `<surname>`.
+     * The structured surname of a `<name>` deposit. Empty where the contributor
+     * is named only as a `collab` or a `string_name`, so sorting or indexing
+     * by it must handle the empty case.
      */
     val `surname`: kotlin.String
     , 
     /**
-     * `<given-names>`.
+     * The given names of a `<name>` deposit; empty where it gave none.
      */
     val `givenNames`: kotlin.String
     , 
     /**
-     * Resolved affiliation texts.
+     * **Always empty from this reader**: the Rust port has no `<aff>` handler
+     * yet (Python bmlib resolves affiliations since its issue #145). Do not
+     * read the empty list as "this contributor declared no affiliation".
      */
     val `affiliations`: List<kotlin.String>
     , 
     /**
-     * `<collab>` — a group author.
+     * A collaboration's name (`<collab>`) — a group, not a person.
      */
     val `collab`: kotlin.String
     , 
     /**
-     * `<string-name>` — an undivided name.
+     * An undivided personal name, exactly as deposited (`<string-name>`).
      */
     val `stringName`: kotlin.String
     , 
     /**
-     * bmlib's `author_full_name`.
+     * bmlib's `author_full_name`, precomputed so the apps do not re-derive the
+     * rule: a structured name wins over both undivided spellings, then
+     * `collab`, then `string_name`.
      */
     val `fullName`: kotlin.String
     
@@ -2286,16 +2001,19 @@ public object FfiConverterTypeJatsAuthor: FfiConverterRustBuffer<JatsAuthor> {
 
 
 /**
- * One body (or back-matter) section, recursively.
+ * One section, recursively: front matter, body and back matter, in document
+ * order. [`JatsArticle::has_body`] — not this list being non-empty — says
+ * whether the article has a body.
  */
 data class JatsBodySection (
     /**
-     * Section title; empty for untitled content.
+     * The heading the document deposited; empty for prose it heads with
+     * nothing. Two untitled sections may be adjacent.
      */
     val `title`: kotlin.String
     , 
     /**
-     * Paragraph texts.
+     * Paragraph texts. A paragraph may be the empty string.
      */
     val `paragraphs`: List<kotlin.String>
     , 
@@ -2350,7 +2068,8 @@ data class JatsFigure (
     val `id`: kotlin.String
     , 
     /**
-     * `<label>`.
+     * The figure's own `<label>`, as deposited; empty when it carries none —
+     * no number is invented from its position.
      */
     val `label`: kotlin.String
     , 
@@ -2360,12 +2079,16 @@ data class JatsFigure (
     val `caption`: kotlin.String
     , 
     /**
-     * The best-ranked `<graphic>` href, if any.
+     * The best-ranked `<graphic>` href, as deposited — usually relative (e.g.
+     * `pone.0123.g001`), so not a URL to open as it stands.
      */
     val `graphicUrl`: kotlin.String?
     , 
     /**
-     * Footnotes, marker joined.
+     * The figure's notes, in document order. A marked note's marker is folded
+     * in as `"a — text"`; an attribution carries no marker. Splitting on
+     * `" — "` does **not** reliably recover the marker: a definition list in
+     * the notes uses the same separator and carries no marker at all.
      */
     val `footnotes`: List<kotlin.String>
     
@@ -2468,7 +2191,9 @@ data class JatsFundingSource (
     val `name`: kotlin.String
     , 
     /**
-     * Funder identifier (e.g. a FundRef DOI).
+     * The funder's `<institution-id>`, verbatim: a Funder Registry DOI arrives
+     * both bare (`10.13039/…`) and wrapped in a `doi.org` URL, and sometimes
+     * as the literal `NA`. Fold the two spellings before matching.
      */
     val `identifier`: kotlin.String
     
@@ -2516,14 +2241,20 @@ data class JatsParseReport (
     val `article`: JatsArticle
     , 
     /**
+     * How the article names itself (its identifiers), for prefixing the lines
+     * below in an app's log — the lines themselves do not name the article.
+     */
+    val `articleLabel`: kotlin.String
+    , 
+    /**
+     * Reader-defect diagnostics: each is a claim that bmlib is wrong.
+     */
+    val `diagnostics`: List<kotlin.String>
+    , 
+    /**
      * Counted losses that are the publisher's deposit.
      */
     val `warnings`: List<kotlin.String>
-    , 
-    /**
-     * Reader-defect diagnostics.
-     */
-    val `diagnostics`: List<kotlin.String>
     
 ){
     
@@ -2541,6 +2272,7 @@ public object FfiConverterTypeJatsParseReport: FfiConverterRustBuffer<JatsParseR
     override fun read(buf: ByteBuffer): JatsParseReport {
         return JatsParseReport(
             FfiConverterTypeJatsArticle.read(buf),
+            FfiConverterString.read(buf),
             FfiConverterSequenceString.read(buf),
             FfiConverterSequenceString.read(buf),
         )
@@ -2548,14 +2280,16 @@ public object FfiConverterTypeJatsParseReport: FfiConverterRustBuffer<JatsParseR
 
     override fun allocationSize(value: JatsParseReport) = (
             FfiConverterTypeJatsArticle.allocationSize(value.`article`) +
-            FfiConverterSequenceString.allocationSize(value.`warnings`) +
-            FfiConverterSequenceString.allocationSize(value.`diagnostics`)
+            FfiConverterString.allocationSize(value.`articleLabel`) +
+            FfiConverterSequenceString.allocationSize(value.`diagnostics`) +
+            FfiConverterSequenceString.allocationSize(value.`warnings`)
     )
 
     override fun write(value: JatsParseReport, buf: ByteBuffer) {
             FfiConverterTypeJatsArticle.write(value.`article`, buf)
-            FfiConverterSequenceString.write(value.`warnings`, buf)
+            FfiConverterString.write(value.`articleLabel`, buf)
             FfiConverterSequenceString.write(value.`diagnostics`, buf)
+            FfiConverterSequenceString.write(value.`warnings`, buf)
     }
 }
 
@@ -2571,12 +2305,16 @@ data class JatsReference (
     val `id`: kotlin.String
     , 
     /**
-     * `<label>`.
+     * The reference's own `<label>`; empty when it carries none.
      */
     val `label`: kotlin.String
     , 
     /**
-     * The rendered citation text.
+     * The text the deposit typeset — a `<mixed-citation>` or a typeset NLM
+     * `<citation>` — **not** a formatted reference. Empty for an element-only
+     * citation (`<element-citation>`), whose structured fields below are then
+     * all there is; read empty as "build the citation from the fields", not
+     * as "no citation".
      */
     val `citation`: kotlin.String
     , 
@@ -2706,7 +2444,8 @@ public object FfiConverterTypeJatsReference: FfiConverterRustBuffer<JatsReferenc
 
 /**
  * A table. bmlib carries the table as HTML; the apps' markdown rendering is
- * **not** produced here (see the spike record).
+ * **not** produced here (see bmlibrarian_lite's
+ * `doc/cross_platform/bmlib_sync/uniffi_spike.md`).
  */
 data class JatsTable (
     /**
@@ -2715,7 +2454,7 @@ data class JatsTable (
     val `id`: kotlin.String
     , 
     /**
-     * `<label>`.
+     * The table's own `<label>`, as deposited; empty when it carries none.
      */
     val `label`: kotlin.String
     , 
@@ -2725,17 +2464,19 @@ data class JatsTable (
     val `caption`: kotlin.String
     , 
     /**
-     * The table body as HTML.
+     * The table body as HTML; empty for a table deposited only as an image.
      */
     val `htmlContent`: kotlin.String
     , 
     /**
-     * A table deposited as an image.
+     * The table's own `<graphic>` href, best-ranked. It may be set beside a
+     * non-empty `html_content` (a table deposited both ways), not only for a
+     * table deposited as an image.
      */
     val `graphicUrl`: kotlin.String?
     , 
     /**
-     * Footnotes, marker joined.
+     * The table's notes; see [`JatsFigure::footnotes`] for the marker rule.
      */
     val `footnotes`: List<kotlin.String>
     
@@ -2784,75 +2525,339 @@ public object FfiConverterTypeJatsTable: FfiConverterRustBuffer<JatsTable> {
 
 
 
-
-
 /**
- * A request that never completed (no connection, TLS, timeout). A non-2xx
- * status is **not** this — it is a [`ForeignHttpResponse`], as in bmlib.
+ * One source's statement about one paper.
  */
-sealed class ForeignHttpException: kotlin.Exception() {
-    
+data class RetractionEvidence (
     /**
-     * The transport failed.
+     * Where it came from.
      */
-    class Transport(
-        
-        /**
-         * The transport's message (see [`JatsError::Xml`] on the name).
-         */
-        val `reason`: kotlin.String
-        ) : ForeignHttpException() {
-        override val message
-            get() = "reason=${ `reason` }"
-    }
+    val `source`: RetractionSource
+    , 
+    /**
+     * What it says.
+     */
+    val `kind`: RetractionKind
+    , 
+    /**
+     * ISO date, as precise as deposited (`yyyy-mm-dd`, `yyyy-mm` or `yyyy`).
+     * Undated is `None`; a `""` is read as undated too.
+     */
+    val `date`: kotlin.String?
+    , 
+    /**
+     * The notice's DOI, normalised — show it beside a retraction.
+     */
+    val `noticeDoi`: kotlin.String?
+    , 
+    /**
+     * Retraction Watch's record ID.
+     */
+    val `recordId`: kotlin.String?
+    , 
+    /**
+     * The source's own spelling of the kind.
+     */
+    val `rawKind`: kotlin.String?
+    
+){
     
 
     
 
-
-    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<ForeignHttpException> {
-        override fun lift(error_buf: RustBuffer.ByValue): ForeignHttpException = FfiConverterTypeForeignHttpError.lift(error_buf)
-    }
-
     
+    companion object
 }
 
 /**
  * @suppress
  */
-public object FfiConverterTypeForeignHttpError : FfiConverterRustBuffer<ForeignHttpException> {
-    override fun read(buf: ByteBuffer): ForeignHttpException {
+public object FfiConverterTypeRetractionEvidence: FfiConverterRustBuffer<RetractionEvidence> {
+    override fun read(buf: ByteBuffer): RetractionEvidence {
+        return RetractionEvidence(
+            FfiConverterTypeRetractionSource.read(buf),
+            FfiConverterTypeRetractionKind.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RetractionEvidence) = (
+            FfiConverterTypeRetractionSource.allocationSize(value.`source`) +
+            FfiConverterTypeRetractionKind.allocationSize(value.`kind`) +
+            FfiConverterOptionalString.allocationSize(value.`date`) +
+            FfiConverterOptionalString.allocationSize(value.`noticeDoi`) +
+            FfiConverterOptionalString.allocationSize(value.`recordId`) +
+            FfiConverterOptionalString.allocationSize(value.`rawKind`)
+    )
+
+    override fun write(value: RetractionEvidence, buf: ByteBuffer) {
+            FfiConverterTypeRetractionSource.write(value.`source`, buf)
+            FfiConverterTypeRetractionKind.write(value.`kind`, buf)
+            FfiConverterOptionalString.write(value.`date`, buf)
+            FfiConverterOptionalString.write(value.`noticeDoi`, buf)
+            FfiConverterOptionalString.write(value.`recordId`, buf)
+            FfiConverterOptionalString.write(value.`rawKind`, buf)
+    }
+}
+
+
+
+/**
+ * What [`build_retraction_index`] produced and what it left out.
+ */
+data class RetractionIndexBuild (
+    /**
+     * The index. Store [`RetractionIndex::to_bytes`].
+     */
+    val `index`: RetractionIndex
+    , 
+    /**
+     * Rows skipped: malformed, no record ID, or no usable identifier for the
+     * paper.
+     */
+    val `skippedRows`: kotlin.ULong
+    , 
+    /**
+     * Nature strings this version could not map. Non-empty means Retraction
+     * Watch's vocabulary moved: report it, since those notices decide nothing.
+     */
+    val `unknownNatures`: List<kotlin.String>
+    
+): Disposable{
+    
+
+    
+
+    
+    @Suppress("UNNECESSARY_SAFE_CALL") // codegen is much simpler if we unconditionally emit safe calls here
+    override fun destroy() {
+        
+    Disposable.destroy(
+        this.`index`,
+        this.`skippedRows`,
+        this.`unknownNatures`
+    )
+    }
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRetractionIndexBuild: FfiConverterRustBuffer<RetractionIndexBuild> {
+    override fun read(buf: ByteBuffer): RetractionIndexBuild {
+        return RetractionIndexBuild(
+            FfiConverterTypeRetractionIndex.read(buf),
+            FfiConverterULong.read(buf),
+            FfiConverterSequenceString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RetractionIndexBuild) = (
+            FfiConverterTypeRetractionIndex.allocationSize(value.`index`) +
+            FfiConverterULong.allocationSize(value.`skippedRows`) +
+            FfiConverterSequenceString.allocationSize(value.`unknownNatures`)
+    )
+
+    override fun write(value: RetractionIndexBuild, buf: ByteBuffer) {
+            FfiConverterTypeRetractionIndex.write(value.`index`, buf)
+            FfiConverterULong.write(value.`skippedRows`, buf)
+            FfiConverterSequenceString.write(value.`unknownNatures`, buf)
+    }
+}
+
+
+
+/**
+ * What [`retraction_status`] decided, and on what.
+ */
+data class RetractionVerdict (
+    /**
+     * The status.
+     */
+    val `status`: RetractionStatus
+    , 
+    /**
+     * The newest retraction (`Retracted`), the newest concern (`Concern`),
+     * otherwise the newest reinstatement, if any.
+     */
+    val `deciding`: RetractionEvidence?
+    , 
+    /**
+     * Every lookup that did not answer — beside any status, since a concern
+     * found while Crossref was down may yet be a retraction.
+     */
+    val `unanswered`: List<RetractionLookup>
+    
+){
+    
+
+    
+
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRetractionVerdict: FfiConverterRustBuffer<RetractionVerdict> {
+    override fun read(buf: ByteBuffer): RetractionVerdict {
+        return RetractionVerdict(
+            FfiConverterTypeRetractionStatus.read(buf),
+            FfiConverterOptionalTypeRetractionEvidence.read(buf),
+            FfiConverterSequenceTypeRetractionLookup.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: RetractionVerdict) = (
+            FfiConverterTypeRetractionStatus.allocationSize(value.`status`) +
+            FfiConverterOptionalTypeRetractionEvidence.allocationSize(value.`deciding`) +
+            FfiConverterSequenceTypeRetractionLookup.allocationSize(value.`unanswered`)
+    )
+
+    override fun write(value: RetractionVerdict, buf: ByteBuffer) {
+            FfiConverterTypeRetractionStatus.write(value.`status`, buf)
+            FfiConverterOptionalTypeRetractionEvidence.write(value.`deciding`, buf)
+            FfiConverterSequenceTypeRetractionLookup.write(value.`unanswered`, buf)
+    }
+}
+
+
+
+/**
+ * Crossref's answer about one DOI.
+ */
+sealed class CrossrefResult {
+    
+    /**
+     * Crossref served the record. Pass it to [`retraction_status`] for the
+     * paper with this DOI: for any other paper it is no answer (#508).
+     */
+    data class Served(
+        /**
+         * The record's own DOI, normalised.
+         */
+        val `doi`: kotlin.String, 
+        /**
+         * Its `updated-by` relations.
+         */
+        val `evidence`: List<org.bmlib.ffi.RetractionEvidence>, 
+        /**
+         * The DOIs its own retraction-family `update-to` names.
+         */
+        val `retractionTargets`: List<kotlin.String>) : CrossrefResult()
+        
+    {
         
 
+        companion object
+    }
+    
+    /**
+     * Absent from a successful answer: Crossref does not know this DOI, and
+     * asking again will not change it. The paper is unchecked, not clear.
+     */
+    object NotKnown : CrossrefResult()
+    
+    
+    /**
+     * The batch failed, or this DOI's relations could not be read. Retry by
+     * your own pacing; never read it as "not known".
+     */
+    data class Unreachable(
+        /**
+         * Why, for a log line; the wording is not part of the contract.
+         */
+        val `reason`: kotlin.String) : CrossrefResult()
+        
+    {
+        
+
+        companion object
+    }
+    
+
+    
+
+    
+    
+
+
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeCrossrefResult : FfiConverterRustBuffer<CrossrefResult>{
+    override fun read(buf: ByteBuffer): CrossrefResult {
         return when(buf.getInt()) {
-            1 -> ForeignHttpException.Transport(
+            1 -> CrossrefResult.Served(
+                FfiConverterString.read(buf),
+                FfiConverterSequenceTypeRetractionEvidence.read(buf),
+                FfiConverterSequenceString.read(buf),
+                )
+            2 -> CrossrefResult.NotKnown
+            3 -> CrossrefResult.Unreachable(
                 FfiConverterString.read(buf),
                 )
-            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+            else -> throw RuntimeException("invalid enum value, something is very wrong!!")
         }
     }
 
-    override fun allocationSize(value: ForeignHttpException): ULong {
-        return when(value) {
-            is ForeignHttpException.Transport -> (
-                // Add the size for the Int that specifies the variant plus the size needed for all fields
+    override fun allocationSize(value: CrossrefResult): ULong = when(value) {
+        is CrossrefResult.Served -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+                + FfiConverterString.allocationSize(value.`doi`)
+                + FfiConverterSequenceTypeRetractionEvidence.allocationSize(value.`evidence`)
+                + FfiConverterSequenceString.allocationSize(value.`retractionTargets`)
+            )
+        }
+        is CrossrefResult.NotKnown -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
+                4UL
+            )
+        }
+        is CrossrefResult.Unreachable -> {
+            // Add the size for the Int that specifies the variant plus the size needed for all fields
+            (
                 4UL
                 + FfiConverterString.allocationSize(value.`reason`)
             )
         }
     }
 
-    override fun write(value: ForeignHttpException, buf: ByteBuffer) {
+    override fun write(value: CrossrefResult, buf: ByteBuffer) {
         when(value) {
-            is ForeignHttpException.Transport -> {
+            is CrossrefResult.Served -> {
                 buf.putInt(1)
+                FfiConverterString.write(value.`doi`, buf)
+                FfiConverterSequenceTypeRetractionEvidence.write(value.`evidence`, buf)
+                FfiConverterSequenceString.write(value.`retractionTargets`, buf)
+                Unit
+            }
+            is CrossrefResult.NotKnown -> {
+                buf.putInt(2)
+                Unit
+            }
+            is CrossrefResult.Unreachable -> {
+                buf.putInt(3)
                 FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
-
 }
+
+
 
 
 
@@ -2864,13 +2869,51 @@ public object FfiConverterTypeForeignHttpError : FfiConverterRustBuffer<ForeignH
 sealed class JatsException: kotlin.Exception() {
     
     /**
-     * The bytes are not well-formed XML.
+     * The document is not well-formed XML.
      */
     class Xml(
         
         /**
          * The XML reader's message. Not `message`: Kotlin exceptions inherit
          * `Throwable.message`, and a field of that name does not compile.
+         */
+        val `reason`: kotlin.String
+        ) : JatsException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
+    /**
+     * The document nests elements deeper than [`MAX_NESTING_DEPTH`] and was
+     * refused before parsing. The reader recurses once per level, and a stack
+     * overflow is not a panic — it would kill the app, which no error type can
+     * report.
+     */
+    class NestingTooDeep(
+        
+        /**
+         * The depth the pre-scan counted: exact for a document without an
+         * internal DTD subset, an upper bound for one declaring entities.
+         */
+        val `depth`: kotlin.ULong, 
+        
+        /**
+         * The limit it exceeded.
+         */
+        val `limit`: kotlin.ULong
+        ) : JatsException() {
+        override val message
+            get() = "depth=${ `depth` }, limit=${ `limit` }"
+    }
+    
+    /**
+     * The parse could not start: the system refused the thread it runs on.
+     * Nothing is wrong with the document; a later call may succeed.
+     */
+    class Resource(
+        
+        /**
+         * The system's message.
          */
         val `reason`: kotlin.String
         ) : JatsException() {
@@ -2900,6 +2943,13 @@ public object FfiConverterTypeJatsError : FfiConverterRustBuffer<JatsException> 
             1 -> JatsException.Xml(
                 FfiConverterString.read(buf),
                 )
+            2 -> JatsException.NestingTooDeep(
+                FfiConverterULong.read(buf),
+                FfiConverterULong.read(buf),
+                )
+            3 -> JatsException.Resource(
+                FfiConverterString.read(buf),
+                )
             else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
         }
     }
@@ -2907,6 +2957,17 @@ public object FfiConverterTypeJatsError : FfiConverterRustBuffer<JatsException> 
     override fun allocationSize(value: JatsException): ULong {
         return when(value) {
             is JatsException.Xml -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+            is JatsException.NestingTooDeep -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterULong.allocationSize(value.`depth`)
+                + FfiConverterULong.allocationSize(value.`limit`)
+            )
+            is JatsException.Resource -> (
                 // Add the size for the Int that specifies the variant plus the size needed for all fields
                 4UL
                 + FfiConverterString.allocationSize(value.`reason`)
@@ -2921,10 +2982,330 @@ public object FfiConverterTypeJatsError : FfiConverterRustBuffer<JatsException> 
                 FfiConverterString.write(value.`reason`, buf)
                 Unit
             }
+            is JatsException.NestingTooDeep -> {
+                buf.putInt(2)
+                FfiConverterULong.write(value.`depth`, buf)
+                FfiConverterULong.write(value.`limit`, buf)
+                Unit
+            }
+            is JatsException.Resource -> {
+                buf.putInt(3)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
         }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
     }
 
 }
+
+
+
+
+
+/**
+ * Why a Retraction Watch index could not be built or opened. Either way the
+ * export was **not consulted**: pass `None` as `export`, never `[]`.
+ */
+sealed class RetractionIndexException: kotlin.Exception() {
+    
+    /**
+     * The CSV or the stored index is unusable.
+     */
+    class Unusable(
+        
+        /**
+         * Why. Not `message`, which collides with Kotlin's `Throwable.message`.
+         */
+        val `reason`: kotlin.String
+        ) : RetractionIndexException() {
+        override val message
+            get() = "reason=${ `reason` }"
+    }
+    
+
+    
+
+
+    companion object ErrorHandler : UniffiRustCallStatusErrorHandler<RetractionIndexException> {
+        override fun lift(error_buf: RustBuffer.ByValue): RetractionIndexException = FfiConverterTypeRetractionIndexError.lift(error_buf)
+    }
+
+    
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRetractionIndexError : FfiConverterRustBuffer<RetractionIndexException> {
+    override fun read(buf: ByteBuffer): RetractionIndexException {
+        
+
+        return when(buf.getInt()) {
+            1 -> RetractionIndexException.Unusable(
+                FfiConverterString.read(buf),
+                )
+            else -> throw RuntimeException("invalid error enum value, something is very wrong!!")
+        }
+    }
+
+    override fun allocationSize(value: RetractionIndexException): ULong {
+        return when(value) {
+            is RetractionIndexException.Unusable -> (
+                // Add the size for the Int that specifies the variant plus the size needed for all fields
+                4UL
+                + FfiConverterString.allocationSize(value.`reason`)
+            )
+        }
+    }
+
+    override fun write(value: RetractionIndexException, buf: ByteBuffer) {
+        when(value) {
+            is RetractionIndexException.Unusable -> {
+                buf.putInt(1)
+                FfiConverterString.write(value.`reason`, buf)
+                Unit
+            }
+        }.let { /* this makes the `when` an expression, which ensures it is exhaustive */ }
+    }
+
+}
+
+
+
+/**
+ * What a notice says about the paper.
+ */
+
+enum class RetractionKind {
+    
+    /**
+     * Retracted.
+     */
+    RETRACTION,
+    /**
+     * Withdrawn (retracts).
+     */
+    WITHDRAWAL,
+    /**
+     * Removed (retracts).
+     */
+    REMOVAL,
+    /**
+     * Partly retracted (a concern).
+     */
+    PARTIAL_RETRACTION,
+    /**
+     * An expression of concern.
+     */
+    EXPRESSION_OF_CONCERN,
+    /**
+     * A correction (evidence of nothing).
+     */
+    CORRECTION,
+    /**
+     * An erratum (evidence of nothing).
+     */
+    ERRATUM,
+    /**
+     * A corrigendum (evidence of nothing).
+     */
+    CORRIGENDUM,
+    /**
+     * An addendum (evidence of nothing).
+     */
+    ADDENDUM,
+    /**
+     * A clarification (evidence of nothing).
+     */
+    CLARIFICATION,
+    /**
+     * A new version (evidence of nothing).
+     */
+    NEW_VERSION,
+    /**
+     * A new edition (evidence of nothing).
+     */
+    NEW_EDITION,
+    /**
+     * Reinstated: undoes a retraction, lifts a concern.
+     */
+    REINSTATEMENT,
+    /**
+     * Outside the vocabulary; `raw_kind` keeps the original. The lookup that
+     * returned it has not answered, so the paper cannot be clear.
+     */
+    OTHER;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRetractionKind: FfiConverterRustBuffer<RetractionKind> {
+    override fun read(buf: ByteBuffer) = try {
+        RetractionKind.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: RetractionKind) = 4UL
+
+    override fun write(value: RetractionKind, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * A lookup that has to answer before a paper can be called clear.
+ */
+
+enum class RetractionLookup {
+    
+    /**
+     * The Retraction Watch export lookup.
+     */
+    RETRACTION_WATCH_EXPORT,
+    /**
+     * Crossref's answer for this DOI.
+     */
+    CROSSREF;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRetractionLookup: FfiConverterRustBuffer<RetractionLookup> {
+    override fun read(buf: ByteBuffer) = try {
+        RetractionLookup.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: RetractionLookup) = 4UL
+
+    override fun write(value: RetractionLookup, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Where a piece of evidence came from.
+ */
+
+enum class RetractionSource {
+    
+    /**
+     * The Retraction Watch export.
+     */
+    RETRACTION_WATCH_EXPORT,
+    /**
+     * A Crossref relation whose `source` is `retraction-watch`.
+     */
+    CROSSREF_RETRACTION_WATCH,
+    /**
+     * A Crossref relation whose `source` is `publisher`.
+     */
+    CROSSREF_PUBLISHER,
+    /**
+     * PubMed's `Retracted Publication` publication type.
+     */
+    PUBMED_LABEL;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRetractionSource: FfiConverterRustBuffer<RetractionSource> {
+    override fun read(buf: ByteBuffer) = try {
+        RetractionSource.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: RetractionSource) = 4UL
+
+    override fun write(value: RetractionSource, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * The verdict. `Unchecked` is never a softer `Clear`.
+ */
+
+enum class RetractionStatus {
+    
+    /**
+     * Retracted, and not reinstated since. Leave the paper out.
+     */
+    RETRACTED,
+    /**
+     * An expression of concern or a partial retraction stands. Warn.
+     */
+    CONCERN,
+    /**
+     * Every lookup answered and no retraction or concern stands.
+     */
+    CLEAR,
+    /**
+     * No retraction or concern stands, but a lookup did not answer.
+     */
+    UNCHECKED;
+
+    
+
+
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeRetractionStatus: FfiConverterRustBuffer<RetractionStatus> {
+    override fun read(buf: ByteBuffer) = try {
+        RetractionStatus.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: RetractionStatus) = 4UL
+
+    override fun write(value: RetractionStatus, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
 
 
 
@@ -2964,6 +3345,102 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
 /**
  * @suppress
  */
+public object FfiConverterOptionalTypeRetractionEvidence: FfiConverterRustBuffer<RetractionEvidence?> {
+    override fun read(buf: ByteBuffer): RetractionEvidence? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeRetractionEvidence.read(buf)
+    }
+
+    override fun allocationSize(value: RetractionEvidence?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeRetractionEvidence.allocationSize(value)
+        }
+    }
+
+    override fun write(value: RetractionEvidence?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeRetractionEvidence.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeCrossrefResult: FfiConverterRustBuffer<CrossrefResult?> {
+    override fun read(buf: ByteBuffer): CrossrefResult? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeCrossrefResult.read(buf)
+    }
+
+    override fun allocationSize(value: CrossrefResult?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeCrossrefResult.allocationSize(value)
+        }
+    }
+
+    override fun write(value: CrossrefResult?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeCrossrefResult.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalSequenceTypeRetractionEvidence: FfiConverterRustBuffer<List<RetractionEvidence>?> {
+    override fun read(buf: ByteBuffer): List<RetractionEvidence>? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterSequenceTypeRetractionEvidence.read(buf)
+    }
+
+    override fun allocationSize(value: List<RetractionEvidence>?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterSequenceTypeRetractionEvidence.allocationSize(value)
+        }
+    }
+
+    override fun write(value: List<RetractionEvidence>?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterSequenceTypeRetractionEvidence.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.String>> {
     override fun read(buf: ByteBuffer): List<kotlin.String> {
         val len = buf.getInt()
@@ -2982,6 +3459,34 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterString.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeCrossrefBatch: FfiConverterRustBuffer<List<CrossrefBatch>> {
+    override fun read(buf: ByteBuffer): List<CrossrefBatch> {
+        val len = buf.getInt()
+        return List<CrossrefBatch>(len) {
+            FfiConverterTypeCrossrefBatch.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<CrossrefBatch>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeCrossrefBatch.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<CrossrefBatch>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeCrossrefBatch.write(it, buf)
         }
     }
 }
@@ -3216,40 +3721,99 @@ public object FfiConverterSequenceTypeJatsTable: FfiConverterRustBuffer<List<Jat
 /**
  * @suppress
  */
-public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.String, kotlin.String>> {
-    override fun read(buf: ByteBuffer): Map<kotlin.String, kotlin.String> {
+public object FfiConverterSequenceTypeRetractionEvidence: FfiConverterRustBuffer<List<RetractionEvidence>> {
+    override fun read(buf: ByteBuffer): List<RetractionEvidence> {
         val len = buf.getInt()
-        return buildMap<kotlin.String, kotlin.String>(len) {
+        return List<RetractionEvidence>(len) {
+            FfiConverterTypeRetractionEvidence.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<RetractionEvidence>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeRetractionEvidence.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<RetractionEvidence>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeRetractionEvidence.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeRetractionLookup: FfiConverterRustBuffer<List<RetractionLookup>> {
+    override fun read(buf: ByteBuffer): List<RetractionLookup> {
+        val len = buf.getInt()
+        return List<RetractionLookup>(len) {
+            FfiConverterTypeRetractionLookup.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<RetractionLookup>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeRetractionLookup.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<RetractionLookup>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeRetractionLookup.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterMapStringTypeCrossrefResult: FfiConverterRustBuffer<Map<kotlin.String, CrossrefResult>> {
+    override fun read(buf: ByteBuffer): Map<kotlin.String, CrossrefResult> {
+        val len = buf.getInt()
+        return buildMap<kotlin.String, CrossrefResult>(len) {
             repeat(len) {
                 val k = FfiConverterString.read(buf)
-                val v = FfiConverterString.read(buf)
+                val v = FfiConverterTypeCrossrefResult.read(buf)
                 this[k] = v
             }
         }
     }
 
-    override fun allocationSize(value: Map<kotlin.String, kotlin.String>): ULong {
+    override fun allocationSize(value: Map<kotlin.String, CrossrefResult>): ULong {
         val spaceForMapSize = 4UL
         val spaceForChildren = value.map { (k, v) ->
             FfiConverterString.allocationSize(k) +
-            FfiConverterString.allocationSize(v)
+            FfiConverterTypeCrossrefResult.allocationSize(v)
         }.sum()
         return spaceForMapSize + spaceForChildren
     }
 
-    override fun write(value: Map<kotlin.String, kotlin.String>, buf: ByteBuffer) {
+    override fun write(value: Map<kotlin.String, CrossrefResult>, buf: ByteBuffer) {
         buf.putInt(value.size)
         // The parens on `(k, v)` here ensure we're calling the right method,
         // which is important for compatibility with older android devices.
         // Ref https://blog.danlew.net/2017/03/16/kotlin-puzzler-whose-line-is-it-anyways/
         value.forEach { (k, v) ->
             FfiConverterString.write(k, buf)
-            FfiConverterString.write(v, buf)
+            FfiConverterTypeCrossrefResult.write(v, buf)
         }
     }
 }
         /**
-         * The bmlib crate version these bindings were built from — what an app pins.
+         * The Rust workspace version these bindings were built from (`0.2.0` …),
+         * which bmlib-ffi and the bmlib crate share. Not Python bmlib's version, and
+         * the same for every commit of one version, so it cannot tell two builds
+         * apart — the build's commit is issue #493.
          */ fun `bmlibVersion`(): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCall() { _status ->
@@ -3262,11 +3826,19 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
     
 
         /**
-         * Parse a JATS document.
+         * Parse a JATS document, **discarding its audit**.
+         *
+         * bmlib counts what a parse loses (refused table spans, dropped formulas,
+         * unfiled terms…) and checks itself for reader defects. This function returns
+         * the article alone: those lines go only to the process's stderr, which an
+         * iOS app does not see outside an attached debugger and Android discards. Use
+         * [`parse_jats_audited`] to receive them.
          *
          * # Errors
          *
-         * [`JatsError::Xml`] when the document is not well-formed.
+         * [`JatsError::Xml`] when the document is not well-formed,
+         * [`JatsError::NestingTooDeep`] past [`MAX_NESTING_DEPTH`], and
+         * [`JatsError::Resource`] when the parse thread cannot start.
          */
     @Throws(JatsException::class) fun `parseJats`(`xml`: kotlin.String): JatsArticle {
             return FfiConverterTypeJatsArticle.lift(
@@ -3281,11 +3853,15 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
     
 
         /**
-         * Parse a JATS document with a known PMC id, returning the audit as well.
+         * Parse a JATS document and return the audit with it.
+         *
+         * `known_pmc_id` is the id the caller already holds, or `""` for none; a bare
+         * number is `PMC`-prefixed, and it wins over an id the document deposits. The
+         * audit's lines are also written to stderr, as for [`parse_jats`].
          *
          * # Errors
          *
-         * [`JatsError::Xml`] when the document is not well-formed.
+         * As [`parse_jats`].
          */
     @Throws(JatsException::class) fun `parseJatsAudited`(`xml`: kotlin.String, `knownPmcId`: kotlin.String): JatsParseReport {
             return FfiConverterTypeJatsParseReport.lift(
@@ -3295,6 +3871,84 @@ public object FfiConverterMapStringString: FfiConverterRustBuffer<Map<kotlin.Str
         
         FfiConverterString.lower(`xml`),
         FfiConverterString.lower(`knownPmcId`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Build an index from the export's CSV bytes. `data_as_of` is your date for
+         * the copy (the day it was downloaded), returned by
+         * [`RetractionIndex::data_as_of`] so a verdict can say how fresh it is.
+         *
+         * # Errors
+         *
+         * The CSV is not UTF-8 or is malformed, `data_as_of` is blank, no row was
+         * usable, or no notice carries a paper DOI (or none a PMID): a renamed
+         * column. Keep the previous index, if any. A download truncated on a row
+         * boundary builds: compare `notice_count()` with the index it replaces.
+         */
+    @Throws(RetractionIndexException::class) fun `buildRetractionIndex`(`csv`: kotlin.ByteArray, `dataAsOf`: kotlin.String): RetractionIndexBuild {
+            return FfiConverterTypeRetractionIndexBuild.lift(
+    uniffiRustCallWithError(RetractionIndexException) { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_func_build_retraction_index(
+    
+        
+        FfiConverterByteArray.lower(`csv`),
+        FfiConverterString.lower(`dataAsOf`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Build the batched Crossref requests for `dois`.
+         */ fun `crossrefRetractionRequests`(`dois`: List<kotlin.String>, `mailto`: kotlin.String?): CrossrefRequests {
+            return FfiConverterTypeCrossrefRequests.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_func_crossref_retraction_requests(
+    
+        
+        FfiConverterSequenceString.lower(`dois`),
+        FfiConverterOptionalString.lower(`mailto`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Read one batch's answer: a result per requested DOI, keyed by the
+         * normalised DOI. A failed batch makes every DOI in it `Unreachable`.
+         */ fun `parseCrossrefRetractionResponse`(`status`: kotlin.UShort, `body`: kotlin.ByteArray, `requestedDois`: List<kotlin.String>): Map<kotlin.String, CrossrefResult> {
+            return FfiConverterMapStringTypeCrossrefResult.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_func_parse_crossref_retraction_response(
+    
+        
+        FfiConverterUShort.lower(`status`),
+        FfiConverterByteArray.lower(`body`),
+        FfiConverterSequenceString.lower(`requestedDois`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Decide one paper's retraction status. See bmlib's `retraction_status`.
+         *
+         * `export`: `None` when the export was not consulted (no index, an unusable
+         * one, or [`RetractionIndex::lookup`] returned `None`). `crossref`: `None`
+         * when Crossref was not asked (no DOI, an unsendable one).
+         */ fun `retractionStatus`(`doi`: kotlin.String?, `export`: List<RetractionEvidence>?, `crossref`: CrossrefResult?, `publicationTypes`: List<kotlin.String>): RetractionVerdict {
+            return FfiConverterTypeRetractionVerdict.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_bmlib_ffi_fn_func_retraction_status(
+    
+        
+        FfiConverterOptionalString.lower(`doi`),
+        FfiConverterOptionalSequenceTypeRetractionEvidence.lower(`export`),
+        FfiConverterOptionalTypeCrossrefResult.lower(`crossref`),
+        FfiConverterSequenceString.lower(`publicationTypes`),_status)
 }
     )
     }

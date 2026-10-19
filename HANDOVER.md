@@ -29,18 +29,41 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Next: retraction checking** (Phase 7; ledger row
-`bmlib:0.7.0-retraction-watch`). Spec of the 2026-10-18 decisions:
-`docs/superpowers/specs/2026-10-18-retraction-checking-design.md`. It checks
-the Retraction Watch export, Crossref's `updated-by` and PubMed's label,
-because measurement showed neither of the first two contains the other.
-**Blocked on bmlib#504**, which the maintainer will do in bmlib: one rule and
-one fixture in Python and Rust, which the apps consume through UniFFI. After
-it lands: refresh lite's bmlib pin (**#583**), write the plan with
-superpowers:writing-plans, then build in the spec's PR order.
+**Retraction checking, desktop: built, in review** (plan
+`docs/superpowers/plans/2026-10-18-retraction-checking-desktop.md`, spec
+`docs/superpowers/specs/2026-10-18-retraction-checking-design.md`; all 14
+tasks done subagent-driven, every task and each PR whole-branch reviewed).
+- **PR 1 = #594** (open): bmlib git dependency (`f767215`, no PyPI release
+  yet; a git pin blocks a PyPI upload), the contract copy
+  `doc/cross_platform/retraction_parity/`, ledger synced, publication types
+  stored (`documents.publication_types`), the incremental search stores
+  everything it fetches, the document upsert keeps rowid and never blanks a
+  field. Lodged #591 (Tier 1 never sees types), #592, #593, #590 (other
+  memory-only facts).
+- **PR 2** (local branch `feat/retraction-desktop-2`, head `98a1178b`, in the
+  worktree `.claude/worktrees/retraction-desktop`): export copy, Crossref
+  lookups, the checker and `retraction_checks` table, screening, the review
+  choke point, audit, report, MCP, badges/banner, `bmll retractions-update`.
+  **Open it against master after #594 merges** (rebase first). Lodged #595.
+- **PR 3** (local `feat/retraction-desktop-3`, head `1d12734b`, cut from
+  PR 2): saved work (reopened question, saved report file, *Check again*;
+  snapshot rows keep `run_status`/`run_deciding` as facts of the run) and
+  the Research Questions passes screened. Open after PR 2 merges.
+- The SDD ledger with every ruling is in that worktree's
+  `.superpowers/sdd/2026-10-18-retraction-checking-desktop/progress.md`
+  (git-ignored): keep it until PR 3 is open, then delete the worktree.
+- **Next after merge:** the iOS and Android plans (they consume bmlib's FFI;
+  the pin and CI are #588), against the same contract.
 
 ## Recently landed (context)
 
+- **The FFI pin names bmlib `main`** (#583): `f767215`, after bmlib#490
+  (path-independent builds via `with-remapped-paths.sh`, Gradle's cargo-ndk
+  too) and bmlib#492. `android-tests.yml` builds bmlib at the pin and fails if
+  `BmlibJatsFfiTest` skips. **The committed xcframework is
+  `bmlib-xcframework.yml`'s own build**, rebuilt and compared on every PR
+  with the committed xcframework and both bindings (identity needs the same
+  Apple linker); re-pin from its artifact as its header says. Lodged: #587 (Europe PMC's associated-data `<sec>`).
 - **The bmlib port set** (PRs #564–#570, #572; Phases 0–2 of the plan).
   **`doc/cross_platform/bmlib_sync/ledger.json` records every bmlib change
   per platform**, pinned to bmlib 0.11.0. A sync is: bump `bmlib_commit`,
@@ -49,30 +72,20 @@ superpowers:writing-plans, then build in the spec's PR order.
   `pmid_canonical.json`, `score_values.json` (an unreadable score is a parse
   failure, never 3), `europepmc_free_pdf.json`; desktop `pubmed/record_ids.py`
   and `quality/json_fields.py`; converter **6**, analyser **2.7**. **WP-2:
-  Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet,
-  pin stale (**#583**). Lodged: #573–#581; **#585** (bmlib#485, a blank
+  Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet;
+  the pin names bmlib `main` since #583 (above). Lodged: #573–#581; **#585** (bmlib#485, a blank
   id as a full-text cache name, on bmlib's `main` after 0.11.0).
-- **A download is checked before it is cached** (#560, #561; PR #562): Swift
-  stages `<cache name>.<UUID>.unchecked`, Android checks the `.part`;
-  **Android's `downloadPdf` never answers from the cache.** Lodged: #563.
-- **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559). Contract
-  `pdf_title_check.json`: ≥ 0.5 of the title's adjacent word pairs on the first
-  page with text, or the whole title with word breaks ignored (≥ 20
-  letters/numbers); no title, no text or a translated `[title]` is unchecked,
-  never a match (limits: #543). A mismatch is set aside as `.mismatch`, never
-  read; the refusal is `wrong_article`, a skip **with its address**, never an
-  absence; no platform keeps a link to a refused PDF. Desktop only: numbered
-  set-asides, a person's keep `<pdf>.kept` (`bmll keep-pdf`). **Android's render
-  of another article ends the fetch** (#556). Open: #545, #547, #555–#558.
-- **Bot-walled PDFs: the desktop browser rescue** (#480, closed; stages 1–3,
-  PRs #521, #529, #536). Spec
-  `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, developer doc
-  `doc/developer/browser_rescue.md`. `challenged` on all three platforms; a
-  SQLite queue; a hidden QtWebEngine pass; a rescue re-analyses; the review
-  queue window (`gui/review_queue_dialog.py`), "Walled PDFs: N", shown visits,
-  *Walk the queue*, the interrogation tab's priority path. Live acceptance
-  (spikes README §4): PMC 12/12, other walls 12/14, ScienceDirect 10/10
-  `needs_person`. The apps' embedded browsers need their own spec.
+- **A download is checked before it is cached** (#560, #561; PR #562); **Android's
+  `downloadPdf` never answers from the cache.** Lodged: #563.
+- **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559; contract
+  `pdf_title_check.json`): a mismatch is set aside as `.mismatch`, never read;
+  the refusal is `wrong_article`, a skip **with its address**, never an
+  absence; no title/text is unchecked, never a match. Desktop: `<pdf>.kept`
+  (`bmll keep-pdf`). Open: #543, #545, #547, #555–#558.
+- **Bot-walled PDFs: the desktop browser rescue** (#480; PRs #521, #529,
+  #536; spec `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, doc
+  `doc/developer/browser_rescue.md`): SQLite queue, hidden QtWebEngine pass,
+  review-queue window. Live: PMC 12/12, ScienceDirect `needs_person`.
 - **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
   the service; while the window has a visit or a walk, the hidden pass takes
   no entry. A person's visit (`judge_pages=False`) is judged only by its
@@ -117,9 +130,8 @@ superpowers:writing-plans, then build in the spec's PR order.
 - **Unpaywall** (PRs #465–#482; `fulltext_retrieval.md`): a PDF not obtained
   is refused, never a link; non-`%PDF` is `malformed_response`; **no absence
   while an `OpenAccessShortfall` is set**; Room migrations register from
-  `AppDatabase.ALL_MIGRATIONS`.
-- **iOS/macOS workflow** (PRs #458–#469): one stop path, `stopWork(_:)`;
-  **`session.errorMessage` means a failure and nothing else**.
+  `AppDatabase.ALL_MIGRATIONS`. **iOS/macOS workflow** (PRs #458–#469): one
+  stop path, `stopWork(_:)`; **`session.errorMessage` means a failure only**.
 - **Europe PMC fetches, compressed** (PRs #433–#452). A typed XML fetch on all
   three: served, absent (404) or unreachable. **Preprints are fetched by their
   `PPR` ID.** A chain Europe PMC did not settle is **not** "no full text".
@@ -212,10 +224,8 @@ Open issues by family; each issue carries the detail. None blocks another.
 
 ### Next up
 
-- **Retraction checking** (above, waits on bmlib#504); then the plan's work packages: Phase 3
-  (transparency), Phase 4 (JATS, as adapter work over the Rust parser after
-  **#583**), Phase 5 (retrieval), Phase 6 (LLM plumbing). The bmlib audit's
-  leftovers are **#571**, **#573**–**#581**, **#585**.
+- **Retraction checking** (above), then Phases 3–6 (Phase 4 as adapter work
+  over the Rust parser). bmlib audit leftovers: **#571**, **#573**–**#581**, **#585**.
 - **#545** sweep the PDF library for other articles' PDFs (CLI only, the
   maintainer's call); **#547** keep a set-aside PDF from the GUI (both from
   #541); **#555** Android release builds fail R8; **#556**–**#558** (#546's).
@@ -491,10 +501,6 @@ scheme `MedicalFactChecker`, from a **fresh clone**. Two invariants break it
 silently while local builds stay green, both enforced on every PR by
 `.github/workflows/xcode-project-guards.yml`: **no Swift package reference may
 point outside this repository**, and **`MedicalFactChecker.xcscheme` must stay
-shared** (`…xcodeproj/xcshareddata/xcschemes/`). Reproduce a cloud build with:
-
-```bash
-git clone <repo> /tmp/x && cd /tmp/x/ios/MedicalFactChecker && xcodebuild \
-  -scheme MedicalFactChecker -destination 'platform=macOS' \
-  CODE_SIGNING_ALLOWED=NO archive
-```
+shared** (`…xcodeproj/xcshareddata/xcschemes/`). Reproduce a cloud build:
+`git clone <repo> /tmp/x && cd /tmp/x/ios/MedicalFactChecker && xcodebuild
+-scheme MedicalFactChecker -destination 'platform=macOS' CODE_SIGNING_ALLOWED=NO archive`.
