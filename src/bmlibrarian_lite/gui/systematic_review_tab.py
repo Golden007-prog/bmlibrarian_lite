@@ -30,6 +30,7 @@ The report is displayed in the separate Report tab.
 import logging
 import sqlite3
 import threading
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional, List, Any, Dict
 
@@ -409,6 +410,7 @@ class WorkflowWorker(QThread):
                 documents = list(screen.kept)
                 excluded = list(screen.excluded)
                 if not documents:
+                    self._hold_documents(excluded)
                     self._finish_without_report(
                         "No documents left to score.",
                         metadata,
@@ -490,19 +492,7 @@ class WorkflowWorker(QThread):
             )
             self._checkpoint_id = checkpoint.id
 
-            # Backstop for any route that preloads documents it did not
-            # store: a scored document must be retrievable on reopen.
-            # Excluded papers too: reopening and Check again must find them.
-            held = [*documents, *excluded]
-            unstored = [d for d in held if self.storage.get_document(d.id) is None]
-            if unstored:
-                self.storage.add_documents(unstored)
-            # Link every document scored or left out as retracted
-            doc_ids = [doc.id for doc in held]
-            self.storage.add_question_documents(
-                question=self.question,
-                document_ids=doc_ids,
-            )
+            self._hold_documents([*documents, *excluded])
 
             scoring_agent = LiteScoringAgent(config=self.config)
 
@@ -804,6 +794,25 @@ class WorkflowWorker(QThread):
             step,
             f"{describe_analysis_shortfalls([shortfall])}."
             f"\n\n{analysis_failure_advice([shortfall])}",
+        )
+
+    def _hold_documents(self, held: Sequence[LiteDocument]) -> None:
+        """Store the run's documents and link them to its question.
+
+        A backstop for any route that preloads documents it did not store: a
+        scored document must be retrievable on reopen. Papers left out as
+        retracted too, even when nothing is left to score: reopening must
+        find them.
+
+        Args:
+            held: Every document scored or left out as retracted.
+        """
+        unstored = [d for d in held if self.storage.get_document(d.id) is None]
+        if unstored:
+            self.storage.add_documents(unstored)
+        self.storage.add_question_documents(
+            question=self.question,
+            document_ids=[doc.id for doc in held],
         )
 
     def _finish_without_report(self, message: str, metadata: ReportMetadata) -> None:

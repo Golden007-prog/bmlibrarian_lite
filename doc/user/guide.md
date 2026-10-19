@@ -285,6 +285,27 @@ relevant in it.
   an error in the report step, and nothing is added to the report folder or
   offered under Load Report.
 
+#### Retracted Papers
+
+Before anything is scored, every paper the search found is checked against
+Retraction Watch's database (a local copy), Crossref, and PubMed's own
+"Retracted Publication" label. Retracted papers are left out: the report
+lists them under **Left out as retracted**, and the audit trail shows them
+with a RETRACTED badge. A paper under an expression of concern is kept, and
+the report puts a caveat under its reference.
+
+When a paper could not be checked (a source was down, it has no DOI, the
+local copy is out of date), its card shows **NOT CHECKED** and the report
+opens with a notice giving the count and the reason. Not checked never means
+"not retracted".
+
+The local copy is refreshed by the review itself when it is more than five
+weeks old (a download of about 68 MB; Cancel stops it). To refresh it by
+hand, run `bmll retractions-update`.
+
+Document Interrogation shows the same status in a banner above a loaded
+paper.
+
 #### Search Tips
 
 - Be specific in your research question
@@ -612,7 +633,13 @@ bmll config --json
 
 # Clear all stored data
 bmll clear
+
+# Refresh the local Retraction Watch copy
+bmll retractions-update
 ```
+
+`bmll retractions-update` exits 0 only when it built a new copy; otherwise it
+says which copy is kept and how current it is.
 
 `bmll config` prints your NCBI API key as `<redacted>` in both its plain and
 `--json` forms, so the output is safe to paste into a bug report. That also

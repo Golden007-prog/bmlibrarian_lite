@@ -6,12 +6,15 @@
 
 The evidence is the local Retraction Watch copy, Crossref's answer and the
 record's PubMed label. A decided verdict is reused while it is younger than
-``RETRACTION_CHECK_MAX_AGE_DAYS``; one with a lookup unanswered rests on a
-failure, not knowledge, so it is asked again on every check.
+``RETRACTION_CHECK_MAX_AGE_DAYS`` and, unless it already says retracted, the
+records' own label does not say retracted; one with a lookup unanswered rests
+on a failure, not knowledge, so it is asked again on every check.
 """
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -37,6 +40,8 @@ from .storage import LiteStorage
 from .transparency.assessment import contact_email
 
 __all__ = ["PaperCheck", "RetractionChecker", "paper_key"]
+
+logger = logging.getLogger(__name__)
 
 
 def _pmid(doc: LiteDocument) -> str | None:
@@ -130,9 +135,10 @@ class RetractionChecker:
             mailto: Contact address for both.
             now: The clock; stored rows' age and the export's day both read it.
             refresh_export: Whether a copy that is not current is downloaded
-                again (about 68 MB). Only the review and the CLI do; a
-                single-paper check uses the copy it has, or the export is
-                not consulted.
+                again (about 68 MB). Only the systematic review's checker
+                does; MCP and the interrogation tab use the copy they have,
+                or leave the export unconsulted (``bmll retractions-update``
+                calls ``refresh_export`` itself).
         """
         self._storage = storage
         self._data_dir = data_dir
@@ -184,7 +190,10 @@ class RetractionChecker:
         """Each document's verdict, reusing fresh stored ones.
 
         A stored verdict is reused while it is younger than
-        ``RETRACTION_CHECK_MAX_AGE_DAYS`` and every lookup answered it. A new
+        ``RETRACTION_CHECK_MAX_AGE_DAYS``, every lookup answered it, and,
+        unless it already says retracted, the records' own PubMed label does
+        not say retracted (a fresh label is never hidden behind a stored
+        clear). A new
         verdict that leaves unanswered a lookup the stored one had answered
         never replaces it: the stored row keeps its ``checked_at`` and is
         asked again next time. Meanwhile a stored retraction or concern is
@@ -204,9 +213,12 @@ class RetractionChecker:
             Crossref batch was never asked has none, and none is stored.
 
         Raises:
-            sqlite3.Error: Reading or storing verdicts failed (``SQLiteError``
-                when reading the stored documents did). Nothing is
-                caught here, so the caller marks the documents unchecked.
+            sqlite3.Error: Reading the stored verdicts failed. Storing them
+                never raises: a failed write is logged, and the verdicts are
+                still returned.
+            SQLiteError: Reading the stored documents' publication types
+                failed. Neither is caught here, so the caller marks the
+                documents unchecked.
         """
         now = self._now()
         out: dict[str, PaperCheck] = {}
@@ -273,7 +285,18 @@ class RetractionChecker:
                 continue
             decided[key] = fresh
             out.update((doc.id, fresh) for doc in docs)
-        self._storage.store_retraction_checks(decided)
+        # A verdict resting on a failure fills only a missing row: a row this
+        # build could not read, or one another process stored meanwhile, may
+        # hold a retraction an outage must not erase
+        failing = {k: c for k, c in decided.items() if c.verdict.unanswered and k not in stored}
+        try:
+            self._storage.store_retraction_checks(
+                {k: c for k, c in decided.items() if k not in failing}
+            )
+            self._storage.store_retraction_checks(failing, keep_existing=True)
+        except sqlite3.Error as e:
+            # a verdict that could not be kept is still this run's verdict
+            logger.warning("Retraction checks not stored (%s); asked again next time", type(e).__name__)
         return out
 
 

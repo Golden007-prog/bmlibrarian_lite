@@ -359,7 +359,7 @@ def test_a_review_checker_that_cannot_be_built_leaves_every_document_unchecked(
 
 
 def test_quitting_cancels_a_running_review_and_waits_for_it(qapp: Any) -> None:
-    """At quit the review's should_cancel turns true, so an export download stops."""
+    """At quit a running review is cancelled (stopping an export download) and waited for."""
     from types import SimpleNamespace
 
     from bmlibrarian_lite.constants import KEPT_THREAD_EXIT_WAIT_MS
@@ -372,6 +372,23 @@ def test_quitting_cancels_a_running_review_and_waits_for_it(qapp: Any) -> None:
     worker.wait.assert_called_once_with(KEPT_THREAD_EXIT_WAIT_MS)
     # control: nothing running, nothing to do
     SystematicReviewTab._cancel_at_quit(SimpleNamespace(_worker=None))
+
+
+def test_the_review_tab_connects_its_quit_hook(
+    qapp: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Building the tab connects aboutToQuit to the cancel, so quitting reaches it."""
+    from types import SimpleNamespace
+
+    from bmlibrarian_lite.gui import systematic_review_tab as review_module
+
+    app = MagicMock()
+    monkeypatch.setattr(review_module, "QCoreApplication", SimpleNamespace(instance=lambda: app))
+    tab = review_module.SystematicReviewTab(config=MagicMock(), storage=MagicMock())
+    try:
+        app.aboutToQuit.connect.assert_called_once_with(tab._cancel_at_quit)
+    finally:
+        tab.deleteLater()
 
 
 def test_the_records_retracted_lines_escape_titles(qapp: Any) -> None:

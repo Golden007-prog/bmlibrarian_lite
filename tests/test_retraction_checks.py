@@ -547,3 +547,101 @@ def test_one_throttled_batch_of_120_leaves_exactly_50_unchecked(storage, tmp_pat
     assert clause is not None
     assert clause.startswith("50 papers' retraction status could not be checked")
     assert "HTTP 429" in clause
+
+
+def test_a_failed_store_still_returns_the_verdicts(storage, tmp_path, monkeypatch, caplog):
+    """A locked database loses the cache, never the run's retraction."""
+    from bmlibrarian_lite.retraction_screen import screen_with_fallback
+
+    _current_export(tmp_path)
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(storage, "store_retraction_checks", locked)
+    docs = [_doc("r", doi="10.9/retracted"), _doc("c", doi="10.1/clear")]
+    screen = screen_with_fallback(_checker(storage, tmp_path, StubSession()), docs)
+    assert [d.id for d in screen.excluded] == ["r"]
+    assert screen.checks["c"].verdict.status is RetractionStatus.CLEAR
+    assert not screen.failed
+    assert "OperationalError" in caplog.text
+
+
+def test_a_failed_check_still_leaves_out_a_paper_its_label_retracts(storage, tmp_path):
+    """The label needs no network or database, so it decides even then."""
+    from bmlibrarian_lite.retraction_screen import UnbuiltChecker, screen_with_fallback
+
+    docs = [_doc("r", doi="10.1/r", types=["Retracted Publication"]), _doc("k", doi="10.1/k")]
+    screen = screen_with_fallback(UnbuiltChecker(), docs)
+    assert screen.failed
+    assert [d.id for d in screen.excluded] == ["r"]
+    assert screen.checks["k"].verdict.status is RetractionStatus.UNCHECKED
+
+
+def test_an_outage_never_overwrites_an_unreadable_stored_row(storage, tmp_path):
+    """A row a newer build wrote may hold a retraction: an outage leaves it."""
+    _current_export(tmp_path)
+    _store(storage, RetractionStatus.RETRACTED, _NOTICE)
+    with sqlite3.connect(storage.config.storage.sqlite_path) as conn:
+        conn.execute("UPDATE retraction_checks SET status = 'retracted_v2'")
+    out = _checker(storage, tmp_path, StubSession(_unreachable)).check([_doc("a", doi="10.1/a")])
+    assert out["a"].verdict.status is RetractionStatus.UNCHECKED
+    with sqlite3.connect(storage.config.storage.sqlite_path) as conn:
+        [(status,)] = conn.execute("SELECT status FROM retraction_checks").fetchall()
+    assert status == "retracted_v2"
+    # control: an answer replaces it
+    _checker(storage, tmp_path, StubSession()).check([_doc("a", doi="10.1/a")])
+    assert storage.retraction_checks([_KEY])[_KEY].verdict.status is RetractionStatus.CLEAR
+
+
+def test_an_outage_never_erases_a_stored_concern(storage, tmp_path):
+    """Crossref down on the re-check: the stored concern is still returned and kept."""
+    _current_export(tmp_path)
+    old = _store(storage, RetractionStatus.CONCERN, _CONCERN)
+    out = _checker(storage, tmp_path, StubSession(_unreachable)).check([_doc("a", doi="10.1/a")])
+    assert out["a"] == old
+    assert storage.retraction_checks([_KEY])[_KEY] == old
+
+
+def test_a_cancel_during_the_export_download_stops_it(storage, tmp_path):
+    """The checker hands its cancel to the download: no more chunks, old copy kept."""
+    refresh_export(tmp_path, StubSession(), mailto=MAILTO, today=START.date() - timedelta(days=40))
+    before = (tmp_path / "retraction_watch.db").read_bytes()
+    read: list[int] = []
+
+    class _Chunked(_Response):
+        def iter_content(self, size):
+            for i in range(5):
+                read.append(i)
+                yield CSV[i * 10 : (i + 1) * 10]
+
+    class _Session(StubSession):
+        def get(self, url, **kwargs):
+            if url.startswith(RETRACTION_WATCH_EXPORT_URL):
+                return _Chunked(200, b"")
+            return super().get(url, **kwargs)
+
+    out = _checker(storage, tmp_path, _Session()).check(
+        [_doc("a", doi="10.1/a")], should_cancel=lambda: len(read) > 1
+    )
+    assert read == [0, 1]
+    assert (tmp_path / "retraction_watch.db").read_bytes() == before
+    assert out == {}  # cancelled before Crossref was asked
+
+
+def test_a_cancel_after_the_first_batch_keeps_its_answers(storage, tmp_path):
+    """60 DOIs, cancel after batch one: its 50 verdicts are returned and stored."""
+    _current_export(tmp_path)
+    calls: list[str] = []
+
+    def counted(url):
+        calls.append(url)
+        return _served(url)
+
+    docs = [_doc(f"d{i}", doi=f"10.5/{i}") for i in range(60)]
+    out = _checker(storage, tmp_path, StubSession(counted)).check(
+        docs, should_cancel=lambda: bool(calls)
+    )
+    assert len(calls) == 1
+    assert len(out) == 50
+    assert len(storage.retraction_checks([f"doi:10.5/{i}" for i in range(60)])) == 50

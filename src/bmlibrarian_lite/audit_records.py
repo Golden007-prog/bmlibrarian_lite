@@ -29,7 +29,8 @@ failed (see :class:`~bmlibrarian_lite.data_models.EvaluationErrorCode`) -- or,
 from an older build, a 1 with a recognisable explanation, which is read as the
 failure it was (:func:`as_recorded_failure`) -- and
 a document with no score at all is recorded as not scored, in none of the
-scored lists. They also build the part of the audit record that says so, so
+scored lists, unless the run left it out as retracted, which is its own
+outcome. They also build the part of the audit record that says so, so
 the saved file and the dialog cannot drift apart, and read what records and
 checkpoints written by older builds can and cannot tell.
 
@@ -221,6 +222,10 @@ def classify_document_outcomes(
         min_score=min_score,
         excluded_retracted=tuple(excluded),
     )
+
+
+# After every outcome: the papers a run left out as retracted were never scored
+RETRACTED_SORT_KEY = (3, 0)
 
 
 def outcome_sort_key(score: int | None) -> tuple[int, int]:
@@ -553,8 +558,8 @@ def excluded_in_snapshot(
 ) -> list[LiteDocument]:
     """The documents a run's snapshot records it left out as retracted.
 
-    Read from the row's ``excluded`` flag, never its status: *Check again*
-    rewrites the status, but not what the run did.
+    Read from the row's ``excluded`` flag, never its status: a later re-check
+    may rewrite the status, but not what the run did.
 
     Args:
         documents: The run's documents.

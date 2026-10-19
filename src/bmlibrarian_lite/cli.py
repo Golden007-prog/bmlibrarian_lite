@@ -234,13 +234,15 @@ def cmd_retractions_update(args: argparse.Namespace) -> int:
         args: Parsed command line arguments
 
     Returns:
-        Exit code (0 when a new copy dated today was built, 1 otherwise)
+        Exit code (0 when this run built a new copy, 1 otherwise; a copy an
+        earlier run built today is not this run's success)
     """
     from datetime import UTC, datetime
 
     import requests
 
     from . import LiteConfig
+    from .constants import RETRACTION_WATCH_DB_NAME
     from .polite_session import mount_politely
     from .retraction_export import ExportState, export_copy, refresh_export
     from .retraction_text import (
@@ -252,6 +254,13 @@ def cmd_retractions_update(args: argparse.Namespace) -> int:
 
     config = LiteConfig.load()
     data_dir = config.storage.data_dir
+    path = data_dir / RETRACTION_WATCH_DB_NAME
+
+    def stamp() -> int | None:
+        """The copy file's modification time; a new copy is swapped in whole, so it changes."""
+        return path.stat().st_mtime_ns if path.exists() else None
+
+    before = stamp()
     today = datetime.now(UTC).date()
     session = mount_politely(requests.Session())
     try:
@@ -262,7 +271,7 @@ def cmd_retractions_update(args: argparse.Namespace) -> int:
     finally:
         session.close()
 
-    if copy.state is ExportState.CURRENT and copy.data_as_of == today:
+    if copy.state is ExportState.CURRENT and copy.data_as_of == today and stamp() != before:
         print(export_refreshed_line(copy))
         return 0
     print(export_not_refreshed_line(copy))

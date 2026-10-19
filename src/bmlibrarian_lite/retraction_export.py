@@ -1,8 +1,13 @@
+# BMLibrarian Lite - Biomedical Literature Research Tool
+# Copyright (C) 2024-2026 Dr Horst Herb
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """The desktop's local copy of the Retraction Watch export.
 
 The copy is its own SQLite file in the data directory, rebuilt whole on every
 refresh so records Retraction Watch dropped disappear. A lookup answers with
-bmlib ``RetractionEvidence``, or ``None`` when the copy was not consulted.
+a list of bmlib ``RetractionEvidence``, or ``None`` when the copy was not
+consulted.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from bmlib.publications.retractions import (
 from bmlib.publications.schema import ensure_schema
 
 from .constants import (
+    HTTP_OK,
     RETRACTION_WATCH_DB_NAME,
     RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES,
     RETRACTION_WATCH_DOWNLOAD_TIMEOUT_SECONDS,
@@ -57,6 +63,17 @@ class ExportCopy:
 
     state: ExportState
     data_as_of: date | None
+
+    def __post_init__(self) -> None:
+        """Refuse a state its date contradicts.
+
+        Raises:
+            ValueError: A current or stale copy without a date, or a missing
+                or unreadable one with one.
+        """
+        dated = self.state in (ExportState.CURRENT, ExportState.STALE)
+        if dated != (self.data_as_of is not None):
+            raise ValueError(f"a {self.state.value} export copy {'needs' if dated else 'has no'} a date")
 
     @property
     def consulted(self) -> bool:
@@ -112,8 +129,8 @@ def export_evidence(
 
     Returns:
         The evidence (empty when the export holds nothing), or ``None`` when
-        the export was not consulted: copy not current, or no usable
-        identifier.
+        the export was not consulted: copy not current, no usable
+        identifier, or the copy or a notice in it could not be read (logged).
     """
     if not export_copy(data_dir, today=today).consulted:
         return None
@@ -127,6 +144,9 @@ def export_evidence(
     try:
         return evidence_from_notices(lookup_retractions(conn, doi=doi, pmid=pmid))
     except ValueError:
+        # no usable identifier, or a notice row this bmlib cannot read: the
+        # paper is unchecked, never clear, and the reason is kept
+        logger.warning("Retraction Watch lookup could not be read", exc_info=True)
         return None
     except sqlite3.Error:
         logger.warning("Retraction Watch lookup failed", exc_info=True)
@@ -146,7 +166,7 @@ def _download(
         timeout=RETRACTION_WATCH_DOWNLOAD_TIMEOUT_SECONDS,
     )
     try:
-        if response.status_code != 200:
+        if response.status_code != HTTP_OK:
             logger.warning("Retraction Watch export refused: HTTP %s", response.status_code)
             return False
         received = 0
@@ -232,8 +252,8 @@ def refresh_export(
         session: The HTTP session to download with.
         mailto: Contact address sent as the ``mailto`` query parameter.
         today: The current day, recorded as ``data_as_of``.
-        should_cancel: Checked before each downloaded chunk; once true the
-            download stops and the partial file is discarded.
+        should_cancel: Checked as each chunk arrives, before it is written;
+            once true the download stops and the partial file is discarded.
 
     Returns:
         The copy's state after the attempt.

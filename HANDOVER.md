@@ -42,7 +42,15 @@ tasks done subagent-driven, every task and each PR whole-branch reviewed).
 - **PR 2, open** (`feat/retraction-desktop-2`, rebased on master after #594):
   export copy, Crossref lookups, the checker and `retraction_checks` table,
   screening, the review choke point, audit, report, MCP, badges/banner,
-  `bmll retractions-update`. Lodged #595.
+  `bmll retractions-update`. Lodged #595. Review round (2026-10-20): the
+  stand-in message no longer auto-saves as a report, a failed store keeps the
+  run's verdicts, a failed check still applies the PubMed label, an outage
+  only fills a missing row, every unchecked cause is named, the notice opens
+  "**Retraction check:**", MCP results carry per-paper `retraction_status`;
+  docs in `doc/developer/retraction_checking.md`. Lodged #599–#602.
+  PR 3's rebase meets two of these: `RetractionScreen.from_snapshot` now
+  normalises rows (strict `excluded`, unknown status → unchecked, a bad time
+  kept as none), and *Check again* comments now say "a later re-check".
 - **PR 3** (local `feat/retraction-desktop-3`, head `1d12734b`, cut from
   PR 2's pre-rebase head `98a1178b`, in the worktree
   `.claude/worktrees/retraction-desktop`): saved work (reopened question,

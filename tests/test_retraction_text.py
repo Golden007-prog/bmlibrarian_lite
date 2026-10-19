@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import pytest
 from bmlib.publications.retraction_status import (
     RetractionEvidence,
     RetractionKind,
@@ -62,7 +63,10 @@ def _screen(retracted: int, unchecked: int) -> RetractionScreen:
         checks[f"r{i}"] = _check(RetractionStatus.RETRACTED, _evidence())
     for i in range(unchecked):
         docs.append(_doc(f"u{i}"))
-        checks[f"u{i}"] = _check(RetractionStatus.UNCHECKED, unanswered=BOTH)
+        # the copy was not consulted, so no day is recorded; Crossref answered
+        checks[f"u{i}"] = _check(
+            RetractionStatus.UNCHECKED, unanswered=BOTH[:1], asof=None
+        )
     return screen_documents(docs, checks)
 
 
@@ -83,7 +87,7 @@ def test_notice_is_idempotent():
     """Test notice is idempotent."""
     screen = _screen(2, 0)
     notice = format_retraction_notice(screen)
-    assert notice == "> **Retracted papers left out:** 2 retracted papers left out."
+    assert notice == "> **Retraction check:** 2 retracted papers left out."
     once = with_retraction_notice("Report", screen)
     assert once == f"{notice}\n\nReport"
     assert with_retraction_notice(once, screen) == once
@@ -272,7 +276,7 @@ def test_a_mixed_run_names_every_cause_once():
         "1 retracted paper left out; 3 papers' retraction status could not be checked: "
         f"{RW_CAUSE}; Crossref could not be used ({throttled.describe()}); no DOI or PMID"
     )
-    assert format_retraction_notice(screen) == f"> **Retracted papers left out:** {clause}."
+    assert format_retraction_notice(screen) == f"> **Retraction check:** {clause}."
 
 
 class _Broken:
@@ -296,3 +300,41 @@ def test_a_failed_check_says_so_in_the_summary_and_the_methods_line():
     checked = _screen(1, 1)
     assert retraction_methods_line(checked) == "Retraction status checked 2026-10-18"
     assert retraction_methods_line(screen_documents([], {})) == "Retraction status never checked"
+
+
+@pytest.mark.parametrize(
+    ("doc", "check", "cause"),
+    [
+        (
+            LiteDocument(id="p", title="t", abstract="", pmid="12345678"),
+            _check(RetractionStatus.UNCHECKED, unanswered=BOTH[1:]),
+            "no DOI, which Crossref needs",
+        ),
+        (
+            _doc("d"),
+            _check(RetractionStatus.UNCHECKED, unanswered=BOTH[1:]),
+            "Crossref had no usable answer for the DOI",
+        ),
+        (
+            _doc("n"),
+            _check(RetractionStatus.UNCHECKED, unanswered=BOTH[:1]),
+            "a Retraction Watch notice could not be read",
+        ),
+        (_doc("c"), None, "the check was cancelled before reaching them"),
+    ],
+    ids=["pmid-only", "crossref-silent", "unreadable-notice", "cancelled"],
+)
+def test_every_unchecked_paper_has_a_named_cause(doc, check, cause):
+    """A count with no reason sent readers to the wrong fix."""
+    screen = screen_documents([doc], {doc.id: check} if check else {})
+    assert run_summary_clause(screen) == (
+        f"1 paper's retraction status could not be checked: {cause}"
+    )
+
+
+def test_the_notice_does_not_claim_papers_were_left_out_when_none_were():
+    """Only unchecked papers: the notice says what the check found, nothing more."""
+    notice = format_retraction_notice(_screen(0, 1))
+    assert notice is not None
+    assert notice.startswith("> **Retraction check:** 1 paper's")
+    assert "left out" not in notice

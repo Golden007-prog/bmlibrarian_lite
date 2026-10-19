@@ -807,6 +807,11 @@ class DocumentCard(QFrame):
         title_row_item = header_layout.itemAt(0) if header_layout else None
         title_row = title_row_item.layout() if title_row_item else None
         if not isinstance(header_layout, QVBoxLayout) or not isinstance(title_row, QHBoxLayout):
+            # a retraction the card cannot show must not vanish without a trace
+            logger.warning(
+                "Retraction badge not shown for %s: the card's header is not laid out as expected",
+                self.document.id,
+            )
             return
         for old in (self._retraction_badge, self._excluded_label):
             if old is not None:

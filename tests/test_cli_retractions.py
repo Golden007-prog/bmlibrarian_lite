@@ -8,6 +8,7 @@ import pytest
 
 from bmlibrarian_lite import LiteConfig, retraction_export
 from bmlibrarian_lite.cli import create_parser
+from bmlibrarian_lite.constants import RETRACTION_WATCH_DB_NAME
 from bmlibrarian_lite.retraction_export import ExportCopy, ExportState
 
 
@@ -25,16 +26,24 @@ def _run(*argv: str) -> int:
 
 
 def _stub_refresh(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, copy: Callable[[date], ExportCopy]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    copy: Callable[[date], ExportCopy],
+    builds: bool = False,
 ) -> list[date]:
     """Stub the refresh (never the network) and the configuration; return the days it was asked for.
 
     The copy is built from the day the handler asked with, so a run across midnight cannot fail.
+    With ``builds`` the stub swaps in a new copy file, as a refresh that succeeded does.
     """
     asked: list[date] = []
 
     def fake_refresh(data_dir: Path, session: object, *, mailto: str, today: date) -> ExportCopy:
         asked.append(today)
+        if builds:
+            new = tmp_path / "new.db"
+            new.write_bytes(b"a new copy")
+            new.replace(tmp_path / RETRACTION_WATCH_DB_NAME)
         return copy(today)
 
     monkeypatch.setattr(retraction_export, "refresh_export", fake_refresh)
@@ -46,7 +55,9 @@ def test_update_refreshes_and_reports_the_date(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A fresh current copy exits 0 and names its data_as_of."""
-    asked = _stub_refresh(monkeypatch, tmp_path, lambda today: ExportCopy(ExportState.CURRENT, today))
+    asked = _stub_refresh(
+        monkeypatch, tmp_path, lambda today: ExportCopy(ExportState.CURRENT, today), builds=True
+    )
 
     assert _run("retractions-update") == 0
 
@@ -104,3 +115,15 @@ def test_update_names_the_kept_copys_state_in_words(
     out = capsys.readouterr().out
     assert word in out
     assert "stale" not in out
+
+
+def test_a_failed_refresh_after_an_earlier_one_today_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Today's copy from an earlier run is kept, but this run built nothing."""
+    (tmp_path / RETRACTION_WATCH_DB_NAME).write_bytes(b"this morning's copy")
+    _stub_refresh(monkeypatch, tmp_path, lambda today: ExportCopy(ExportState.CURRENT, today))
+
+    assert _run("retractions-update") == 1
+
+    assert "did not produce a new copy" in capsys.readouterr().out

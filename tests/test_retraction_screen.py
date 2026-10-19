@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
+import pytest
 from bmlib.publications.retraction_status import (
     RetractionEvidence,
     RetractionKind,
@@ -117,11 +118,41 @@ def test_snapshot_covers_a_kept_document_without_a_check():
     assert back["b"]["title"] == "Title b"
 
 
-def test_checked_at_treats_a_naive_datetime_as_utc():
-    """A naive time never breaks the oldest-of comparison."""
-    naive = datetime(2026, 1, 2)
-    screen = screen_documents(
-        [_doc("a"), _doc("b")],
-        {"a": _check(RetractionStatus.CLEAR), "b": _check(RetractionStatus.CLEAR, at=naive)},
-    )
-    assert screen.checked_at == naive.replace(tzinfo=UTC)
+def test_a_check_refuses_a_naive_time():
+    """Stored as local time but shown as UTC: a naive time is refused when built."""
+    with pytest.raises(ValueError, match="time zone"):
+        _check(RetractionStatus.CLEAR, at=datetime(2026, 1, 2))
+
+
+def test_a_snapshot_reads_a_naive_stored_time_as_utc():
+    """A stored row is JSON: its naive time never breaks the oldest-of comparison."""
+    from bmlibrarian_lite.retraction_screen import RetractionSnapshot
+
+    rows = [
+        {"document_id": "a", "status": "clear", "checked_at": "2026-01-02T00:00:00"},
+        {"document_id": "b", "status": "clear", "checked_at": "2026-03-04T00:00:00+00:00"},
+    ]
+    assert RetractionSnapshot.from_rows(rows).checked_at == datetime(2026, 1, 2, tzinfo=UTC)
+
+
+def test_a_check_refuses_a_crossref_failure_crossref_answered():
+    """A failure belongs only to a verdict that left Crossref unanswered."""
+    from bmlibrarian_lite.data_models import RequestFailure, RequestFailureKind
+
+    failure = RequestFailure(RequestFailureKind.CONNECTION)
+    with pytest.raises(ValueError, match="Crossref"):
+        PaperCheck(RetractionVerdict(RetractionStatus.CLEAR, None, ()), WHEN, None, failure)
+    unanswered = RetractionVerdict(RetractionStatus.UNCHECKED, None, (RetractionLookup.CROSSREF,))
+    assert PaperCheck(unanswered, WHEN, None, failure).crossref_failure == failure  # control
+
+
+@pytest.mark.parametrize(
+    ("state", "as_of"),
+    [("current", None), ("stale", None), ("missing", date(2026, 1, 1)), ("unreadable", date(2026, 1, 1))],
+)
+def test_an_export_copy_refuses_a_state_its_date_contradicts(state, as_of):
+    """CURRENT and STALE carry their day; MISSING and UNREADABLE have none."""
+    from bmlibrarian_lite.retraction_export import ExportCopy, ExportState
+
+    with pytest.raises(ValueError):
+        ExportCopy(ExportState(state), as_of)

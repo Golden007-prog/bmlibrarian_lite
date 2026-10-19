@@ -225,3 +225,19 @@ def test_a_refresh_leaves_another_refreshs_temporaries_alone(tmp_path):
     for name, body in theirs.items():
         assert (tmp_path / name).read_bytes() == body
     assert sorted(p.name for p in tmp_path.iterdir()) == sorted(["retraction_watch.db", *theirs])
+
+
+def test_a_notice_row_bmlib_cannot_read_is_not_consulted_and_logged(
+    tmp_path, monkeypatch, caplog
+):
+    """A row bmlib refuses on purpose is not absence, and not silent."""
+    from bmlibrarian_lite import retraction_export
+
+    _refresh(tmp_path, _Session())
+
+    def unreadable(*_args, **_kwargs):
+        raise ValueError("unknown retraction nature")
+
+    monkeypatch.setattr(retraction_export, "lookup_retractions", unreadable)
+    assert export_evidence(tmp_path, doi="10.1/paper", pmid=None, today=TODAY) is None
+    assert "could not be read" in caplog.text

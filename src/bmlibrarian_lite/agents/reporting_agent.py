@@ -31,6 +31,7 @@ from ..analysis_failures import (
     with_analysis_shortfall_notice,
 )
 from ..data_models import AnalysisShortfall, AnalysisStage, Citation, ReportMetadata
+from ..retraction_screen import RetractionRecord
 from ..retraction_text import (
     format_reference_concern_annotation,
     format_retracted_section,
@@ -180,6 +181,7 @@ class LiteReportingAgent(LiteBaseAgent):
         transparency_results: Mapping[str, StoredTransparency] | None = None,
         analysis_shortfalls: Sequence[AnalysisShortfall] | None = None,
         documents_accepted: int | None = None,
+        retraction_screen: RetractionRecord | None = None,
     ) -> str:
         """Generate a research report from citations.
 
@@ -195,12 +197,18 @@ class LiteReportingAgent(LiteBaseAgent):
                 threshold and were read for citations; taken from *metadata*
                 when not given. With no citations and no extraction loss,
                 these documents held nothing quotable (#303).
+            retraction_screen: The run's retraction check; taken from
+                *metadata* when not given, so a caller that builds no metadata
+                (MCP) still gets its notice, section and concern caveats.
 
         Returns:
             Formatted research report as markdown. When the search behind it
             was incomplete, or a stage could not read part of what it found,
             the report opens with a notice saying what is missing (#247,
-            #261).
+            #261). When papers were left out as retracted or could not be
+            checked, a retraction notice follows; the papers left out get
+            their own section, and a cited paper under an expression of
+            concern a caveat under its reference.
 
         Raises:
             Exception: Whatever the model provider raised; nothing here
@@ -212,6 +220,9 @@ class LiteReportingAgent(LiteBaseAgent):
         losses = self._analysis_shortfalls(metadata, analysis_shortfalls)
         if documents_accepted is None:
             documents_accepted = metadata.documents_accepted if metadata else 0
+        screen = retraction_screen
+        if screen is None and metadata is not None:
+            screen = metadata.retraction_screen
         report = self._generate_report_body(
             question,
             citations,
@@ -219,8 +230,8 @@ class LiteReportingAgent(LiteBaseAgent):
             transparency_results,
             losses,
             documents_accepted,
+            screen,
         )
-        screen = metadata.retraction_screen if metadata else None
         if screen is not None:
             report = with_retraction_notice(report, screen)
         return with_search_shortfall_notice(
@@ -255,6 +266,7 @@ class LiteReportingAgent(LiteBaseAgent):
         transparency_results: Mapping[str, StoredTransparency] | None,
         analysis_shortfalls: Sequence[AnalysisShortfall] = (),
         documents_accepted: int = 0,
+        screen: RetractionRecord | None = None,
     ) -> str:
         """Generate the report itself, without the incomplete-search notice.
 
@@ -268,6 +280,8 @@ class LiteReportingAgent(LiteBaseAgent):
                 not read
             documents_accepted: How many relevant documents were read for
                 citations
+            screen: The run's retraction check, for the left-out section and
+                the concern caveats
 
         Returns:
             Formatted research report as markdown
@@ -286,10 +300,9 @@ class LiteReportingAgent(LiteBaseAgent):
                 citation_extraction_failed=extraction_failed,
                 documents_accepted=documents_accepted,
             )
+            left_out = format_retracted_section(screen) if screen is not None else ""
+            report += "\n\n" + left_out if left_out else ""
             if metadata:
-                if metadata.retraction_screen is not None:
-                    left_out = format_retracted_section(metadata.retraction_screen)
-                    report += "\n\n" + left_out if left_out else ""
                 report += "\n\n" + self.format_methodology_section(metadata)
             return report
 
@@ -374,10 +387,10 @@ IMPORTANT: Use ONLY the exact Source and Document ID values provided above. Do n
 
             # Add references section with risk annotations
             concerns = {}
-            if metadata and metadata.retraction_screen is not None:
+            if screen is not None:
                 concerns = {
                     r["document_id"]: r
-                    for r in metadata.retraction_screen.to_snapshot()
+                    for r in screen.to_snapshot()
                     if r["status"] == RetractionStatus.CONCERN.value
                 }
             references = self._format_references_with_risk(
@@ -385,8 +398,8 @@ IMPORTANT: Use ONLY the exact Source and Document ID values provided above. Do n
             )
             full_report = f"{report}\n\n## References\n\n{references}"
 
-            if metadata and metadata.retraction_screen is not None:
-                left_out = format_retracted_section(metadata.retraction_screen)
+            if screen is not None:
+                left_out = format_retracted_section(screen)
                 if left_out:
                     full_report += "\n\n" + left_out
 

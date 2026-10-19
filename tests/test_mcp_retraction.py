@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
@@ -116,7 +117,8 @@ def test_fact_check_excludes_retracted_and_lists_it(checker: FakeChecker) -> Non
     ]
     assert out["retraction"]["unchecked"] == 0
     assert out["retraction"]["checked_at"] == WHEN.isoformat()
-    assert "Retracted papers left out" in out["report"]
+    assert out["documents_found"] == 2  # what the search found, before leaving out
+    assert "Retraction check:" in out["report"]
     assert checker.closed
 
 
@@ -129,7 +131,8 @@ def test_fact_check_all_retracted_still_reports_it(checker: FakeChecker) -> None
     out = mcp_server._handle_fact_check({"claim": "c"}, ctx)
     ctx.scoring_agent.score_documents.assert_not_called()
     assert len(out["retraction"]["left_out"]) == 1
-    assert "Retracted papers left out" in out["report"]
+    assert "Retraction check:" in out["report"]
+    assert out["report"].count("1 retracted paper left out") == 1
 
 
 def test_search_literature_excludes_and_lists(checker: FakeChecker) -> None:
@@ -141,6 +144,21 @@ def test_search_literature_excludes_and_lists(checker: FakeChecker) -> None:
     out = mcp_server._handle_search({"query": "q"}, ctx)
     assert [d["id"] for d in out["documents"]] == ["pmid-1"]
     assert out["retraction"]["left_out"][0]["pmid"] == "2"
+    assert out["documents"][0]["retraction_status"] == {
+        "status": "clear",
+        "line": "No retraction found",
+    }
+
+
+def test_search_marks_a_kept_paper_under_concern(checker: FakeChecker) -> None:
+    """A concern is not left out, so the caller must be told it per paper."""
+    good, _ = _docs()
+    checker.by_id["pmid-1"] = RetractionStatus.CONCERN
+    ctx = _make_context()
+    ctx.search_agent.search.return_value = (_make_session(), [good])
+    [doc] = mcp_server._handle_search({"query": "q"}, ctx)["documents"]
+    assert doc["retraction_status"]["status"] == "concern"
+    assert doc["retraction_status"]["line"].startswith("Expression of concern")
 
 
 def test_checker_failure_leaves_everything_unchecked(monkeypatch) -> None:
@@ -361,7 +379,7 @@ def test_fact_check_notice_order(checker: FakeChecker, monkeypatch: pytest.Monke
     )
     ctx.reporting_agent.generate_report.return_value = "BODYTEXT"
     report = mcp_server._handle_fact_check({"claim": "c"}, ctx)["report"]
-    order = [report.index(m) for m in ("SEARCH", "ANALYSIS", "Retracted papers left out", "BODYTEXT")]
+    order = [report.index(m) for m in ("SEARCH", "ANALYSIS", "Retraction check:", "BODYTEXT")]
     assert order == sorted(order)
 
 
@@ -426,13 +444,14 @@ def test_content_length_is_the_returned_contents(checker: FakeChecker) -> None:
 
 def test_the_mcp_checker_never_downloads_the_export(tmp_path, monkeypatch) -> None:
     """A one-paper tool call uses the copy it has: a stale one is not refreshed."""
+    from bmlibrarian_lite import retraction_checks
     from bmlibrarian_lite.config import LiteConfig
     from bmlibrarian_lite.retraction_export import refresh_export
     from tests.test_retraction_checks import MAILTO, START, StubSession, _doc
 
     refresh_export(tmp_path, StubSession(), mailto=MAILTO, today=START.date().replace(year=2020))
     session = StubSession()
-    monkeypatch.setattr(mcp_server, "crossref_session", lambda mailto: session)
+    monkeypatch.setattr(retraction_checks, "crossref_session", lambda mailto: session)
     ctx = _make_context()
     ctx.config = LiteConfig()
     ctx.config.storage.data_dir = tmp_path
@@ -440,3 +459,52 @@ def test_the_mcp_checker_never_downloads_the_export(tmp_path, monkeypatch) -> No
     check = mcp_server._build_checker(ctx).check([_doc("a", doi="10.1/a")])["a"]
     assert session.export_calls == 0
     assert check.verdict.status is RetractionStatus.UNCHECKED
+
+
+def test_fact_check_puts_each_notice_on_once_with_the_real_report(
+    checker: FakeChecker,
+) -> None:
+    """A real report already carries the analysis and retraction notices: once each.
+
+    They come in order, and a cited paper under a concern gets its caveat.
+    """
+    from bmlibrarian_lite.agents.reporting_agent import LiteReportingAgent
+    from bmlibrarian_lite.analysis_failures import describe_analysis_shortfalls
+    from bmlibrarian_lite.data_models import AnalysisShortfall, AnalysisStage
+
+    good, bad = _docs()
+    concern = _make_document("pmid-3", "Concern paper", "3")
+    checker.by_id.update(
+        {"pmid-2": RetractionStatus.RETRACTED, "pmid-3": RetractionStatus.CONCERN}
+    )
+    loss = AnalysisShortfall(stage=AnalysisStage.SCORING, documents_failed=1, documents_attempted=3)
+    ctx = _make_context()
+    ctx.search_agent.search.return_value = (_make_session(), [good, bad, concern])
+    ctx.scoring_agent.score_documents.return_value = MagicMock(
+        accepted=[_make_scored_document(good), _make_scored_document(concern)], shortfall=loss
+    )
+    ctx.citation_agent.extract_all_citations.return_value = MagicMock(
+        citations=[_make_citation(good), _make_citation(concern)], failed=[], shortfall=None
+    )
+    agent = LiteReportingAgent(config=MagicMock())
+    agent._chat = MagicMock(return_value="BODYTEXT")  # type: ignore[method-assign]
+    ctx.reporting_agent = agent
+
+    out = mcp_server._handle_fact_check({"claim": "c"}, ctx)
+    report = out["report"]
+    assert [src["retraction_status"]["status"] for src in out["sources"]] == ["clear", "concern"]
+
+    analysis = describe_analysis_shortfalls([loss])
+    assert report.count(analysis) == 1
+    assert report.count("Retraction check:") == 1
+    assert report.index(analysis) < report.index("Retraction check:") < report.index("BODYTEXT")
+    assert "Expression of concern (2025-03-04, notice 10.1/notice)" in report
+
+
+def test_a_paper_without_identifiers_still_reaches_the_checker(checker: FakeChecker) -> None:
+    """Its record's label can retract it; the checker reads that, not this tool."""
+    doc = dataclasses.replace(_make_document("local-1", "No ids", None), doi=None)  # type: ignore[arg-type]
+    checker.by_id["local-1"] = RetractionStatus.RETRACTED
+    check = mcp_server._paper_check(_make_context(), doc)
+    assert check.verdict.status is RetractionStatus.RETRACTED
+    assert checker.calls == 1

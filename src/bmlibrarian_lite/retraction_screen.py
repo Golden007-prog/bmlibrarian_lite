@@ -17,6 +17,7 @@ from bmlib.publications.retraction_status import (
     RetractionLookup,
     RetractionStatus,
     RetractionVerdict,
+    retraction_status,
 )
 
 from .data_models import LiteDocument
@@ -63,8 +64,9 @@ class RetractionScreen:
         kept: Everything not retracted, in input order.
         excluded: The retracted papers, in input order.
         checks: Each checked document's verdict, keyed by ``LiteDocument.id``.
-        failed: The check itself failed: every check is a stand-in, decided
-            nothing, and carries no check time.
+        failed: The check itself failed: every check is a stand-in (unchecked,
+            or retracted by the record's own label), and the screen reports
+            no check time.
     """
 
     kept: tuple[LiteDocument, ...]
@@ -103,7 +105,7 @@ class RetractionScreen:
 
         A document with no check, or whose check failed, is an unchecked row
         with ``checked_at`` ``None``.
-        ``excluded`` is a fact of the run: a later *Check again* may rewrite
+        ``excluded`` is a fact of the run: a later re-check may rewrite
         ``status``, never this, so readers decide exclusion from it alone.
 
         Returns:
@@ -136,24 +138,45 @@ class RetractionScreen:
 
     @staticmethod
     def from_snapshot(rows: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-        """Read stored snapshot rows back, keyed by document id.
+        """Read stored snapshot rows back, keyed by document id, each read once.
 
-        A row an older build wrote without ``document_id`` or ``status`` is
-        skipped with a warning; keys beyond those are returned as found.
+        The rows are stored JSON, so every reader gets them normalised here:
+        ``excluded`` is a strict bool (only ``true`` left a paper out), an
+        unknown ``status`` reads as unchecked, a missing ``title`` as "", a
+        ``deciding`` that is not a mapping as none and an unreadable
+        ``checked_at`` as none. A row is kept through all of these, so a
+        paper left out never reads as not scored; only a row without
+        ``document_id`` or ``status`` is skipped with a warning.
+
+        Args:
+            rows: Rows as ``to_snapshot`` wrote them.
+
+        Returns:
+            The normalised rows by document id; keys beyond those named are
+            returned as found.
         """
+        known = {status.value for status in RetractionStatus}
         out: dict[str, dict[str, Any]] = {}
         for row in rows:
             if not isinstance(row, Mapping) or any(k not in row for k in _SNAPSHOT_REQUIRED):
                 logger.warning("Skipping a retraction snapshot row from an older build")
                 continue
-            stamp = row.get("checked_at")
+            read = dict(row)
+            stamp = read.get("checked_at")
             if stamp is not None:
                 try:
                     datetime.fromisoformat(stamp)
                 except (TypeError, ValueError):
-                    logger.warning("Skipping a retraction snapshot row with an unreadable time")
-                    continue
-            out[str(row["document_id"])] = dict(row)
+                    logger.warning("A retraction snapshot row's time is unreadable; read as none")
+                    read["checked_at"] = None
+            if read["status"] not in known:
+                logger.warning("A retraction snapshot row's status is unknown; read as unchecked")
+                read["status"] = RetractionStatus.UNCHECKED.value
+            read["excluded"] = read.get("excluded") is True
+            read["title"] = str(read.get("title") or "")
+            if not isinstance(read.get("deciding"), Mapping):
+                read["deciding"] = None
+            out[str(read["document_id"])] = read
         return out
 
 
@@ -266,15 +289,29 @@ class UnbuiltChecker:
         """Nothing to close."""
 
 
+def _label_check(doc: LiteDocument) -> PaperCheck:
+    """The stand-in for a failed check: the record's own label still retracts.
+
+    The label needs neither network nor database, so a retraction it states
+    survives any failure; every other paper is unchecked.
+    """
+    verdict = retraction_status(
+        doi=None, export=None, crossref=None, publication_types=list(doc.publication_types or ())
+    )
+    if verdict.status is RetractionStatus.RETRACTED:
+        return PaperCheck(verdict, datetime.now(UTC), None, None)
+    return unchecked_check()
+
+
 def screen_with_fallback(
     checker: Any,
     documents: Sequence[LiteDocument],
     should_cancel: Callable[[], bool] = lambda: False,
 ) -> RetractionScreen:
-    """Check the documents and leave the retracted ones out; never raise.
+    """Check the documents and leave the retracted ones out; a failed check never raises.
 
     A check that fails never stops the caller: every document is then
-    unchecked and goes on. The checker is built for one use, so it is closed
+    unchecked and goes on, unless its record's own label says retracted. The checker is built for one use, so it is closed
     when the check is done.
 
     Args:
@@ -290,8 +327,9 @@ def screen_with_fallback(
     except Exception as e:
         # the type only: provider text never reaches the reader or the log
         logger.warning("Retraction check failed (%s); every document unchecked", type(e).__name__)
-        unchecked = unchecked_check()
-        return screen_documents(documents, {doc.id: unchecked for doc in documents}, failed=True)
+        return screen_documents(
+            documents, {doc.id: _label_check(doc) for doc in documents}, failed=True
+        )
     finally:
         checker.close()
 

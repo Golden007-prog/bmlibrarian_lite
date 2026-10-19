@@ -28,7 +28,7 @@ from bmlibrarian_lite.data_models import (
     RetrievalShortfall,
     SearchProvider,
 )
-from bmlibrarian_lite.retraction_screen import screen_documents
+from bmlibrarian_lite.retraction_screen import RetractionSnapshot, screen_documents
 from bmlibrarian_lite.retraction_store import PaperCheck
 from bmlibrarian_lite.retraction_text import (
     checked_on_line,
@@ -148,7 +148,7 @@ def test_retraction_notice_leads_the_report_after_the_other_notices() -> None:
         analysis_shortfalls=[analysis],
         search_shortfalls=[search],
     )
-    notice = "> **Retracted papers left out:** 1 retracted paper left out."
+    notice = "> **Retraction check:** 1 retracted paper left out."
     assert report.count(notice) == 1
     pos_search = report.index(describe_search_shortfalls([search]))
     pos_analysis = report.index(describe_analysis_shortfalls([analysis]))
@@ -178,7 +178,7 @@ def test_metadata_round_trips() -> None:
 def test_no_screen_report_has_no_retraction_text() -> None:
     """With no check run, no retraction fragment appears (chosen: absence, not a fixture)."""
     report = _report(None)
-    for fragment in ("Retracted papers left out", "Left out as retracted", "Retraction Check",
+    for fragment in ("Retraction check:", "Left out as retracted", "Retraction Check",
                      "Retraction status", "Expression of concern"):
         assert fragment not in report
 
@@ -205,18 +205,46 @@ def test_live_and_restored_screens_render_alike() -> None:
         d=RetractionStatus.CLEAR,
     )
     restored = ReportMetadata.from_dict(ReportMetadata(retraction_screen=live).to_dict())
-    assert _fragments(live) == _fragments(restored.retraction_screen)
-    assert _fragments(live)[4] == 1
+    live_parts, restored_parts = _fragments(live), _fragments(restored.retraction_screen)
+    assert live_parts[1:] == restored_parts[1:]
+    assert live_parts[4] == 1
+    # a snapshot does not record why a paper went unchecked: the count only
+    count_only = (
+        "> **Retraction check:** 1 retracted paper left out; "
+        "1 paper's retraction status could not be checked."
+    )
+    assert restored_parts[0] == count_only
+    assert live_parts[0].startswith(count_only[:-1] + ": ")
 
 
 def test_unreadable_stored_screens_read_as_absent() -> None:
-    """A non-list value is None; a row with a bad time is skipped; neither raises."""
+    """A non-list value is None; a row with a bad time keeps its paper; neither raises."""
     assert ReportMetadata.from_dict({"retraction_screen": "oops"}).retraction_screen is None
-    rows = _screen(a=RetractionStatus.CLEAR, b=RetractionStatus.CLEAR).to_snapshot()
+    rows = _screen(a=RetractionStatus.RETRACTED, b=RetractionStatus.CLEAR).to_snapshot()
     rows[0]["checked_at"] = "not a time"
     restored = ReportMetadata.from_dict({"retraction_screen": rows}).retraction_screen
-    assert [r["document_id"] for r in restored.to_snapshot()] == ["b"]
+    assert sorted(r["document_id"] for r in restored.to_snapshot()) == ["a", "b"]
+    assert [r["document_id"] for r in restored.excluded] == ["a"]  # still left out
     assert restored.checked_at is not None
+
+
+def test_snapshot_rows_are_read_one_way_by_every_reader() -> None:
+    """A truthy non-bool, an unknown status, a missing title: one reading for all."""
+    from bmlibrarian_lite.retraction_screen import RetractionScreen
+
+    rows = RetractionScreen.from_snapshot(
+        [
+            {"document_id": "a", "status": "retracted", "excluded": 1},
+            {"document_id": "b", "status": "retracted_v2", "excluded": True, "deciding": "x"},
+        ]
+    )
+    assert rows["a"]["excluded"] is False  # only true left a paper out
+    assert rows["b"]["status"] == RetractionStatus.UNCHECKED.value
+    assert rows["b"]["deciding"] is None
+    assert rows["a"]["title"] == ""
+    assert format_retracted_section(RetractionSnapshot.from_rows(rows.values())).startswith(
+        "## Left out as retracted\n\n- . Retracted"
+    )
 
 
 def test_left_out_titles_cannot_break_the_markdown() -> None:

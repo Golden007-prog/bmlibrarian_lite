@@ -657,7 +657,7 @@
       "swift": "owed",
       "android": "owed",
       "issue": null,
-      "note": "WP 7. Spec docs/superpowers/specs/2026-10-18-retraction-checking-design.md; the rule is bmlib#504 (see its row). Desktop PRs 1 (export copy, Crossref, stored verdicts) and 2 (the review, MCP, interrogation, report and bmll retractions-update) consume it; PR 3, saved work (last checked, Check again), follows. The apps are the next plans."
+      "note": "WP 7. Spec docs/superpowers/specs/2026-10-18-retraction-checking-design.md; the rule is bmlib#504 (see its row). Desktop PR 1 (#594: the bmlib dependency, the contract copy, stored publication types) and PR 2 (#597: export copy, Crossref lookups, stored verdicts, the review, MCP, interrogation, report and bmll retractions-update) consume it; PR 3, saved work (last checked, Check again), follows. The apps are the next plans."
     },
     {
       "id": "bmlib:0.8.0-citation-styles",

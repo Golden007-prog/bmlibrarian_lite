@@ -2,7 +2,7 @@
 # Copyright (C) 2024-2026 Dr Horst Herb
 # SPDX-License-Identifier: AGPL-3.0-or-later
 
-"""Every reader-facing sentence about retraction.
+"""The shared reader-facing sentences about retraction.
 
 No provider text: a failure's cause comes from ``RequestFailure.describe()``.
 """
@@ -18,6 +18,7 @@ from bmlib.publications.retraction_status import (
     RetractionLookup,
     RetractionSource,
     RetractionStatus,
+    crossref_key,
 )
 
 from .retraction_checks import paper_key
@@ -25,7 +26,7 @@ from .retraction_export import ExportCopy, ExportState
 from .retraction_screen import RetractionRecord, RetractionScreen, as_utc
 from .retraction_store import PaperCheck
 
-_NOTICE_OPENING = "> **Retracted papers left out:** "
+_NOTICE_OPENING = "> **Retraction check:** "
 _NOTICE_SEPARATOR = "\n\n"
 _RW = "Retraction Watch"
 _CROSSREF = "Crossref"
@@ -36,44 +37,69 @@ _SOURCE_NAMES = {
 
 
 _EXPORT_CAUSE = "the Retraction Watch copy could not be used (run `bmll retractions-update`)"
+_EXPORT_NOTICE_CAUSE = "a Retraction Watch notice could not be read"
 _FAILED_CAUSE = "the check failed"
 _NO_IDS_CAUSE = "no DOI or PMID"
+_NO_DOI_CAUSE = "no DOI, which Crossref needs"
+_CROSSREF_SILENT_CAUSE = "Crossref had no usable answer for the DOI"
+_CANCELLED_CAUSE = "the check was cancelled before reaching them"
 
 
 def _unchecked_causes(screen: RetractionScreen) -> list[str]:
     """Why the screen's kept papers are unchecked, each cause class once.
 
-    In order: the check itself, the export copy, Crossref (its distinct
-    ``RequestFailure.describe()`` causes), papers without identifiers.
+    In order: the check itself, the export copy or a notice in it, Crossref
+    (its distinct ``RequestFailure.describe()`` causes, then papers it could
+    not be asked about or gave no usable answer for), papers without
+    identifiers, a cancel.
+
+    Args:
+        screen: A live screen; it knows each paper's identifiers and check.
+
+    Returns:
+        The causes, in that order; empty when no kept paper is unchecked.
     """
     if screen.failed:
         return [_FAILED_CAUSE]
-    export = no_ids = False
+    found: set[str] = set()
     crossref: list[str] = []
     for doc in screen.kept:
         check = screen.checks.get(doc.id)
-        if check is None or check.verdict.status is not RetractionStatus.UNCHECKED:
-            continue  # a paper the cancelled check never reached has no cause to give
+        if check is None:
+            found.add(_CANCELLED_CAUSE)  # the cancelled check never reached it
+            continue
+        if check.verdict.status is not RetractionStatus.UNCHECKED:
+            continue  # decided: no cause to give
         if paper_key(doc) is None:
-            no_ids = True  # nothing could be looked up
+            found.add(_NO_IDS_CAUSE)  # nothing could be looked up
             continue
         unanswered = check.verdict.unanswered
-        export = export or RetractionLookup.RETRACTION_WATCH_EXPORT in unanswered
-        failure = check.crossref_failure
-        if RetractionLookup.CROSSREF in unanswered and failure is not None:
-            cause = failure.describe()
-            if cause not in crossref:
-                crossref.append(cause)
-    causes = [_EXPORT_CAUSE] if export else []
+        if RetractionLookup.RETRACTION_WATCH_EXPORT in unanswered:
+            # a consulted copy left unanswered holds a notice it cannot read
+            found.add(_EXPORT_CAUSE if check.export_data_as_of is None else _EXPORT_NOTICE_CAUSE)
+        if RetractionLookup.CROSSREF in unanswered:
+            failure = check.crossref_failure
+            if failure is not None:
+                if failure.describe() not in crossref:
+                    crossref.append(failure.describe())
+            elif crossref_key(doc.doi) is None:
+                found.add(_NO_DOI_CAUSE)
+            else:
+                found.add(_CROSSREF_SILENT_CAUSE)
+    causes = [c for c in (_EXPORT_CAUSE, _EXPORT_NOTICE_CAUSE) if c in found]
     if crossref:
         causes.append(f"{_CROSSREF} could not be used ({', '.join(crossref)})")
-    return causes + ([_NO_IDS_CAUSE] if no_ids else [])
+    order = (_NO_DOI_CAUSE, _CROSSREF_SILENT_CAUSE, _NO_IDS_CAUSE, _CANCELLED_CAUSE)
+    return causes + [c for c in order if c in found]
 
 
 def run_summary_clause(screen: RetractionRecord) -> str | None:
     """Summarise a screen for a run's summary line, naming why papers are unchecked.
 
     A restored snapshot does not record why, so its clause gives the count only.
+
+    Args:
+        screen: A live screen or a restored snapshot.
 
     Returns:
         E.g. ``"2 retracted papers left out; 3 papers' retraction status could
@@ -94,7 +120,15 @@ def run_summary_clause(screen: RetractionRecord) -> str | None:
 
 
 def format_retraction_notice(screen: RetractionRecord) -> str | None:
-    """Build the notice for a report; ``None`` when there is nothing to say."""
+    """Build the notice for a report.
+
+    Args:
+        screen: A live screen or a restored snapshot.
+
+    Returns:
+        The notice line, or ``None`` when nothing was left out and every
+        paper was checked.
+    """
     clause = run_summary_clause(screen)
     if clause is None:
         return None
@@ -102,7 +136,16 @@ def format_retraction_notice(screen: RetractionRecord) -> str | None:
 
 
 def with_retraction_notice(text: str, screen: RetractionRecord) -> str:
-    """Put the retraction notice in front of text; idempotent."""
+    """Put the retraction notice in front of text; idempotent.
+
+    Args:
+        text: A report or a message standing in for one.
+        screen: The run's screen.
+
+    Returns:
+        The text with the notice in front, or unchanged when there is no
+        notice or it already opens with one.
+    """
     notice = format_retraction_notice(screen)
     if notice is None or text.startswith(_NOTICE_OPENING):
         return text
@@ -118,7 +161,14 @@ def without_retraction_notice(text: str) -> str:
 
 
 def checked_on_line(checked_at: datetime | None) -> str:
-    """Say when the status was checked (the UTC date), or that it never was."""
+    """Say when the status was checked (the UTC date), or that it never was.
+
+    Args:
+        checked_at: The check time, or ``None``.
+
+    Returns:
+        The line.
+    """
     if checked_at is None:
         return "Retraction status never checked"
     return f"Retraction status checked {as_utc(checked_at).date().isoformat()}"
@@ -139,7 +189,17 @@ _LABEL = " (PubMed's label)"
 
 
 def paper_status_line(check: PaperCheck) -> str:
-    """One paper's status, for a banner or an MCP header."""
+    """One paper's status, for a banner or an MCP header.
+
+    Args:
+        check: The paper's check.
+
+    Returns:
+        "Retracted" or "Expression of concern" with the deciding notice's
+        date and DOI (or "(PubMed's label)"), "Retraction status not
+        checked" naming the unanswered sources, or "No retraction found";
+        then the export copy's day when it was consulted.
+    """
     verdict = check.verdict
     evidence = verdict.deciding
     if verdict.status in (RetractionStatus.RETRACTED, RetractionStatus.CONCERN):
@@ -199,8 +259,9 @@ def format_retracted_section(screen: RetractionRecord) -> str:
     """List the papers a run left out, from the screen's snapshot rows.
 
     Returns:
-        The section, one line per paper ("<title>. Retracted <date>; notice
-        <doi>"), or "" when nothing was left out.
+        The ``LEFT_OUT_HEADING`` section, one "- " line per paper ("<title>.
+        Retracted <date>; notice <doi>", or "Retracted (PubMed's label)"),
+        titles escaped by :func:`plain_title`; "" when nothing was left out.
     """
     lines = []
     for row in screen.to_snapshot():

@@ -1,3 +1,7 @@
+# BMLibrarian Lite - Biomedical Literature Research Tool
+# Copyright (C) 2024-2026 Dr Horst Herb
+# SPDX-License-Identifier: AGPL-3.0-or-later
+
 """Crossref retraction lookups over lite's transport.
 
 bmlib builds the batched request URLs and reads each answer; this module owns
@@ -22,13 +26,12 @@ from . import __version__
 from .constants import (
     CROSSREF_MAX_RETRIES,
     CROSSREF_REQUEST_TIMEOUT_SECONDS,
+    HTTP_OK,
     RETRYABLE_HTTP_STATUSES,
 )
 from .data_models import RequestFailure, RequestFailureKind
 from .polite_session import mount_politely
 from .search_failures import request_failure_from_exception
-
-_HTTP_OK = 200
 
 
 @dataclass(frozen=True)
@@ -38,8 +41,8 @@ class CrossrefLookups:
     Attributes:
         results: A result per DOI asked. A DOI not asked (unsendable, or
             after a cancel) has no entry: not asked is not unreachable.
-        failures: Why a DOI is unreachable, for those the wire or a
-            malformed answer failed.
+        failures: Why a DOI is unreachable, for those the wire, a refused
+            status or a malformed answer failed.
     """
 
     results: dict[str, CrossrefResult]
@@ -110,7 +113,7 @@ def lookup_crossref(
             if result.outcome is CrossrefOutcome.UNREACHABLE:
                 failures[doi] = (
                     RequestFailure(RequestFailureKind.HTTP_STATUS, response.status_code)
-                    if response.status_code != _HTTP_OK
+                    if response.status_code != HTTP_OK
                     # A 200 that bmlib calls unreachable is an unreadable body
                     # or unreadable relations: a garbled answer either way.
                     else RequestFailure(RequestFailureKind.MALFORMED_RESPONSE)

@@ -1549,7 +1549,7 @@ CROSSREF_REQUEST_TIMEOUT_SECONDS = 30
 # of its own, so the polite adapter's single budget is all that stands between
 # one hiccup and a whole 50-DOI batch reading as unreachable.
 CROSSREF_MAX_RETRIES = 3
-# Monthly exports only grow; a new copy under 95% of the notices already held
+# The export only grows; a new copy under 95% of the notices already held
 # is a truncated or partial download, and its missing retractions would read
 # as "consulted, nothing found", so the old copy is kept instead.
 RETRACTION_WATCH_MIN_KEEP_RATIO = 0.95

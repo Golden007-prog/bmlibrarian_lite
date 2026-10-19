@@ -37,6 +37,7 @@ gui/                  # PySide6: SystematicReview, ResearchQuestions, AuditTrail
                       #   thread_keeper (holds a thread its owner let go of until it ends)
                       #   rescue_attempt / browser_rescue_service (the hidden and shown browser visits), web_engine (QtWebEngine start-up)
                       #   review_queue_dialog (walled PDFs' review queue), rescue_queue_indicator, rescue_view (the only runtime QtWebEngineWidgets import)
+                      #   retraction_badge (RETRACTED / CONCERN / NOT CHECKED)
 llm/                  # LLMClient (Anthropic/Ollama providers), token_tracker
 pubmed/               # PubMedSearchClient; record_ids (a record's own ids, the record for a PMID)
 quality/              # QualityManager, study classification, evidence_summary, metadata_filter
@@ -58,6 +59,12 @@ pmc_open_data.py      # PmcOpenDataClient: PMC's open-data S3 bucket (JATS by PM
 openalex.py           # OpenAlexLocationsClient: the PDFs OpenAlex's locations name (by DOI)
 core_api.py           # CoreTextClient: CORE's extracted text by DOI (user's key); CoreThrottle (429 pause, refused key)
 elsevier_api.py       # ElsevierArticleClient: Elsevier's article API, keyed PDF by DOI (10.1016/ only); ElsevierFetch, ElsevierSession
+retraction_export.py  # Local Retraction Watch copy: ExportCopy state, export_evidence, refresh_export (atomic swap)
+retraction_crossref.py # Crossref retraction lookups over the polite session (not asked ≠ unreachable)
+retraction_store.py   # retraction_checks table, PaperCheck
+retraction_checks.py  # RetractionChecker: reuse/replace stored verdicts; an outage never erases one
+retraction_screen.py  # Pure: RetractionScreen (kept/excluded), screen_with_fallback, RetractionSnapshot
+retraction_text.py    # Reader-facing retraction sentences (notice, causes, status lines)
 keyed_service_session.py # KeyedServiceSession: a keyed service's 429 pause, refused key, refused network (process-wide)
 bot_walls.py          # Bot-wall challenge pages recognised from an answer (#480): WALL_MARKERS, challenge_markers
 pdf_download.py       # PDF download helpers: body prefix, .part, .unchecked and .held files, MAX_PDF_SIZE
@@ -129,6 +136,7 @@ Shared iOS/macOS components:
 - `doc/llm/general_golden_rules.md` - Swift/Kotlin standards
 - `doc/cross_platform/` - Platform-agnostic algorithms (parallel processing, full-text retrieval, hybrid search, JATS parsing, sync protocol)
 - `doc/developer/europepmc_and_pubmed.md` - API guide
+- `doc/developer/retraction_checking.md` - Retraction checking: sources, rules, modules
 - `doc/developer/guide.md` - Developer guide with architecture, code style, release process
 
 Always use Context7 MCP when I need library/API documentation, code generation, setup or configuration steps without me having to explicitly ask.

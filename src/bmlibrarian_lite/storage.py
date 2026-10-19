@@ -4180,14 +4180,17 @@ class LiteStorage:
         with self._sqlite_connection() as conn:
             return retraction_store.read(conn, keys)
 
-    def store_retraction_checks(self, checks: Mapping[str, PaperCheck]) -> None:
+    def store_retraction_checks(
+        self, checks: Mapping[str, PaperCheck], *, keep_existing: bool = False
+    ) -> None:
         """Store retraction checks, replacing each paper's earlier one.
 
         Args:
             checks: Checks by paper key.
+            keep_existing: Leave a paper's existing row in place instead.
         """
         with self._sqlite_connection() as conn:
-            retraction_store.upsert(conn, checks)
+            retraction_store.upsert(conn, checks, keep_existing=keep_existing)
             conn.commit()
 
     # =========================================================================

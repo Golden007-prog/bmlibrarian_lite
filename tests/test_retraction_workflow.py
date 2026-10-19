@@ -45,6 +45,7 @@ from bmlibrarian_lite.gui.report_tab import ReportTab  # noqa: E402
 from bmlibrarian_lite.gui.systematic_review_tab import WorkflowWorker  # noqa: E402
 from bmlibrarian_lite.retraction_screen import RetractionScreen, screen_documents  # noqa: E402
 from bmlibrarian_lite.retraction_store import PaperCheck  # noqa: E402
+from bmlibrarian_lite.retraction_text import with_retraction_notice  # noqa: E402
 from bmlibrarian_lite.storage import LiteStorage  # noqa: E402
 
 QUESTION = "Does aspirin prevent stroke?"
@@ -102,6 +103,7 @@ class FakeChecker:
         self.during = during
         self.asked: list[list[str]] = []
         self.closed = False
+        self.saw_cancel: bool | None = None
 
     def close(self) -> None:
         """Record that the run released the checker."""
@@ -118,6 +120,7 @@ class FakeChecker:
         self.asked.append([d.id for d in documents])
         if self.during is not None:
             self.during()
+        self.saw_cancel = should_cancel()
         if self.error is not None:
             raise self.error
         return {d.id: self.checks[d.id] for d in documents if d.id in self.checks}
@@ -268,8 +271,10 @@ class TestTheChokePoint:
         self, monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
     ) -> None:
         """Cancelled, never an error; no checkpoint, no scoring."""
-        _, scored, seen = run_review(monkeypatch, storage, FakeChecker(), cancel_in_check=True)
+        checker = FakeChecker()
+        _, scored, seen = run_review(monkeypatch, storage, checker, cancel_in_check=True)
 
+        assert checker.saw_cancel is True  # the cancel reaches the check, so a download stops
         assert seen["finished"][0][0] == "Workflow cancelled."
         assert "error" not in seen
         assert scored == []
@@ -315,9 +320,11 @@ class TestTheChokePoint:
 
         assert scored == []
         message = seen["finished"][0][0]
-        assert message.startswith("> **Retracted papers left out:**")
+        assert message.startswith("> **Retraction check:**")
         assert message.count("3 retracted papers left out") == 1
         assert message.endswith("No documents left to score.")
+        # what the run learned is kept: reopening finds the papers it left out
+        assert set(storage.get_document_ids_for_question(QUESTION)) == {d.id for d in DOCUMENTS}
 
     def test_without_a_checker_the_review_is_unchanged(
         self, monkeypatch: pytest.MonkeyPatch, storage: LiteStorage
@@ -469,6 +476,34 @@ class TestTheAuditRecord:
         assert f"- {LEFT_OUT.title} — retracted 2026-03-09; notice 10.9/notice" in text
         assert "- Retracted papers left out: 1" in text
         assert "- Papers whose retraction status could not be checked: 1" in text
+
+    @pytest.mark.parametrize(
+        ("body", "saved"),
+        [
+            ("No documents left to score.", False),
+            ("No documents scored 3 or higher.", False),
+            ("## Findings\n\nAspirin reduced stroke incidence.", True),  # control
+        ],
+        ids=["nothing-left", "none-relevant", "report"],
+    )
+    def test_only_a_report_behind_the_notice_is_saved(
+        self, report_tab: ReportTab, tmp_path: Any, body: str, saved: bool
+    ) -> None:
+        """The notice in front of a stand-in message made it look like a report."""
+        screen = screen_documents(DOCUMENTS, CHECKS)
+        report_tab.display_report(
+            report=with_retraction_notice(body, screen),
+            question=QUESTION,
+            citations=[],
+            documents_found=list(DOCUMENTS),
+            all_scored_documents=[],
+            report_metadata=ReportMetadata(research_question=QUESTION, min_score_threshold=MIN_SCORE),
+            citation_extraction_failures=[],
+            retraction_snapshot=RetractionScreen.from_snapshot(screen.to_snapshot()),
+        )
+
+        assert bool(list(tmp_path.glob("*_report.md"))) is saved
+        assert bool(list(tmp_path.glob("*_audit.json"))) is saved
 
     def test_a_run_without_a_snapshot_says_not_recorded(self, report_tab: ReportTab) -> None:
         """Never "0 left out" for a run that was not checked."""

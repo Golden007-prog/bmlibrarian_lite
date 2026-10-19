@@ -47,6 +47,7 @@ from bmlibrarian_lite.agents.search_agent import LiteSearchAgent
 from bmlibrarian_lite.analysis_failures import (
     analysis_failure_advice,
     with_analysis_shortfall_notice,
+    without_analysis_shortfall_notice,
 )
 from bmlibrarian_lite.browser_rescue import RescueSubject, queue_challenged_copies
 from bmlibrarian_lite.config import LiteConfig
@@ -61,8 +62,7 @@ from bmlibrarian_lite.exceptions import AnalysisFailedError, LiteError, SearchFa
 from bmlibrarian_lite.fulltext_discovery import FulltextDiscoverer
 from bmlibrarian_lite.identifiers import canonical_pmid, read_caller_ids
 from bmlibrarian_lite.llm import LLMClient
-from bmlibrarian_lite.retraction_checks import RetractionChecker
-from bmlibrarian_lite.retraction_crossref import crossref_session
+from bmlibrarian_lite.retraction_checks import RetractionChecker, build_retraction_checker
 from bmlibrarian_lite.retraction_screen import (
     RetractionScreen,
     UnbuiltChecker,
@@ -70,14 +70,17 @@ from bmlibrarian_lite.retraction_screen import (
     unchecked_check,
 )
 from bmlibrarian_lite.retraction_store import PaperCheck
-from bmlibrarian_lite.retraction_text import paper_status_line, with_retraction_notice
+from bmlibrarian_lite.retraction_text import (
+    paper_status_line,
+    with_retraction_notice,
+    without_retraction_notice,
+)
 from bmlibrarian_lite.search_failures import (
     retrieval_shortfalls_from_metadata,
     search_failure_advice,
     with_search_shortfall_notice,
 )
 from bmlibrarian_lite.storage import LiteStorage
-from bmlibrarian_lite.transparency.assessment import contact_email
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +98,19 @@ _INCOMPLETE_ANALYSIS_DESCRIPTION = (
     "lists what was lost in analysis_shortfalls and the report opens with a "
     "notice; if no document could be scored at all, an error is returned "
     "rather than a report saying nothing was relevant."
+)
+
+# Tells a calling agent how retracted papers are handled.
+_RETRACTION_SCREEN_DESCRIPTION = (
+    "Retracted papers are left out before anything else; retraction lists them "
+    "(left_out) and counts the papers whose status could not be checked "
+    "(unchecked). Each remaining paper carries its retraction_status: one "
+    "under an expression of concern, or not checked, says so."
+)
+_RETRACTION_STATUS_DESCRIPTION = (
+    "The result opens with retraction_status; unless the paper is clear, the "
+    "text opens with its status line (e.g. 'Retracted on ...', 'Retraction "
+    "status not checked ...'). Never cite a paper whose status says Retracted."
 )
 
 _PROVIDER_MAP = {
@@ -192,6 +208,8 @@ TOOLS = [
             + _INCOMPLETE_SEARCH_DESCRIPTION
             + " "
             + _INCOMPLETE_ANALYSIS_DESCRIPTION
+            + " "
+            + _RETRACTION_SCREEN_DESCRIPTION
         ),
         inputSchema={
             "type": "object",
@@ -231,8 +249,11 @@ TOOLS = [
             "Search biomedical literature databases (PubMed, Europe PMC) for "
             "articles matching a research question. Returns document metadata "
             "including title, authors, abstract, and identifiers. "
-            "Does not score or analyse results. "
+            "Does not score or analyse results; total_results counts the "
+            "papers that were not left out as retracted. "
             + _INCOMPLETE_SEARCH_DESCRIPTION
+            + " "
+            + _RETRACTION_SCREEN_DESCRIPTION
         ),
         inputSchema={
             "type": "object",
@@ -273,7 +294,8 @@ TOOLS = [
             "shown to have no retrievable full text. When it is false, the "
             "sources were not all asked or did not all answer, so the absence "
             "is ours and not the article's: do not report that no full text "
-            "exists."
+            "exists. "
+            + _RETRACTION_STATUS_DESCRIPTION
         ),
         inputSchema={
             "type": "object",
@@ -298,7 +320,8 @@ TOOLS = [
         description=(
             "Ask a question about a specific biomedical article using RAG. "
             "The document must first be loaded via get_document_fulltext. "
-            "Returns an answer grounded in the document content."
+            "Returns an answer grounded in the document content. "
+            + _RETRACTION_STATUS_DESCRIPTION
         ),
         inputSchema={
             "type": "object",
@@ -394,7 +417,9 @@ def _carried_analysis_shortfalls(exc: Exception) -> list[AnalysisShortfall]:
 
 
 def _build_checker(ctx: _AgentsContext) -> RetractionChecker:
-    """Build a retraction checker for one tool call; the caller closes it.
+    """Build a retraction checker for one tool call; ``screen_with_fallback`` closes it.
+
+    It never downloads the export: a tool call uses the copy there is.
 
     Args:
         ctx: Shared agent context (config and storage).
@@ -402,10 +427,7 @@ def _build_checker(ctx: _AgentsContext) -> RetractionChecker:
     Returns:
         A checker with its own session, so none is held across calls.
     """
-    mailto = contact_email(ctx.config)
-    return RetractionChecker(
-        ctx.storage, ctx.config.storage.data_dir, crossref_session(mailto), mailto=mailto
-    )
+    return build_retraction_checker(ctx.config, ctx.storage)
 
 
 def _screen(ctx: _AgentsContext, documents: Sequence[LiteDocument]) -> RetractionScreen:
@@ -476,17 +498,34 @@ def _status_first(
         A new result with ``retraction_status`` first; the text starts with the
         status line unless the paper is clear.
     """
-    status = check.verdict.status
-    line = paper_status_line(check)
-    out: dict[str, Any] = {"retraction_status": {"status": status.value, "line": line}}
+    entry = _status_entry(check)
+    out: dict[str, Any] = {"retraction_status": entry}
     out.update(payload)
-    if status is not RetractionStatus.CLEAR and text_key in out:
-        out[text_key] = f"{line}\n\n{out[text_key]}"
+    if check.verdict.status is not RetractionStatus.CLEAR and text_key in out:
+        out[text_key] = f"{entry['line']}\n\n{out[text_key]}"
     return out
 
 
+def _status_entry(check: PaperCheck | None) -> dict[str, str]:
+    """One paper's retraction status for a tool result.
+
+    Args:
+        check: The paper's check; ``None`` when a cancelled check never
+            reached it, which reads as unchecked.
+
+    Returns:
+        ``status`` (a ``RetractionStatus`` value) and ``line`` (the reader's
+        sentence).
+    """
+    check = check or unchecked_check()
+    return {"status": check.verdict.status.value, "line": paper_status_line(check)}
+
+
 def _paper_check(ctx: _AgentsContext, document: LiteDocument | None) -> PaperCheck:
-    """Check one paper; a paper we cannot identify is unchecked.
+    """Check one paper; an unknown paper is unchecked.
+
+    A paper without a DOI or PMID still goes to the checker, which reads its
+    record's PubMed label.
 
     Args:
         ctx: Shared agent context.
@@ -495,7 +534,7 @@ def _paper_check(ctx: _AgentsContext, document: LiteDocument | None) -> PaperChe
     Returns:
         Its check.
     """
-    if document is None or not (document.pmid or document.doi):
+    if document is None:
         return unchecked_check()
     return _screen(ctx, [document]).checks.get(document.id) or unchecked_check()
 
@@ -528,13 +567,18 @@ def _fact_check_result(
         sources: Summaries of the relevant documents.
         analysis_shortfalls: What scoring and citation extraction could not
             read.
-        screen: The retraction screen; its notice goes on the report.
+        screen: The retraction screen, ``None`` when no documents were
+            found; its notice goes on the report and its payload under
+            ``retraction``.
 
     Returns:
         The tool result.
     """
-    # Text order: search notice, analysis notice, retraction notice, body
-    qualified = with_retraction_notice(report, screen) if screen is not None else report
+    # Text order: search notice, analysis notice, retraction notice, body. A
+    # generated report already carries the last two, so each is put on once.
+    qualified = without_retraction_notice(without_analysis_shortfall_notice(report))
+    if screen is not None:
+        qualified = with_retraction_notice(qualified, screen)
     qualified = with_analysis_shortfall_notice(qualified, analysis_shortfalls)
     qualified = with_search_shortfall_notice(qualified, shortfalls)
     return {
@@ -567,10 +611,14 @@ def _handle_fact_check(
         progress: Optional progress reporter for client notifications.
 
     Returns:
-        Dictionary with report markdown, search metadata, scored sources,
-        ``retrieval_shortfalls`` and ``analysis_shortfalls``. When the search
-        was incomplete, or a stage could not read part of what it found,
-        every report text opens with a notice saying what is missing.
+        Dictionary with report markdown, search metadata, scored sources
+        (each with its ``retraction_status``), ``retrieval_shortfalls``,
+        ``analysis_shortfalls`` and ``retraction`` (``left_out``,
+        ``unchecked``, ``checked_at``). ``documents_found`` counts what the
+        search returned, before retracted papers were left out. When the
+        search was incomplete, or a stage could not read part of what it
+        found, every report text opens with a notice saying what is missing;
+        the retraction notice follows those.
 
     Raises:
         SearchFailedError: If failures left the search with nothing; the
@@ -610,7 +658,8 @@ def _handle_fact_check(
     documents = list(screen.kept)
     if not documents:
         return _fact_check_result(
-            f"All {found} documents found were retracted and left out.",
+            # the notice states the count
+            "Every document found was retracted and left out.",
             session.query,
             shortfalls,
             documents_found=found,
@@ -678,6 +727,7 @@ def _handle_fact_check(
             citations=citations,
             analysis_shortfalls=analysis_shortfalls,
             documents_accepted=len(scored_documents),
+            retraction_screen=screen,
         )
     except Exception as exc:
         # The report failing does not un-lose what scoring and extraction
@@ -706,6 +756,7 @@ def _handle_fact_check(
             "explanation": sd.explanation,
             "document_id": doc.id,
             "citation_extraction_error": extraction_errors.get(doc.id),
+            "retraction_status": _status_entry(screen.checks.get(doc.id)),
         })
 
     return _fact_check_result(
@@ -730,8 +781,10 @@ def _handle_search(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any]:
         ctx: Shared agent context.
 
     Returns:
-        Dictionary with generated query, list of document metadata dicts, and
-        ``retrieval_shortfalls``.
+        Dictionary with generated query, the documents not left out as
+        retracted (each with its ``retraction_status``; ``total_results``
+        counts them), ``retraction`` (what was left out or could not be
+        checked) and ``retrieval_shortfalls``.
 
     Raises:
         SearchFailedError: If failures left the search with nothing.
@@ -754,7 +807,13 @@ def _handle_search(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any]:
     return {
         "search_query": session.query,
         "total_results": len(kept),
-        "documents": [doc.to_dict() for doc in kept],
+        "documents": [
+            {
+                **doc.to_dict(),
+                "retraction_status": _status_entry(screen.checks.get(doc.id) if screen else None),
+            }
+            for doc in kept
+        ],
         "retraction": _retraction_payload(screen),
         "retrieval_shortfalls": _shortfalls_payload(
             retrieval_shortfalls_from_metadata(session.metadata)
@@ -780,7 +839,11 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
         caller's next call failed with nothing having said why (#264).
         ``set_aside_pdf_note``, on success and failure alike, when a PDF in
         the library or a download was another article's and was not read
-        (#541).
+        (#541). On success, ``retraction_status`` comes first and
+        ``content`` opens with the status line unless the paper is clear
+        (``content_length`` counts it). The document is stored under
+        ``document_id`` with what discovery learned, so ``ask_document`` can
+        check the same paper.
     """
     given_pmid = args.get("pmid")
     doi = args.get("doi")
@@ -914,7 +977,9 @@ def _handle_ask_document(args: dict[str, Any], ctx: _AgentsContext) -> dict[str,
         ctx: Shared agent context.
 
     Returns:
-        Dictionary with the answer, document ID, and source passages.
+        Dictionary with ``retraction_status`` first, then the answer (opening
+        with the status line unless the paper is clear), document ID and
+        source passages.
     """
     question = args["question"]
     document_id = args["document_id"]

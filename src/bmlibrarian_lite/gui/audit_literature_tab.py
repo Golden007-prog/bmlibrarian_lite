@@ -37,7 +37,7 @@ from PySide6.QtWidgets import (
 
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 
-from ..audit_records import outcome_sort_key
+from ..audit_records import RETRACTED_SORT_KEY, outcome_sort_key
 from ..constants import AUDIT_CARD_SPACING, AUDIT_UI_UPDATE_DELAY_MS
 from ..data_models import LiteDocument, ScoredDocument
 from ..quality.data_models import QualityAssessment
@@ -357,15 +357,16 @@ class AuditLiteratureTab(QWidget):
     def _sort_key(self, doc_id: str) -> tuple[int, int]:
         """The outcome order, with the papers left out as retracted after them all."""
         if self._retractions.get(doc_id, (None, False))[1]:
-            return (3, 0)
+            return RETRACTED_SORT_KEY
         return outcome_sort_key(self._scores.get(doc_id))
 
     def resort_by_score(self) -> None:
         """Re-sort cards by outcome, the audit record's order.
 
         Judged documents by score (highest first), then documents the model
-        could not score, then documents never scored, then the papers left out as retracted. A failure's negative
-        code is not a score to sort by (#307). Called when the workflow
+        could not score, then documents never scored, then the papers left
+        out as retracted. A failure's negative code is not a score to sort by
+        (#307). Called when the workflow
         finishes (``AuditTrailTab.on_workflow_finished``).
         """
         with self._lock:

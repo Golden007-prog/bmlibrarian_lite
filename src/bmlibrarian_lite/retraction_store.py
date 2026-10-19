@@ -62,14 +62,28 @@ class PaperCheck:
     export_data_as_of: date | None
     crossref_failure: RequestFailure | None
 
+    def __post_init__(self) -> None:
+        """Refuse a check whose time or failure cannot be read one way.
+
+        Raises:
+            ValueError: ``checked_at`` carries no time zone (stored as local
+                time, shown as UTC), or a Crossref failure is given for a
+                verdict Crossref answered.
+        """
+        if self.checked_at.tzinfo is None:
+            raise ValueError("checked_at carries no time zone")
+        if (
+            self.crossref_failure is not None
+            and RetractionLookup.CROSSREF not in self.verdict.unanswered
+        ):
+            raise ValueError("a Crossref failure for a verdict Crossref answered")
+
 
 def _decode(row: sqlite3.Row) -> PaperCheck:
     """Rebuild a stored check; raises on a row this build cannot read."""
     deciding = json.loads(row["deciding_json"]) if row["deciding_json"] else None
     failure = row["crossref_failure_json"]
     checked_at = datetime.fromisoformat(row["checked_at"])
-    if checked_at.tzinfo is None:
-        raise ValueError("checked_at carries no time zone")
     return PaperCheck(
         verdict=RetractionVerdict(
             status=RetractionStatus(row["status"]),
@@ -108,15 +122,20 @@ def read(conn: sqlite3.Connection, keys: Iterable[str]) -> dict[str, PaperCheck]
     return out
 
 
-def upsert(conn: sqlite3.Connection, checks: Mapping[str, PaperCheck]) -> None:
-    """Store each check under its paper key, replacing any earlier one.
+def upsert(
+    conn: sqlite3.Connection, checks: Mapping[str, PaperCheck], *, keep_existing: bool = False
+) -> None:
+    """Store each check under its paper key.
 
     Args:
         conn: An open connection; the caller commits.
         checks: Checks by paper key.
+        keep_existing: Leave a paper's existing row, readable or not, in
+            place; otherwise replace it.
     """
+    verb = "IGNORE" if keep_existing else "REPLACE"
     conn.executemany(
-        f"INSERT OR REPLACE INTO {TABLE} (paper_key, status, deciding_json, unanswered_json,"
+        f"INSERT OR {verb} INTO {TABLE} (paper_key, status, deciding_json, unanswered_json,"
         " crossref_failure_json, export_data_as_of, checked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
         [
             (

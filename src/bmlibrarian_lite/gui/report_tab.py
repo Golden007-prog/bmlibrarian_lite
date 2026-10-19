@@ -75,7 +75,7 @@ from ..audit_records import (
 from ..quality import QualityAssessment
 from ..analysis_failures import without_analysis_shortfall_notice
 from ..search_failures import without_search_shortfall_notice
-from ..retraction_text import plain_title
+from ..retraction_text import plain_title, without_retraction_notice
 
 # Directory for auto-saved reports
 REPORTS_DIR = Path.home() / "bmlibrarian_reports" / "LITE"
@@ -251,8 +251,8 @@ class ReportTab(QWidget):
                 report restored from an older checkpoint -- which the audit
                 trail states, rather than claiming none failed
             retraction_snapshot: The run's retraction snapshot rows by
-                document id. Documents it records as retracted were left
-                out before scoring and are audited as such. None when the
+                document id. Documents it records as left out (``excluded``)
+                are audited as retracted papers left out before scoring. None when the
                 run was not checked, which the audit trail states
         """
         self._current_report = report
@@ -295,10 +295,12 @@ class ReportTab(QWidget):
         self.audit_btn.setEnabled(bool(all_scored_documents))
 
         # Auto-save the report, but not a message standing in for one. An
-        # incomplete search (#247) and an incomplete analysis (#261) each put
-        # a notice in front of that message, so the check reads the text
-        # behind both of them.
-        body = without_analysis_shortfall_notice(without_search_shortfall_notice(report))
+        # incomplete search (#247), an incomplete analysis (#261) and the
+        # retraction check each put a notice in front of that message, so the
+        # check reads the text behind all of them.
+        body = without_retraction_notice(
+            without_analysis_shortfall_notice(without_search_shortfall_notice(report))
+        )
         if (
             auto_save
             and body
