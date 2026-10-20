@@ -95,7 +95,8 @@ struct MacFactCheckView: View {
                 includePreprints = session.includePreprints
             }
         }
-        .onChange(of: shouldFetchMoreEvidence) { _, newValue in
+        // initial: the Report tab sets the flag before this view exists (the detail pane is a switch, not a TabView).
+        .onChange(of: shouldFetchMoreEvidence, initial: true) { _, newValue in
             guard newValue, let workflow = workflow else { return }
             shouldFetchMoreEvidence = false
             Task {
