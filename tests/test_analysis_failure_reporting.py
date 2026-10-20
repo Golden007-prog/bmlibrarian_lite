@@ -59,6 +59,9 @@ from bmlibrarian_lite.exceptions import (
 )
 from bmlibrarian_lite.search_failures import without_search_shortfall_notice
 from bmlibrarian_lite.utils import classify_exhausted_retries
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 TIMED_OUT = EvaluationErrorCode.API_TIMEOUT
 UNREACHABLE = EvaluationErrorCode.API_CONNECTION_ERROR

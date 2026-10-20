@@ -25,6 +25,9 @@ from bmlibrarian_lite.study_transparency_analyzer.study_transparency_analyzer im
 )
 from bmlibrarian_lite.transparency.assessment import assess_document
 from bmlibrarian_lite.transparency.transparency_settings import TransparencySettings
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 DOI = "10.1016/j.example.2021.1"
 ADDRESS = "https://www.sciencedirect.com/science/article/pii/S1/pdfft"

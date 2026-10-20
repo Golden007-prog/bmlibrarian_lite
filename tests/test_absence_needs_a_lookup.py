@@ -51,6 +51,9 @@ from bmlibrarian_lite.data_models import (
     SourceLookupSkipped,
 )
 from bmlibrarian_lite.jats_markdown import END_MATTER_MARKER
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 if TYPE_CHECKING:
     from bmlibrarian_lite.fulltext_discovery import FulltextResult

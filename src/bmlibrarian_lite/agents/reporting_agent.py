@@ -22,12 +22,22 @@ professional research summary with proper attribution.
 
 import logging
 from collections.abc import Mapping, Sequence
+from typing import Any
+
+from bmlib.publications.retraction_status import RetractionStatus
 
 from ..analysis_failures import (
     describe_analysis_shortfalls,
     with_analysis_shortfall_notice,
 )
 from ..data_models import AnalysisShortfall, AnalysisStage, Citation, ReportMetadata
+from ..retraction_screen import RetractionRecord
+from ..retraction_text import (
+    format_reference_concern_annotation,
+    format_retracted_section,
+    retraction_methods_line,
+    with_retraction_notice,
+)
 from ..search_failures import describe_search_shortfalls, with_search_shortfall_notice
 from ..transparency.transparency_models import (
     StoredTransparency,
@@ -171,6 +181,7 @@ class LiteReportingAgent(LiteBaseAgent):
         transparency_results: Mapping[str, StoredTransparency] | None = None,
         analysis_shortfalls: Sequence[AnalysisShortfall] | None = None,
         documents_accepted: int | None = None,
+        retraction_screen: RetractionRecord | None = None,
     ) -> str:
         """Generate a research report from citations.
 
@@ -186,12 +197,18 @@ class LiteReportingAgent(LiteBaseAgent):
                 threshold and were read for citations; taken from *metadata*
                 when not given. With no citations and no extraction loss,
                 these documents held nothing quotable (#303).
+            retraction_screen: The run's retraction check; taken from
+                *metadata* when not given, so a caller that builds no metadata
+                (MCP) still gets its notice, section and concern caveats.
 
         Returns:
             Formatted research report as markdown. When the search behind it
             was incomplete, or a stage could not read part of what it found,
             the report opens with a notice saying what is missing (#247,
-            #261).
+            #261). When papers were left out as retracted or could not be
+            checked, a retraction notice follows; the papers left out get
+            their own section, and a cited paper under an expression of
+            concern a caveat under its reference.
 
         Raises:
             Exception: Whatever the model provider raised; nothing here
@@ -203,6 +220,9 @@ class LiteReportingAgent(LiteBaseAgent):
         losses = self._analysis_shortfalls(metadata, analysis_shortfalls)
         if documents_accepted is None:
             documents_accepted = metadata.documents_accepted if metadata else 0
+        screen = retraction_screen
+        if screen is None and metadata is not None:
+            screen = metadata.retraction_screen
         report = self._generate_report_body(
             question,
             citations,
@@ -210,7 +230,10 @@ class LiteReportingAgent(LiteBaseAgent):
             transparency_results,
             losses,
             documents_accepted,
+            screen,
         )
+        if screen is not None:
+            report = with_retraction_notice(report, screen)
         return with_search_shortfall_notice(
             with_analysis_shortfall_notice(report, losses), shortfalls
         )
@@ -243,6 +266,7 @@ class LiteReportingAgent(LiteBaseAgent):
         transparency_results: Mapping[str, StoredTransparency] | None,
         analysis_shortfalls: Sequence[AnalysisShortfall] = (),
         documents_accepted: int = 0,
+        screen: RetractionRecord | None = None,
     ) -> str:
         """Generate the report itself, without the incomplete-search notice.
 
@@ -256,6 +280,8 @@ class LiteReportingAgent(LiteBaseAgent):
                 not read
             documents_accepted: How many relevant documents were read for
                 citations
+            screen: The run's retraction check, for the left-out section and
+                the concern caveats
 
         Returns:
             Formatted research report as markdown
@@ -274,6 +300,8 @@ class LiteReportingAgent(LiteBaseAgent):
                 citation_extraction_failed=extraction_failed,
                 documents_accepted=documents_accepted,
             )
+            left_out = format_retracted_section(screen) if screen is not None else ""
+            report += "\n\n" + left_out if left_out else ""
             if metadata:
                 report += "\n\n" + self.format_methodology_section(metadata)
             return report
@@ -358,10 +386,22 @@ IMPORTANT: Use ONLY the exact Source and Document ID values provided above. Do n
             report = self._chat(messages, temperature=0.3, max_tokens=4096)
 
             # Add references section with risk annotations
+            concerns = {}
+            if screen is not None:
+                concerns = {
+                    r["document_id"]: r
+                    for r in screen.to_snapshot()
+                    if r["status"] == RetractionStatus.CONCERN.value
+                }
             references = self._format_references_with_risk(
-                citations, risky_doc_results, withheld
+                citations, risky_doc_results, withheld, concerns
             )
             full_report = f"{report}\n\n## References\n\n{references}"
+
+            if screen is not None:
+                left_out = format_retracted_section(screen)
+                if left_out:
+                    full_report += "\n\n" + left_out
 
             # Why each cited High is high: every shown row rated High, not
             # only those past ``report_risk_threshold``, which governs
@@ -615,6 +655,7 @@ Key passages:
         citations: list[Citation],
         risky_doc_results: dict[str, TransparencyResult],
         withheld: Mapping[str, str] | None = None,
+        concerns: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> str:
         """Format reference list with risk annotations for risky citations.
 
@@ -626,11 +667,14 @@ Key passages:
                 are annotated as unassessed rather than left bare, which
                 would read as a study with no transparency concerns (#360,
                 #372).
+            concerns: Retraction snapshot rows by document id for cited
+                papers under an expression of concern; each gets a caveat.
 
         Returns:
             Formatted reference list with risk annotations
         """
         withheld = withheld or {}
+        concerns = concerns or {}
         # Deduplicate by document ID
         seen: set[str] = set()
         unique_citations = []
@@ -653,6 +697,9 @@ Key passages:
             if doc.pmid:
                 ref += f". PMID: {doc.pmid}"
             references.append(ref)
+
+            if doc.id in concerns:
+                references.append(format_reference_concern_annotation(concerns[doc.id]))
 
             # Add risk annotation if this document is risky
             if doc.id in risky_doc_results:
@@ -763,6 +810,10 @@ Key passages:
             f"- **Accepted:** {metadata.documents_accepted:,} | "
             f"**Rejected:** {metadata.documents_rejected:,}",
         ])
+        if metadata.retraction_screen is not None:
+            lines.append(
+                f"- **Retraction Check:** {retraction_methods_line(metadata.retraction_screen)}"
+            )
         # Documents the model could not read are neither accepted nor
         # rejected: recording them as rejected made a failure read as the
         # literature's answer (#261, #262).

@@ -44,6 +44,9 @@ from bmlibrarian_lite.data_models import (
     ScoringOutcome,
     SearchSession,
 )
+from tests.mcp_retraction_fixture import mcp_retraction_clear  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("mcp_retraction_clear")
 
 QUESTION = "Does aspirin prevent stroke?"
 UNREACHABLE = EvaluationErrorCode.API_CONNECTION_ERROR

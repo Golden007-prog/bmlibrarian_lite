@@ -58,6 +58,10 @@ from ..constants import (
 from ..data_models import LiteDocument, DocumentSource
 from ..quality.data_models import QualityAssessment
 from ..transparency import TransparencyResult
+from bmlib.publications.retraction_status import RetractionStatus
+from ..retraction_store import PaperCheck
+from ..retraction_text import EXCLUDED_RETRACTED_LABEL, paper_status_line
+from .retraction_badge import RetractionBadge, status_stylesheet
 from ..audit_records import score_failure_reason
 from .card_utils import (
     SCORING_FAILED_TEXT,
@@ -322,6 +326,8 @@ class DocumentCard(QFrame):
         self._score_badge: Optional[ScoreBadge] = None
         self._quality_badge: Optional[QualityBadge] = None
         self._transparency_badge: Optional[TransparencyBadge] = None
+        self._retraction_badge: RetractionBadge | None = None
+        self._excluded_label: QLabel | None = None
         self._source_badge: Optional[SourceBadge] = None
         self._abstract_widget: Optional[QTextEdit] = None
         self._rationale_widget: Optional[QLabel] = None
@@ -788,6 +794,37 @@ class DocumentCard(QFrame):
                         logger.debug(
                             f"Transparency badge added for {self.document.id}"
                         )
+
+    def set_retraction_check(self, check: PaperCheck, excluded: bool = False) -> None:
+        """Show the paper's retraction status as a badge before the others.
+
+        Args:
+            check: The paper's check; clear shows no badge.
+            excluded: Whether the run left the paper out as retracted, which
+                the card then says in a line under the title.
+        """
+        header_layout = self._header_widget.layout() if self._header_widget else None
+        title_row_item = header_layout.itemAt(0) if header_layout else None
+        title_row = title_row_item.layout() if title_row_item else None
+        if not isinstance(header_layout, QVBoxLayout) or not isinstance(title_row, QHBoxLayout):
+            # a retraction the card cannot show must not vanish without a trace
+            logger.warning(
+                "Retraction badge not shown for %s: the card's header is not laid out as expected",
+                self.document.id,
+            )
+            return
+        for old in (self._retraction_badge, self._excluded_label):
+            if old is not None:
+                old.setParent(None)
+                old.deleteLater()
+        self._retraction_badge = self._excluded_label = None
+        if check.verdict.status is not RetractionStatus.CLEAR:
+            self._retraction_badge = RetractionBadge(check)
+            title_row.insertWidget(0, self._retraction_badge)
+        if excluded:
+            self._excluded_label = QLabel(f"{EXCLUDED_RETRACTED_LABEL}. {paper_status_line(check)}")
+            self._excluded_label.setStyleSheet(status_stylesheet(RetractionStatus.RETRACTED))
+            header_layout.insertWidget(1, self._excluded_label)
 
     def get_transparency_result(self) -> Optional[TransparencyResult]:
         """

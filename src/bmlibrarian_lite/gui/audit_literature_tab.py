@@ -37,10 +37,11 @@ from PySide6.QtWidgets import (
 
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 
-from ..audit_records import outcome_sort_key
+from ..audit_records import RETRACTED_SORT_KEY, outcome_sort_key
 from ..constants import AUDIT_CARD_SPACING, AUDIT_UI_UPDATE_DELAY_MS
 from ..data_models import LiteDocument, ScoredDocument
 from ..quality.data_models import QualityAssessment
+from ..retraction_store import PaperCheck
 from ..transparency import TransparencyOutcome, TransparencyResult
 from ..transparency.transparency_settings import TransparencySettings
 from .document_card import DocumentCard
@@ -91,6 +92,8 @@ class AuditLiteratureTab(QWidget):
         # A finding, or why the document has none: a failed analysis and an
         # analysis still running used to look identical here (#361).
         self._transparency_outcomes: Dict[str, TransparencyOutcome] = {}
+        # doc id -> (check, whether the run left the paper out as retracted)
+        self._retractions: dict[str, tuple[PaperCheck, bool]] = {}
 
         # Thread safety
         self._lock = threading.RLock()
@@ -220,6 +223,8 @@ class AuditLiteratureTab(QWidget):
                 transparency_outcome=transparency,
                 transparency_settings=self._transparency_settings,
             )
+            if document.id in self._retractions:
+                card.set_retraction_check(*self._retractions[document.id])
             card.clicked.connect(self._on_card_clicked)
             card.send_to_interrogator.connect(self._on_send_to_interrogator)
 
@@ -297,6 +302,20 @@ class AuditLiteratureTab(QWidget):
                 # Document not yet added - store for later
                 logger.debug(f"Transparency received before document: {doc_id}")
 
+    def update_retraction(self, doc_id: str, check: PaperCheck, excluded: bool) -> None:
+        """Show a document's retraction status on its card (now, or once it is added).
+
+        Args:
+            doc_id: Document ID
+            check: The paper's check
+            excluded: Whether the run left it out as retracted
+        """
+        with self._lock:
+            self._retractions[doc_id] = (check, excluded)
+            card = self._cards_by_doc_id.get(doc_id)
+            if card:
+                card.set_retraction_check(check, excluded)
+
     def get_transparency_result(
         self,
         doc_id: str,
@@ -335,17 +354,24 @@ class AuditLiteratureTab(QWidget):
             if update_type == "add":
                 self._add_document_card(data)
 
+    def _sort_key(self, doc_id: str) -> tuple[int, int]:
+        """The outcome order, with the papers left out as retracted after them all."""
+        if self._retractions.get(doc_id, (None, False))[1]:
+            return RETRACTED_SORT_KEY
+        return outcome_sort_key(self._scores.get(doc_id))
+
     def resort_by_score(self) -> None:
         """Re-sort cards by outcome, the audit record's order.
 
         Judged documents by score (highest first), then documents the model
-        could not score, then documents never scored. A failure's negative
-        code is not a score to sort by (#307). Called when the workflow
+        could not score, then documents never scored, then the papers left
+        out as retracted. A failure's negative code is not a score to sort by
+        (#307). Called when the workflow
         finishes (``AuditTrailTab.on_workflow_finished``).
         """
         with self._lock:
             cards_with_scores = [
-                (card, outcome_sort_key(self._scores.get(card.doc_id)))
+                (card, self._sort_key(card.doc_id))
                 for card in self._cards_by_doc_id.values()
             ]
 
@@ -405,6 +431,7 @@ class AuditLiteratureTab(QWidget):
             self._score_rationales.clear()
             self._quality_assessments.clear()
             self._transparency_outcomes.clear()
+            self._retractions.clear()
 
             # Show placeholder
             self.placeholder.show()

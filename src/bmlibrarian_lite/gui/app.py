@@ -28,7 +28,7 @@ import os
 import sqlite3
 import sys
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 # Suppress tokenizers parallelism warning when forking for Qt threads
 # This must be set before importing any HuggingFace/FastEmbed modules
@@ -58,6 +58,7 @@ from ..audit_records import (
     as_recorded_failure,
     recorded_extraction_failures,
     recorded_min_score,
+    recorded_retraction_snapshot,
 )
 from ..benchmarking import BenchmarkRunner
 from ..benchmarking.display import benchmark_status_text
@@ -288,6 +289,9 @@ class LiteMainWindow(QMainWindow):
         self.systematic_review_tab.transparency_outcome_ready.connect(
             self.audit_trail_tab.on_transparency_outcome
         )
+        self.systematic_review_tab.retraction_screened.connect(
+            self.audit_trail_tab.on_retraction_screened
+        )
 
         # Connect Audit Trail document request to load document
         self.audit_trail_tab.document_requested.connect(
@@ -407,6 +411,7 @@ class LiteMainWindow(QMainWindow):
         quality_filter_settings: dict,
         report_metadata: object = None,
         citation_extraction_failures: "Sequence[ExtractionFailure] | None" = None,
+        retraction_snapshot: dict[str, dict[str, Any]] | None = None,
     ) -> None:
         """
         Handle report generation from systematic review.
@@ -427,6 +432,8 @@ class LiteMainWindow(QMainWindow):
             citation_extraction_failures: The relevant documents whose
                 citations could not be extracted, so the audit trail can tell
                 them from the ones that held nothing quotable (#310)
+            retraction_snapshot: The run's retraction snapshot rows by
+                document id; None when the run was not checked
         """
         # Display report in the Report tab
         self.report_tab.display_report(
@@ -439,6 +446,7 @@ class LiteMainWindow(QMainWindow):
             quality_filter_settings=quality_filter_settings,
             report_metadata=report_metadata,
             citation_extraction_failures=citation_extraction_failures,
+            retraction_snapshot=retraction_snapshot,
         )
 
         # Switch to Report tab
@@ -775,6 +783,8 @@ class LiteMainWindow(QMainWindow):
                 self.audit_trail_tab.on_citation_extracted(citation)
 
             badge_failure = self._show_stored_transparency(documents_found)
+            retraction_rows = recorded_retraction_snapshot(checkpoint.metadata)
+            self.audit_trail_tab.show_retraction_snapshot(retraction_rows)
 
             self.audit_trail_tab.on_workflow_finished()
 
@@ -796,6 +806,9 @@ class LiteMainWindow(QMainWindow):
                         **{sd.document.id: sd.document for sd in scored_documents},
                     },
                 ),
+                # Its papers left out as retracted are linked to the question;
+                # without this they would be audited as never scored
+                retraction_snapshot=retraction_rows or None,
                 # The run saved its own report and audit when it ran; a record
                 # rebuilt from the database would be a second, poorer one.
                 auto_save=False,

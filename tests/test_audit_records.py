@@ -958,3 +958,178 @@ class TestRestoringAQuestion:
         kwargs = window.report_tab.display_report.call_args.kwargs
         assert kwargs["auto_save"] is False
         assert kwargs["min_score_threshold"] is None
+
+
+class TestRetractedDocuments:
+    """A retracted paper left out is its own outcome, never "not scored"."""
+
+    @staticmethod
+    def screen_of(documents: list[LiteDocument], retracted: set[str]) -> Any:
+        """A screen leaving out the retracted documents, the rest clear."""
+        from datetime import UTC
+
+        from bmlib.publications.retraction_status import (
+            RetractionEvidence,
+            RetractionKind,
+            RetractionSource,
+            RetractionStatus,
+            RetractionVerdict,
+        )
+
+        from bmlibrarian_lite.retraction_screen import screen_documents
+        from bmlibrarian_lite.retraction_store import PaperCheck
+
+        when = datetime(2026, 10, 18, tzinfo=UTC)
+        evidence = RetractionEvidence(
+            source=RetractionSource.RETRACTION_WATCH_EXPORT,
+            kind=RetractionKind.RETRACTION,
+            date="2026-03-09",
+            notice_doi="10.9/notice",
+        )
+        checks = {
+            doc.id: PaperCheck(
+                RetractionVerdict(RetractionStatus.RETRACTED, evidence)
+                if doc.id in retracted
+                else RetractionVerdict(RetractionStatus.CLEAR),
+                when,
+                None,
+                None,
+            )
+            for doc in documents
+        }
+        return screen_documents(documents, checks)
+
+    def test_outcomes_refuse_excluded_and_scored(self) -> None:
+        """A paper left out was never scored; a record saying both is wrong."""
+        both = accepted("1")
+        with pytest.raises(ValueError, match="one outcome"):
+            DocumentOutcomes(
+                accepted=(both,),
+                rejected=(),
+                failed=(),
+                not_scored=(),
+                min_score=MIN_SCORE,
+                excluded_retracted=(both.document,),
+            )
+
+    def test_an_excluded_document_is_not_filed_as_not_scored(self) -> None:
+        """Today ``not_scored`` takes anything unscored; a retraction must not hide there."""
+        left_out = make_document("2")
+        outcomes = classify_document_outcomes(
+            [make_document("1"), left_out],
+            [accepted("1")],
+            MIN_SCORE,
+            excluded_retracted=[left_out],
+        )
+
+        assert outcomes.excluded_retracted == (left_out,)
+        assert outcomes.not_scored == ()
+
+    def test_the_snapshot_is_merged_into_the_checkpoint_and_read_back(self) -> None:
+        """Updating a checkpoint replaces its metadata whole: the threshold stays."""
+        from bmlibrarian_lite.audit_records import (
+            CHECKPOINT_RETRACTION_SNAPSHOT_KEY,
+            checkpoint_metadata_with_retraction_snapshot,
+            recorded_retraction_snapshot,
+        )
+
+        documents = [make_document("1"), make_document("2")]
+        screen = self.screen_of(documents, {"doc-2"})
+
+        merged = checkpoint_metadata_with_retraction_snapshot(
+            {CHECKPOINT_MIN_SCORE_KEY: MIN_SCORE}, screen
+        )
+
+        assert merged[CHECKPOINT_MIN_SCORE_KEY] == MIN_SCORE
+        assert CHECKPOINT_RETRACTION_SNAPSHOT_KEY == "retraction_snapshot"
+        recorded = recorded_retraction_snapshot(json.loads(json.dumps(merged)))
+        assert set(recorded) == {"doc-1", "doc-2"}
+        assert recorded["doc-2"]["status"] == "retracted"
+
+    @pytest.mark.parametrize("stored", [None, "x", {}, {"retraction_snapshot": "x"}])
+    def test_a_checkpoint_without_a_snapshot_records_none(self, stored: object) -> None:
+        """A run from before the check, or a record that cannot be read."""
+        from bmlibrarian_lite.audit_records import recorded_retraction_snapshot
+
+        assert recorded_retraction_snapshot(stored) == {}
+
+    def test_summary_and_entries_name_the_left_out_papers(self) -> None:
+        """Each entry carries the retraction's date and its notice's DOI."""
+        from bmlibrarian_lite.retraction_screen import RetractionScreen
+
+        left_out = make_document("2")
+        left_out.doi = "10.1/two"
+        documents = [make_document("1"), left_out]
+        snapshot = RetractionScreen.from_snapshot(
+            self.screen_of(documents, {"doc-2"}).to_snapshot()
+        )
+        outcomes = classify_document_outcomes(
+            documents, [accepted("1")], MIN_SCORE, excluded_retracted=[left_out]
+        )
+
+        summary = outcome_summary(outcomes, retraction_snapshot=snapshot)
+        entries = outcome_entries(outcomes, retraction_snapshot=snapshot)
+
+        assert summary["documents_excluded_retracted"] == 1
+        assert summary["documents_retraction_unchecked"] == 0
+        assert entries["retracted_documents"] == [
+            {
+                "id": "doc-2",
+                "title": "Aspirin trial 2",
+                "doi": "10.1/two",
+                "pmid": "2",
+                "retraction_date": "2026-03-09",
+                "notice_doi": "10.9/notice",
+            }
+        ]
+        assert entries["unscored_documents"] == []
+
+    def test_an_excluded_paper_stays_excluded_after_its_status_is_rewritten(self) -> None:
+        """*Check again* may find it reinstated; the run still left it out."""
+        from bmlibrarian_lite.audit_records import excluded_in_snapshot
+        from bmlibrarian_lite.retraction_screen import RetractionScreen
+
+        documents = [make_document("1"), make_document("2")]
+        snapshot = RetractionScreen.from_snapshot(
+            self.screen_of(documents, {"doc-2"}).to_snapshot()
+        )
+        snapshot["doc-2"]["status"] = "clear"
+
+        assert excluded_in_snapshot(documents, snapshot) == [documents[1]]
+
+    def test_a_scored_paper_found_retracted_later_is_not_excluded(self) -> None:
+        """The run scored it; a rewritten status must not file it twice."""
+        from bmlibrarian_lite.audit_records import excluded_in_snapshot
+        from bmlibrarian_lite.retraction_screen import RetractionScreen
+
+        documents = [make_document("1"), make_document("2")]
+        snapshot = RetractionScreen.from_snapshot(
+            self.screen_of(documents, {"doc-2"}).to_snapshot()
+        )
+        snapshot["doc-1"]["status"] = "retracted"
+
+        excluded = excluded_in_snapshot(documents, snapshot)
+        outcomes = classify_document_outcomes(
+            documents, [accepted("1")], MIN_SCORE, excluded_retracted=excluded
+        )
+
+        assert [d.id for d in outcomes.excluded_retracted] == ["doc-2"]
+        assert [s.document.id for s in outcomes.accepted] == ["doc-1"]
+
+    def test_a_row_without_the_flag_is_not_excluded(self) -> None:
+        """Status alone never decides exclusion."""
+        from bmlibrarian_lite.audit_records import excluded_in_snapshot
+
+        rows = {"doc-1": {"document_id": "doc-1", "status": "retracted"}}
+
+        assert excluded_in_snapshot([make_document("1")], rows) == []
+
+    def test_a_run_that_recorded_no_snapshot_says_so(self) -> None:
+        """None states "not recorded", never "none left out"."""
+        outcomes = classify_document_outcomes([make_document("1")], [accepted("1")], MIN_SCORE)
+
+        summary = outcome_summary(outcomes)
+
+        assert summary["documents_excluded_retracted"] is None
+        assert summary["documents_retraction_unchecked"] is None
+        assert outcome_entries(outcomes)["retracted_documents"] == []

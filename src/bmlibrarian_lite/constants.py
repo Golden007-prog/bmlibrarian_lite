@@ -1524,3 +1524,36 @@ PAYWALL_HTTP_STATUSES = (401, 403)
 # The statuses of a page that shows no marker but refuses us: the HTTP client
 # was walled at this address already, so the entry waits for a person.
 RESCUE_REFUSED_PAGE_STATUSES = frozenset(PAYWALL_HTTP_STATUSES)
+
+
+# =============================================================================
+# Retraction Watch local copy
+# =============================================================================
+
+# Crossref's public export of the Retraction Watch database (takes ``mailto=``).
+RETRACTION_WATCH_EXPORT_URL = "https://api.labs.crossref.org/data/retractionwatch"
+# The copy lives beside the other data files, as its own SQLite file.
+RETRACTION_WATCH_DB_NAME = "retraction_watch.db"
+# The export is refreshed daily upstream; past five weeks a copy is too old to
+# say "not retracted", so it is no longer consulted.
+RETRACTION_WATCH_MAX_AGE_DAYS = 35
+# The export is ~68 MB, so a slow link needs far longer than a lookup call;
+# applies to connect and to each read, not the whole transfer.
+RETRACTION_WATCH_DOWNLOAD_TIMEOUT_SECONDS = 120
+# Streaming chunk size for the download, so the file never sits in memory.
+RETRACTION_WATCH_DOWNLOAD_CHUNK_BYTES = 1024 * 1024
+# A Crossref batch of up to 50 DOIs is one request; same ceiling as the
+# transparency analyzer's CrossRefClient so a slow day fails both alike.
+CROSSREF_REQUEST_TIMEOUT_SECONDS = 30
+# Retries for a Crossref 429 or 5xx: the retraction lookup has no retry loop
+# of its own, so the polite adapter's single budget is all that stands between
+# one hiccup and a whole 50-DOI batch reading as unreachable.
+CROSSREF_MAX_RETRIES = 3
+# The export only grows; a new copy under 95% of the notices already held
+# is a truncated or partial download, and its missing retractions would read
+# as "consulted, nothing found", so the old copy is kept instead.
+RETRACTION_WATCH_MIN_KEEP_RATIO = 0.95
+# A decided retraction verdict is reused for a week, then asked again: a new
+# retraction reaches Crossref and the export within days, and a review run is
+# often repeated within one. A verdict with a lookup unanswered is never reused.
+RETRACTION_CHECK_MAX_AGE_DAYS = 7
