@@ -236,11 +236,15 @@ def test_snapshot_rows_are_read_one_way_by_every_reader() -> None:
         [
             {"document_id": "a", "status": "retracted", "excluded": 1},
             {"document_id": "b", "status": "retracted_v2", "excluded": True, "deciding": "x"},
+            {"document_id": "c", "status": "clear", "run_status": "retracted_v2", "run_deciding": "x"},
         ]
     )
     assert rows["a"]["excluded"] is False  # only true left a paper out
     assert rows["b"]["status"] == RetractionStatus.UNCHECKED.value
     assert rows["b"]["deciding"] is None
+    assert rows["c"]["run_status"] == RetractionStatus.UNCHECKED.value
+    assert rows["c"]["run_deciding"] is None
+    assert "run_status" not in rows["a"]  # an older row gains no run fields
     assert rows["a"]["title"] == ""
     assert format_retracted_section(RetractionSnapshot.from_rows(rows.values())).startswith(
         "## Left out as retracted\n\n- . Retracted"

@@ -53,6 +53,7 @@ from bmlibrarian_lite.browser_rescue import RescueSubject, queue_challenged_copi
 from bmlibrarian_lite.config import LiteConfig
 from bmlibrarian_lite.data_models import (
     AnalysisShortfall,
+    DocumentSource,
     LiteDocument,
     RetrievalShortfall,
     SearchProvider,
@@ -416,33 +417,37 @@ def _carried_analysis_shortfalls(exc: Exception) -> list[AnalysisShortfall]:
     return list(getattr(exc, _CARRIED_SHORTFALLS_ATTR, ()))
 
 
-def _build_checker(ctx: _AgentsContext) -> RetractionChecker:
+def _build_checker(ctx: _AgentsContext, *, refresh_export: bool = False) -> RetractionChecker:
     """Build a retraction checker for one tool call; ``screen_with_fallback`` closes it.
-
-    It never downloads the export: a tool call uses the copy there is.
 
     Args:
         ctx: Shared agent context (config and storage).
+        refresh_export: Whether the checker may download the export (the
+            fact-check workflow does; a single-paper tool does not).
 
     Returns:
         A checker with its own session, so none is held across calls.
     """
-    return build_retraction_checker(ctx.config, ctx.storage)
+    return build_retraction_checker(ctx.config, ctx.storage, refresh_export=refresh_export)
 
 
-def _screen(ctx: _AgentsContext, documents: Sequence[LiteDocument]) -> RetractionScreen:
+def _screen(
+    ctx: _AgentsContext, documents: Sequence[LiteDocument], *, refresh_export: bool = False
+) -> RetractionScreen:
     """Check the documents once and leave the retracted ones out.
 
     Args:
         ctx: Shared agent context.
         documents: The documents.
+        refresh_export: Passed to the checker.
 
     Returns:
-        The screen; a failed check leaves every document unchecked.
+        The screen; a failed check leaves every document unchecked but
+        those the record's own label retracts.
     """
     checker: RetractionChecker | UnbuiltChecker
     try:
-        checker = _build_checker(ctx)
+        checker = _build_checker(ctx, refresh_export=refresh_export)
     except Exception as exc:
         # the type only: provider text never reaches the reader or the log
         logger.warning(
@@ -654,7 +659,7 @@ def _handle_fact_check(
 
     # Retracted papers are never scored or cited
     found = len(documents)
-    screen = _screen(ctx, documents)
+    screen = _screen(ctx, documents, refresh_export=True)
     documents = list(screen.kept)
     if not documents:
         return _fact_check_result(
@@ -946,6 +951,7 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
     # What discovery learned stands in for an identifier the request lacked
     document = LiteDocument(
         id=doc_id,
+        source=DocumentSource.EUROPEPMC,  # found by Europe PMC's discovery; ArticleInfo is its record
         title=info.title if info else "",
         abstract=info.abstract if info else "",
         authors=list(info.authors) if info else [],
@@ -959,7 +965,14 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
     try:
         # Under the id ask_document is called with, so it can check the paper
         # too; an upsert, so it never erases a stored fact
-        ctx.storage.add_document(replace(document, id=payload["document_id"]))
+        stored_row = ctx.storage.get_document(payload["document_id"])
+        ctx.storage.add_document(
+            replace(
+                document,
+                id=payload["document_id"],
+                source=stored_row.source if stored_row else document.source,
+            )
+        )
     except Exception as exc:
         # the type only: the check still runs on the document in hand
         logger.warning("Fulltext document not stored (%s)", type(exc).__name__)

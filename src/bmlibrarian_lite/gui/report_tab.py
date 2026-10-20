@@ -26,7 +26,10 @@ Provides a dedicated full-screen view for systematic review reports with:
 
 import json
 import logging
+import os
 import re
+import sqlite3
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Mapping, Sequence
@@ -44,12 +47,14 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
 )
-from PySide6.QtCore import Signal, QUrl
+from PySide6.QtCore import QCoreApplication, Qt, Signal, QUrl
+from bmlib.publications.retraction_status import RetractionStatus
 
 from bmlibrarian_lite.resources.styles.dpi_scale import scaled
 
 from ..config import LiteConfig
 from ..constants import DEFAULT_MIN_SCORE, SCORE_MAX
+from ..exceptions import SQLiteError
 from ..storage import LiteStorage
 from ..data_models import (
     Citation,
@@ -61,6 +66,7 @@ from ..data_models import (
 from ..audit_records import (
     EXTRACTION_FAILED_COUNT_KEY,
     DocumentOutcomes,
+    checkpoint_metadata_with_retraction_snapshot,
     classify_document_outcomes,
     excluded_in_snapshot,
     extraction_failure_record,
@@ -69,18 +75,59 @@ from ..audit_records import (
     outcome_summary,
     predates_outcome_split,
     readable_extraction_failures,
+    recorded_retraction_snapshot,
     score_failure_reason,
     without_invented_reason,
 )
 from ..quality import QualityAssessment
 from ..analysis_failures import without_analysis_shortfall_notice
 from ..search_failures import without_search_shortfall_notice
-from ..retraction_text import plain_title, without_retraction_notice
+from ..retraction_checks import build_retraction_checker, stored_checks
+from ..retraction_screen import (
+    RetractionSnapshot,
+    RetractionScreen,
+    UnbuiltChecker,
+    changed_since_snapshot,
+    decided_checked_at,
+    label_types_of,
+    latest_checks,
+    rechecked_snapshot,
+)
+from ..retraction_text import (
+    CHECK_AGAIN_FAILED,
+    CHECK_AGAIN_LABEL,
+    CHECK_AGAIN_NOT_SAVED,
+    NO_AUDIT_RECORD_LINE,
+    CHECKING_AGAIN_LINE,
+    STORED_CHECKS_UNREAD,
+    not_checked_again_clause,
+    plain_title,
+    saved_work_line,
+    saved_work_warning,
+    without_retraction_notice,
+)
+from .retraction_badge import status_stylesheet
+from .thread_keeper import keep_until_finished
+from .workers import RetractionRecheckWorker
 
 # Directory for auto-saved reports
 REPORTS_DIR = Path.home() / "bmlibrarian_reports" / "LITE"
 
 logger = logging.getLogger(__name__)
+
+
+#: Marks a *Check again* id that names a report file, not a checkpoint.
+FILE_ID_PREFIX = "file:"
+
+
+def retraction_entry(rows: Any) -> dict[str, Any]:
+    """The audit JSON's ``retraction`` value for snapshot *rows*.
+
+    ``checked_at`` follows the saved-work line: the oldest decided row's time.
+    """
+    snapshot = RetractionSnapshot.from_rows(rows).to_snapshot()
+    stamp = decided_checked_at(snapshot)
+    return {"snapshot": snapshot, "checked_at": stamp.isoformat() if stamp else None}
 
 
 class ReportTab(QWidget):
@@ -97,10 +144,14 @@ class ReportTab(QWidget):
 
     Signals:
         document_requested: Emitted when user clicks a citation (document_id)
+        retraction_rechecked: Emitted with a reopened question's new snapshot
+            rows by document id after *Check again*, for the audit trail (never
+            for a loaded report file, which the audit trail does not show)
     """
 
     # Emitted when user clicks a citation link in the report
     document_requested = Signal(str)  # document_id
+    retraction_rechecked = Signal(dict)  # snapshot rows by document id
 
     def __init__(
         self,
@@ -143,11 +194,28 @@ class ReportTab(QWidget):
         # The run's retraction snapshot rows by document id; None when the
         # run was not checked
         self._retraction_snapshot: dict[str, dict[str, Any]] | None = None
+        # The reopened run *Check again* updates; None for any other report
+        self._saved_checkpoint_id: str | None = None
+        # A loaded report file's documents (cited and left out), for Check again
+        self._file_documents: list[LiteDocument] = []
+        # A loaded report file whose run was screened but kept no snapshot
+        self._retraction_unrecorded = False
+        # Runs whose latest Check again could not be saved, said whenever shown
+        self._unsaved_rechecks: set[str] = set()
+        self._recheck_worker: RetractionRecheckWorker | None = None
+        # The latest checks the warning was computed from, kept so a failed
+        # Check again does not take down a warning already shown
+        self._shown_checks: Mapping[str, Any] = {}
 
         # Ensure reports directory exists
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
         self._setup_ui()
+
+        # Check again may be downloading the export: stop it at quit
+        app = QCoreApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self._cancel_at_quit)
 
     def _setup_ui(self) -> None:
         """Set up the user interface."""
@@ -158,6 +226,24 @@ class ReportTab(QWidget):
         # Status label at top
         self.status_label = QLabel("No report loaded")
         layout.addWidget(self.status_label)
+
+        # A reopened run: when its papers were checked, and Check again
+        retraction_row = QHBoxLayout()
+        self.retraction_line = QLabel()
+        self.retraction_line.setTextFormat(Qt.TextFormat.PlainText)
+        retraction_row.addWidget(self.retraction_line, stretch=1)
+        self.check_again_btn = QPushButton(CHECK_AGAIN_LABEL)
+        self.check_again_btn.setToolTip(
+            "Check this run's papers for retractions again; the report is not changed"
+        )
+        self.check_again_btn.clicked.connect(self._check_again)
+        retraction_row.addWidget(self.check_again_btn)
+        layout.addLayout(retraction_row)
+        self.retraction_warning = QLabel()
+        self.retraction_warning.setTextFormat(Qt.TextFormat.PlainText)
+        self.retraction_warning.setWordWrap(True)
+        layout.addWidget(self.retraction_warning)
+        self._hide_saved_retraction()
 
         # Report display - takes most of the space
         self.report_view = QTextBrowser()
@@ -275,6 +361,7 @@ class ReportTab(QWidget):
             else {doc_id: dict(row) for doc_id, row in retraction_snapshot.items()}
         )
         self._loaded_audit_data = None
+        self._hide_saved_retraction()
 
         # Store citations by document ID
         self._citations_by_doc_id.clear()
@@ -307,6 +394,239 @@ class ReportTab(QWidget):
             and not body.startswith(("No documents", "Workflow cancelled"))
         ):
             self._auto_save_report()
+
+    def _hide_saved_retraction(self) -> None:
+        """Hide the reopened run's line, button and warning (any other report)."""
+        self._saved_checkpoint_id = None
+        self._retraction_unrecorded = False
+        self.retraction_line.setVisible(False)
+        self.check_again_btn.setVisible(False)
+        self.retraction_warning.clear()
+        self.retraction_warning.setVisible(False)
+
+    def show_saved_retraction(self, checkpoint_id: str) -> None:
+        """Say when a reopened run's papers were checked, and offer *Check again*.
+
+        Called after :meth:`display_report` with the run's snapshot, or for a
+        loaded report file. A cited paper now retracted or under concern, by
+        a *Check again* the snapshot records or a shared row no older, is
+        warned of at once: no request is made.
+
+        Args:
+            checkpoint_id: The reopened run, which *Check again* updates.
+        """
+        self._saved_checkpoint_id = checkpoint_id
+        note = CHECK_AGAIN_NOT_SAVED if checkpoint_id in self._unsaved_rechecks else ""
+        try:
+            stored = stored_checks(self.storage, self._used_documents())
+        except (SQLiteError, sqlite3.Error) as e:
+            # Not knowing is not "no change": the snapshot still warns, and the line says so
+            logger.warning("Could not read the stored retraction checks (%s)", type(e).__name__)
+            stored = {}
+            note += STORED_CHECKS_UNREAD
+        self._show_saved_retraction(latest_checks(self._retraction_snapshot or {}, stored), note)
+
+    def _used_documents(self) -> list[LiteDocument]:
+        """The documents the report cites: the only ones whose change warrants a warning."""
+        return list({c.document.id: c.document for c in self._all_citations}.values())
+
+    def _show_saved_retraction(
+        self, current: Mapping[str, Any] | None = None, note: str = ""
+    ) -> None:
+        """Show the snapshot's checked-on line and warn of changes in *current*.
+
+        Args:
+            current: The latest checks by document id; ``None`` keeps the
+                ones last shown.
+            note: A clause to add to the line (a failed *Check again*).
+        """
+        if current is not None:
+            self._shown_checks = current
+        snapshot = self._retraction_snapshot or {}
+        line = (
+            NO_AUDIT_RECORD_LINE
+            if self._retraction_unrecorded and not snapshot
+            else saved_work_line(snapshot.values())
+        )
+        self.retraction_line.setText(line + note)
+        self.retraction_line.setVisible(True)
+        self.check_again_btn.setVisible(True)
+        # one Check again at a time, even across reopened questions
+        self.check_again_btn.setEnabled(self._recheck_worker is None)
+        used = self._used_documents()
+        changed = changed_since_snapshot(snapshot, self._shown_checks, {doc.id for doc in used})
+        warning = saved_work_warning(changed, {doc.id: doc.title for doc in used})
+        retracted = any(c.verdict.status is RetractionStatus.RETRACTED for _, c in changed)
+        self.retraction_warning.setStyleSheet(
+            status_stylesheet(RetractionStatus.RETRACTED if retracted else RetractionStatus.CONCERN)
+        )
+        self.retraction_warning.setText(warning or "")
+        self.retraction_warning.setVisible(warning is not None)
+
+    def _check_again(self) -> None:
+        """Check the run's papers again, in a worker thread.
+
+        A reopened question's: every document linked to it. A loaded report
+        file's: the papers its snapshot holds (or, without one, those it cites
+        and left out).
+        """
+        checkpoint_id = self._saved_checkpoint_id
+        if checkpoint_id is None or self._recheck_worker is not None:
+            return
+        try:
+            documents = (
+                list(self._file_documents)
+                if checkpoint_id.startswith(FILE_ID_PREFIX)
+                else self.storage.get_documents(
+                    sorted(self.storage.get_document_ids_for_question(self._current_question))
+                )
+            )
+        except (SQLiteError, sqlite3.Error, ValueError) as e:
+            logger.warning("Could not read the question's documents (%s)", type(e).__name__)
+            self._show_saved_retraction(note=CHECK_AGAIN_FAILED)
+            return
+        try:
+            checker: Any = build_retraction_checker(self.config, self.storage, refresh_export=True)
+        except Exception as e:
+            # the type only: provider text never reaches the reader or the log
+            logger.warning("Retraction checker not built (%s)", type(e).__name__)
+            checker = UnbuiltChecker()
+        worker = RetractionRecheckWorker(checker, documents, checkpoint_id, self)
+        worker.rechecked.connect(self._on_rechecked)
+        worker.cancelled.connect(self._on_recheck_cancelled)
+        self._recheck_worker = worker
+        self.check_again_btn.setEnabled(False)
+        self.retraction_line.setText(CHECKING_AGAIN_LINE)
+        worker.start()
+        # Reopening another question, or quitting, must not destroy a running thread
+        keep_until_finished(worker)
+
+    def _on_rechecked(self, checkpoint_id: str, screen: RetractionScreen) -> None:
+        """Write *Check again*'s answers into the run's snapshot and warn.
+
+        The checkpoint is read again, since its metadata is replaced whole.
+        The report text is never touched. A failed check leaves the record as
+        it was and says so.
+
+        Args:
+            checkpoint_id: The run checked.
+            screen: The check's screen.
+        """
+        self._recheck_worker = None
+        self.check_again_btn.setEnabled(True)
+        showing = checkpoint_id == self._saved_checkpoint_id
+        if screen.failed:
+            if showing:
+                self._show_saved_retraction(note=CHECK_AGAIN_FAILED)
+            return
+        note = ""
+        try:
+            if checkpoint_id.startswith(FILE_ID_PREFIX):
+                updated, audit = self._rewrite_audit_snapshot(
+                    Path(checkpoint_id[len(FILE_ID_PREFIX):]), screen
+                )
+                if showing:
+                    self._loaded_audit_data = audit
+            else:
+                checkpoint = self.storage.get_checkpoint(checkpoint_id)
+                if checkpoint is None:
+                    raise LookupError("checkpoint gone")
+                updated = rechecked_snapshot(recorded_retraction_snapshot(checkpoint.metadata), screen)
+                self.storage.update_checkpoint(
+                    checkpoint_id,
+                    metadata=checkpoint_metadata_with_retraction_snapshot(checkpoint.metadata, updated),
+                    touch=False,  # a note on this run: it must not become the question's latest
+                )
+            self._unsaved_rechecks.discard(checkpoint_id)
+        except (SQLiteError, sqlite3.Error, LookupError, OSError, ValueError) as e:
+            # The shared rows hold the answers unless storing them failed too;
+            # this run's record missed them
+            logger.warning("Could not save the new retraction status with %s (%s)", checkpoint_id, type(e).__name__)
+            updated = rechecked_snapshot(self._retraction_snapshot or {}, screen)
+            note = CHECK_AGAIN_NOT_SAVED
+            # said again whenever this run is shown, until a Check again is saved
+            self._unsaved_rechecks.add(checkpoint_id)
+        if not showing:
+            return
+        # a decided row kept over an unchecked answer: no source could be reached for it
+        missed = sum(
+            1
+            for row in updated.rows
+            if (answer := screen.checks.get(row["document_id"])) is not None
+            and answer.verdict.status is RetractionStatus.UNCHECKED
+            and row["status"] != RetractionStatus.UNCHECKED.value
+        )
+        rows = RetractionScreen.from_snapshot(updated.to_snapshot())
+        self._retraction_snapshot = rows
+        self._show_saved_retraction(latest_checks(rows, screen.checks), not_checked_again_clause(missed) + note)
+        if not checkpoint_id.startswith(FILE_ID_PREFIX):
+            # the audit trail tab shows the reopened question, never a loaded file
+            self.retraction_rechecked.emit(rows)
+
+    @staticmethod
+    def _rewrite_audit_snapshot(
+        report_path: Path, screen: RetractionScreen
+    ) -> tuple[RetractionSnapshot, dict[str, Any]]:
+        """Write *Check again*'s answers into a report's audit JSON, and nothing else.
+
+        The file is read again, and replaced whole through a temp file in the
+        same directory, so a failure leaves it as it was. Only the snapshot
+        changes: the summary's counts and the left-out papers' dates and
+        notices are facts of the run, and stay as it recorded them.
+
+        Args:
+            report_path: The report; its sibling ``*_audit.json`` is rewritten.
+            screen: The check's screen.
+
+        Returns:
+            The new snapshot and the audit record as written.
+
+        Raises:
+            OSError: The file could not be read or replaced.
+            ValueError: The file is not a JSON object.
+        """
+        audit_path = report_path.with_name(report_path.name.replace("_report.md", "_audit.json"))
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        if not isinstance(audit, dict):
+            raise ValueError("the audit JSON is not an object")
+        record = audit.get("retraction")
+        rows = record.get("snapshot") if isinstance(record, Mapping) else None
+        old = RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}
+        updated = rechecked_snapshot(old, screen)
+        if not old:
+            # An older report: the run left these out, whatever the check now says
+            left_out = audit.get("retracted_documents")
+            left_out = left_out if isinstance(left_out, list) else []
+            ids = {str(e["id"]) for e in left_out if isinstance(e, Mapping) and "id" in e}
+            updated = RetractionSnapshot(tuple({**r, "excluded": r["document_id"] in ids} for r in updated.rows))
+        audit["retraction"] = retraction_entry(updated.rows)
+        handle, temp = tempfile.mkstemp(dir=audit_path.parent, prefix=audit_path.name, suffix=".tmp")
+        try:
+            with os.fdopen(handle, "w", encoding="utf-8") as out:
+                json.dump(audit, out, indent=2, ensure_ascii=False)
+            os.replace(temp, audit_path)
+        finally:
+            Path(temp).unlink(missing_ok=True)
+        return updated, audit
+
+    def _on_recheck_cancelled(self, checkpoint_id: str) -> None:
+        """A cancel (at quit) stopped *Check again*: nothing is saved."""
+        self._recheck_worker = None
+        self.check_again_btn.setEnabled(True)
+        if checkpoint_id == self._saved_checkpoint_id:
+            self._show_saved_retraction()
+
+    def _cancel_at_quit(self) -> None:
+        """Cancel a running *Check again*; the thread keeper does the one bounded wait.
+
+        Every started worker is kept (``keep_until_finished``), and the keeper
+        waits for its threads at quit within one ``KEPT_THREAD_EXIT_WAIT_MS``.
+        This slot connects when the main window builds the tab, before the
+        first kept thread hooks the keeper's wait, so the cancel comes first.
+        """
+        worker = self._recheck_worker
+        if worker is not None and worker.isRunning():
+            worker.cancel()
 
     def _make_citations_clickable(self, markdown_report: str) -> str:
         """
@@ -514,6 +834,16 @@ class ReportTab(QWidget):
             ),
         )
 
+    def _retraction_record(self) -> dict[str, Any]:
+        """The audit JSON's ``retraction`` entry: the one copy of the snapshot.
+
+        Returns:
+            Empty for a run that never checked, so a reader says "never checked".
+        """
+        if self._retraction_snapshot is None:
+            return {}
+        return {"retraction": retraction_entry(self._retraction_snapshot.values())}
+
     def _auto_save_report(self) -> None:
         """
         Auto-save report with audit trail to ~/bmlibrarian_reports/.
@@ -592,6 +922,7 @@ class ReportTab(QWidget):
                 ],
                 **outcome_entries(outcomes, self._retraction_snapshot),
                 **extraction_failure_record(self._citation_extraction_failures),
+                **self._retraction_record(),
                 "citations": [
                     {
                         "document_id": c.document.id,
@@ -641,6 +972,10 @@ class ReportTab(QWidget):
             # Load the markdown report
             report = path.read_text(encoding="utf-8")
             self._current_report = report
+            self._hide_saved_retraction()
+            self._retraction_snapshot = None
+            self._all_citations = []
+            self._file_documents = []
 
             # Try to load the accompanying audit file
             audit_path = path.with_name(path.name.replace("_report.md", "_audit.json"))
@@ -674,10 +1009,12 @@ class ReportTab(QWidget):
                         context=cit_data.get("context", ""),
                     )
                     self._citations_by_doc_id[doc.id] = citation
+                    self._all_citations.append(citation)
 
                 self.audit_btn.setEnabled(True)
                 self._current_report_path = path
                 self._loaded_audit_data = audit_data
+                self._restore_saved_retraction(path, audit_data)
 
                 self.status_label.setText(
                     f"Loaded report with {len(self._citations_by_doc_id)} citations"
@@ -686,6 +1023,9 @@ class ReportTab(QWidget):
                 # Nothing of the previous report's record belongs to this one.
                 self._loaded_audit_data = None
                 self._citations_by_doc_id.clear()
+                # silence would read as clear
+                self.retraction_line.setText(NO_AUDIT_RECORD_LINE)
+                self.retraction_line.setVisible(True)
                 self.audit_btn.setEnabled(False)
                 self.status_label.setText("Loaded report (no audit trail found)")
 
@@ -697,6 +1037,55 @@ class ReportTab(QWidget):
         except Exception as e:
             logger.exception("Failed to load report")
             QMessageBox.critical(self, "Load Error", f"Failed to load report:\n{e}")
+
+    def _restore_saved_retraction(self, report_path: Path, audit_data: Mapping[str, Any]) -> None:
+        """Show a loaded report's checked-on line and offer *Check again*.
+
+        Check again covers every paper the snapshot holds, as a reopened
+        question's does; a report without one, the papers cited plus those
+        the run left out. A paper the run's PubMed label decided carries that
+        label, which the file holds nowhere else. A run screened without a
+        snapshot (saved before reports kept one) reads as not recorded,
+        never as never checked.
+
+        Args:
+            report_path: The loaded report; its audit JSON is what Check again rewrites.
+            audit_data: The audit JSON as read (input, golden rule 1).
+        """
+        record = audit_data.get("retraction")
+        rows = record.get("snapshot") if isinstance(record, Mapping) else None
+        self._retraction_snapshot = RetractionScreen.from_snapshot(rows) if isinstance(rows, list) else {}
+        summary = audit_data.get("workflow_summary")
+        self._retraction_unrecorded = (
+            isinstance(summary, Mapping) and summary.get("documents_excluded_retracted") is not None
+        )
+        documents = [
+            LiteDocument(
+                id=doc_id,
+                title=str(row.get("title") or ""),
+                abstract="",
+                doi=row.get("doi"),
+                pmid=row.get("pmid"),
+                publication_types=label_types_of(row),
+            )
+            for doc_id, row in self._retraction_snapshot.items()
+        ] or [
+            LiteDocument(
+                id=str(entry[id_key]),
+                title=entry.get(title_key, ""),
+                abstract="",
+                doi=entry.get(doi_key),
+                pmid=entry.get(pmid_key),
+            )
+            for key, id_key, title_key, doi_key, pmid_key in (
+                ("citations", "document_id", "document_title", "document_doi", "document_pmid"),
+                ("retracted_documents", "id", "title", "doi", "pmid"),
+            )
+            for entry in audit_data.get(key, [])
+            if isinstance(entry, Mapping) and id_key in entry
+        ]
+        self._file_documents = list({d.id: d for d in documents}.values())
+        self.show_saved_retraction(FILE_ID_PREFIX + str(report_path))
 
     def _audit_trail_data(self) -> dict[str, Any]:
         """The audit record this tab would show, live or as loaded from disk.

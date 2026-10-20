@@ -2160,6 +2160,7 @@ class LiteStorage:
         search_session_id: Optional[str] = None,
         report: Optional[str] = None,
         metadata: Optional[dict[str, Any]] = None,
+        touch: bool = True,
     ) -> None:
         """
         Update a review checkpoint.
@@ -2170,9 +2171,11 @@ class LiteStorage:
             search_session_id: Associated search session
             report: Generated report text
             metadata: Updated metadata
+            touch: Whether to bump ``updated_at``, which orders the runs of a
+                question; a later note on an old run (*Check again*) does not
         """
-        updates = ["updated_at = ?"]
-        values: list[Any] = [datetime.now()]
+        updates = ["updated_at = ?"] if touch else []
+        values: list[Any] = [datetime.now()] if touch else []
 
         if step is not None:
             updates.append("step = ?")
@@ -2186,6 +2189,8 @@ class LiteStorage:
         if metadata is not None:
             updates.append("metadata = ?")
             values.append(json.dumps(metadata))
+        if not updates:
+            return  # untouched, nothing to write
 
         values.append(checkpoint_id)
 

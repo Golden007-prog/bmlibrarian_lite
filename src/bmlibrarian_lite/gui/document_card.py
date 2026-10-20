@@ -60,7 +60,7 @@ from ..quality.data_models import QualityAssessment
 from ..transparency import TransparencyResult
 from bmlib.publications.retraction_status import RetractionStatus
 from ..retraction_store import PaperCheck
-from ..retraction_text import EXCLUDED_RETRACTED_LABEL, paper_status_line
+from ..retraction_text import excluded_line
 from .retraction_badge import RetractionBadge, status_stylesheet
 from ..audit_records import score_failure_reason
 from .card_utils import (
@@ -795,13 +795,17 @@ class DocumentCard(QFrame):
                             f"Transparency badge added for {self.document.id}"
                         )
 
-    def set_retraction_check(self, check: PaperCheck, excluded: bool = False) -> None:
+    def set_retraction_check(
+        self, check: PaperCheck, excluded: bool = False, run_check: PaperCheck | None = None
+    ) -> None:
         """Show the paper's retraction status as a badge before the others.
 
         Args:
-            check: The paper's check; clear shows no badge.
+            check: The paper's latest check; clear shows no badge.
             excluded: Whether the run left the paper out as retracted, which
                 the card then says in a line under the title.
+            run_check: The check as the run saw it, when *Check again* has
+                replaced it; the line gives the run's evidence first.
         """
         header_layout = self._header_widget.layout() if self._header_widget else None
         title_row_item = header_layout.itemAt(0) if header_layout else None
@@ -822,7 +826,7 @@ class DocumentCard(QFrame):
             self._retraction_badge = RetractionBadge(check)
             title_row.insertWidget(0, self._retraction_badge)
         if excluded:
-            self._excluded_label = QLabel(f"{EXCLUDED_RETRACTED_LABEL}. {paper_status_line(check)}")
+            self._excluded_label = QLabel(excluded_line(run_check or check, check))
             self._excluded_label.setStyleSheet(status_stylesheet(RetractionStatus.RETRACTED))
             header_layout.insertWidget(1, self._excluded_label)
 

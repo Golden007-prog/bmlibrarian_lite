@@ -107,7 +107,7 @@ from ..transparency import (
 from ..transparency.assessment import contact_email
 from ..retraction_checks import RetractionChecker, build_retraction_checker
 from ..retraction_screen import RetractionScreen, UnbuiltChecker, screen_with_fallback
-from ..retraction_text import run_summary_clause, with_retraction_notice
+from ..retraction_text import retraction_check_line, run_summary_clause, with_retraction_notice
 from datetime import datetime
 
 from .quality_filter_panel import QualityFilterPanel
@@ -1340,7 +1340,7 @@ class SystematicReviewTab(QWidget):
         clause = run_summary_clause(screen)
         if clause is None:
             return
-        self.retraction_notice_label.setText(f"Retraction check: {clause}.")
+        self.retraction_notice_label.setText(retraction_check_line(clause))
         self.retraction_notice_label.setVisible(True)
 
     def _on_analysis_incomplete(self, missing: str) -> None:

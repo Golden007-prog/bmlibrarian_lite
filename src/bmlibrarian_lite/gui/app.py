@@ -292,6 +292,10 @@ class LiteMainWindow(QMainWindow):
         self.systematic_review_tab.retraction_screened.connect(
             self.audit_trail_tab.on_retraction_screened
         )
+        # A reopened run checked again: its audit trail shows the new snapshot
+        self.report_tab.retraction_rechecked.connect(
+            self.audit_trail_tab.show_retraction_snapshot
+        )
 
         # Connect Audit Trail document request to load document
         self.audit_trail_tab.document_requested.connect(
@@ -813,6 +817,9 @@ class LiteMainWindow(QMainWindow):
                 # rebuilt from the database would be a second, poorer one.
                 auto_save=False,
             )
+            # When its papers were checked, a warning for a cited paper
+            # retracted since (from the store, no request), and Check again
+            self.report_tab.show_saved_retraction(checkpoint.id)
 
             # 9. Load benchmark results if available
             self._load_benchmark_results_for_question(question)

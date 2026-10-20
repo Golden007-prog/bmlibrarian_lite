@@ -27,6 +27,8 @@ Provides QThread-based workers for long-running operations:
 - ReclassifyWorker: Re-run study design classification
 - RescoreWorker: Re-run relevance scoring
 - TransparencyReanalysisWorker: Re-analyse a question's pending transparency
+- RetractionCheckWorker: Check one paper's retraction status
+- RetractionRecheckWorker: Check a reopened question's papers again
 
 These workers allow the main GUI thread to remain responsive while
 background operations execute.
@@ -62,7 +64,13 @@ from ..pdf_library_check import set_aside_download_note
 from ..pdf_utils import generate_pdf_path
 from ..fulltext_discovery import FulltextDiscoverer, FulltextResult, FulltextSourceType
 from ..utils import classify_analysis_exception
-from ..retraction_screen import screen_with_fallback, unchecked_check
+from ..retraction_screen import (
+    RetractionScreen,
+    screen_documents,
+    screen_with_fallback,
+    unchecked_check,
+)
+from ..retraction_text import run_summary_clause
 
 if TYPE_CHECKING:
     from ..config import LiteConfig
@@ -174,6 +182,105 @@ class RetractionCheckWorker(SingleOutcome, QThread):
         """Screen the one document (never raises) and end the run."""
         screen = screen_with_fallback(self.checker, [self.document])
         self._end(self.checked, self.document.id, screen.checks.get(self.document.id) or unchecked_check())
+
+
+def leave_out_retracted(
+    checker: Any,
+    documents: list["LiteDocument"],
+    should_cancel: Callable[[], bool],
+    said: SignalInstance,
+) -> list["LiteDocument"]:
+    """Leave a pass's retracted papers out before it starts, and say so.
+
+    A pass over a question's documents would otherwise let papers the review
+    left out back into scoring, classification or a benchmark. A check that
+    fails leaves every paper in but those whose own PubMed label retracts
+    them, the rest unchecked, and the clause says so.
+
+    Args:
+        checker: The pass's retraction checker; ``None`` screens nothing
+            (a caller whose documents are already screened).
+        documents: The pass's documents.
+        should_cancel: Passed to the checker.
+        said: Emitted with the screen's ``run_summary_clause`` (or "" when
+            there is nothing to say) and the left-out papers' titles; not
+            emitted without a checker.
+
+    Returns:
+        The documents to work on, in order.
+    """
+    if checker is None:
+        return documents
+    screen = screen_with_fallback(checker, documents, should_cancel)
+    said.emit(run_summary_clause(screen) or "", [doc.title for doc in screen.excluded])
+    return list(screen.kept)
+
+
+class RetractionRecheckWorker(SingleOutcome, QThread):
+    """Checks a saved run's papers again (*Check again*), off the GUI thread.
+
+    The run is a reopened question's checkpoint, or a loaded report file
+    (its id then starts with ``file:``).
+
+    Signals:
+        rechecked: Emitted with the checkpoint id and the ``RetractionScreen``.
+            A check that fails is a failed screen (every paper unchecked but
+            those the record's own label retracts), never an error: the
+            run's record is then left as it was.
+        cancelled: Emitted with the checkpoint id when a cancel (at quit)
+            stopped the run; nothing is to be saved.
+
+    Exactly one of ``rechecked`` and ``cancelled`` ends a run.
+    """
+
+    rechecked = Signal(str, object)  # checkpoint_id, RetractionScreen
+    cancelled = Signal(str)  # checkpoint_id
+
+    def __init__(
+        self,
+        checker: Any,
+        documents: list["LiteDocument"],
+        checkpoint_id: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        """Keep the checker, the papers and the run they belong to.
+
+        Args:
+            checker: A ``RetractionChecker`` built for this one use.
+            documents: The run's papers: every document linked to the
+                question, or the papers a report file holds.
+            checkpoint_id: The run whose snapshot the result updates (a
+                checkpoint id, or ``file:`` and the report's path).
+            parent: The tab the worker belongs to.
+        """
+        super().__init__(parent)
+        self.checker = checker
+        self.documents = documents
+        self.checkpoint_id = checkpoint_id
+        self._cancelled = False
+
+    def run(self) -> None:
+        """Check every paper, asking again, and end the run."""
+        self._run_once(self._check, lambda _error: self._end(self.rechecked, self.checkpoint_id, self._failed()))
+
+    def _failed(self) -> RetractionScreen:
+        """A failed screen: every paper unchecked, nothing decided."""
+        unchecked = unchecked_check()
+        return screen_documents(self.documents, {d.id: unchecked for d in self.documents}, failed=True)
+
+    def _check(self) -> None:
+        """Screen with ``refresh`` (never raises) and end the run."""
+        screen = screen_with_fallback(
+            self.checker, self.documents, lambda: self._cancelled, refresh=True
+        )
+        if self._cancelled:
+            self._end(self.cancelled, self.checkpoint_id)
+        else:
+            self._end(self.rechecked, self.checkpoint_id, screen)
+
+    def cancel(self) -> None:
+        """Stop the check (an export download stops at its next chunk)."""
+        self._cancelled = True
 
 
 class AnswerWorker(SingleOutcome, QThread):
@@ -1257,6 +1364,8 @@ class ReclassifyWorker(SingleOutcome, QThread):
     updating the stored quality assessments.
 
     Signals:
+        retractions_screened: Emitted, before the pass starts, with what the
+            retraction screen left out (``leave_out_retracted``); not terminal
         progress: Emitted with (current, total, message) during classification
         finished: Emitted with the :class:`PassOutcome` when complete
         error: Emitted with error message on failure
@@ -1276,13 +1385,15 @@ class ReclassifyWorker(SingleOutcome, QThread):
     finished = Signal(object)  # PassOutcome
     error = Signal(str)
     cancelled = Signal(object, str)  # PassOutcome, error
+    retractions_screened = Signal(str, list)  # run_summary_clause or "", left-out titles
 
     def __init__(
         self,
         config: "LiteConfig",
         storage: "LiteStorage",
-        documents: List["LiteDocument"],
+        documents: list["LiteDocument"],
         parent: Optional[QWidget] = None,
+        retraction_checker: Any = None,
     ) -> None:
         """
         Initialize the reclassify worker.
@@ -1292,11 +1403,14 @@ class ReclassifyWorker(SingleOutcome, QThread):
             storage: Storage layer for saving results
             documents: List of documents to reclassify
             parent: Optional parent widget
+            retraction_checker: Leaves retracted papers out before the pass
+                starts (``leave_out_retracted``); ``None`` screens nothing
         """
         super().__init__(parent)
         self.config = config
         self.storage = storage
         self.documents = documents
+        self.retraction_checker = retraction_checker
         self._cancelled = False
 
     def run(self) -> None:
@@ -1311,6 +1425,9 @@ class ReclassifyWorker(SingleOutcome, QThread):
 
     def _reclassify(self) -> None:
         """Classify each document, and end the run."""
+        self.documents = leave_out_retracted(
+            self.retraction_checker, self.documents, lambda: self._cancelled, self.retractions_screened
+        )
         success_count = 0
         unclassified = 0
         failures: list[PassFailure] = []
@@ -1418,6 +1535,8 @@ class RescoreWorker(SingleOutcome, QThread):
     updating the stored scored documents.
 
     Signals:
+        retractions_screened: Emitted, before the pass starts, with what the
+            retraction screen left out (``leave_out_retracted``); not terminal
         progress: Emitted with (current, total, message) during scoring
         finished: Emitted with the :class:`PassOutcome` when complete
         error: Emitted with error message on failure
@@ -1438,14 +1557,16 @@ class RescoreWorker(SingleOutcome, QThread):
     finished = Signal(object)  # PassOutcome
     error = Signal(str)
     cancelled = Signal(object, str)  # PassOutcome, error
+    retractions_screened = Signal(str, list)  # run_summary_clause or "", left-out titles
 
     def __init__(
         self,
         config: "LiteConfig",
         storage: "LiteStorage",
         question: str,
-        documents: List["LiteDocument"],
+        documents: list["LiteDocument"],
         parent: Optional[QWidget] = None,
+        retraction_checker: Any = None,
     ) -> None:
         """
         Initialize the rescore worker.
@@ -1456,12 +1577,15 @@ class RescoreWorker(SingleOutcome, QThread):
             question: Research question for scoring context
             documents: List of documents to rescore
             parent: Optional parent widget
+            retraction_checker: Leaves retracted papers out before the pass
+                starts (``leave_out_retracted``); ``None`` screens nothing
         """
         super().__init__(parent)
         self.config = config
         self.storage = storage
         self.question = question
         self.documents = documents
+        self.retraction_checker = retraction_checker
         self._cancelled = False
 
     def run(self) -> None:
@@ -1474,6 +1598,9 @@ class RescoreWorker(SingleOutcome, QThread):
 
     def _rescore(self) -> None:
         """Score each document again, and end the run."""
+        self.documents = leave_out_retracted(
+            self.retraction_checker, self.documents, lambda: self._cancelled, self.retractions_screened
+        )
         success_count = 0
         failures: list[PassFailure] = []
         total = len(self.documents)
@@ -1591,6 +1718,8 @@ class TransparencyReanalysisWorker(SingleOutcome, QThread):
     rate either one is allowed.
 
     Signals:
+        retractions_screened: Emitted, before the pass starts, with what the
+            retraction screen left out (``leave_out_retracted``); not terminal
         progress: Emitted with (current, total, message) before each document
         outcome_ready: Emitted with (document_id, outcome) after each one:
             the stored :class:`TransparencyResult`, or a
@@ -1613,6 +1742,7 @@ class TransparencyReanalysisWorker(SingleOutcome, QThread):
     finished = Signal(object)  # PassOutcome
     error = Signal(str)
     cancelled = Signal(object, str)  # PassOutcome, error
+    retractions_screened = Signal(str, list)  # run_summary_clause or "", left-out titles
 
     def __init__(
         self,
@@ -1620,6 +1750,7 @@ class TransparencyReanalysisWorker(SingleOutcome, QThread):
         storage: "LiteStorage",
         documents: list["LiteDocument"],
         parent: QWidget | None = None,
+        retraction_checker: Any = None,
     ) -> None:
         """Initialize the transparency re-analysis worker.
 
@@ -1631,6 +1762,8 @@ class TransparencyReanalysisWorker(SingleOutcome, QThread):
                 or a DOI; the tab leaves out those that carry neither, since
                 no re-analysis can help them.
             parent: Optional parent widget
+            retraction_checker: Leaves retracted papers out before the pass
+                starts (``leave_out_retracted``); ``None`` screens nothing
 
         Raises:
             ValueError: If a document carries neither a PMID nor a DOI. Let
@@ -1647,6 +1780,7 @@ class TransparencyReanalysisWorker(SingleOutcome, QThread):
         self.config = config
         self.storage = storage
         self.documents = documents
+        self.retraction_checker = retraction_checker
         self._cancelled = False
 
     def run(self) -> None:
@@ -1661,6 +1795,9 @@ class TransparencyReanalysisWorker(SingleOutcome, QThread):
 
     def _reanalyse(self) -> None:
         """Analyse each document, and end the run."""
+        self.documents = leave_out_retracted(
+            self.retraction_checker, self.documents, lambda: self._cancelled, self.retractions_screened
+        )
         success_count = 0
         provisional = 0
         failures: list[PassFailure] = []

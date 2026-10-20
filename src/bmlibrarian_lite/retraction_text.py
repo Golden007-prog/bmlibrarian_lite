@@ -10,7 +10,7 @@ No provider text: a failure's cause comes from ``RequestFailure.describe()``.
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -23,7 +23,13 @@ from bmlib.publications.retraction_status import (
 
 from .retraction_checks import paper_key
 from .retraction_export import ExportCopy, ExportState
-from .retraction_screen import RetractionRecord, RetractionScreen, as_utc
+from .retraction_screen import (
+    RetractionRecord,
+    RetractionScreen,
+    as_utc,
+    decided_checked_at,
+    run_deciding_of,
+)
 from .retraction_store import PaperCheck
 
 _NOTICE_OPENING = "> **Retraction check:** "
@@ -174,6 +180,33 @@ def checked_on_line(checked_at: datetime | None) -> str:
     return f"Retraction status checked {as_utc(checked_at).date().isoformat()}"
 
 
+def saved_work_line(rows: Iterable[Mapping[str, Any]]) -> str:
+    """A reopened run's line: when its decided papers were checked, and how many were not.
+
+    The date is the oldest check time among decided rows (retracted,
+    concern, clear), so an unchecked answer's time never reads as a check.
+
+    Args:
+        rows: The run's snapshot rows.
+
+    Returns:
+        E.g. "Retraction status checked 2026-10-01; 2 papers could not be
+        checked"; "Retraction status could not be checked" when no row is
+        decided; "Retraction status never checked" without rows.
+    """
+    rows = list(rows)
+    if not rows:
+        return checked_on_line(None)
+    unchecked = sum(1 for r in rows if r.get("status") == RetractionStatus.UNCHECKED.value)
+    checked_at = decided_checked_at(rows)
+    if checked_at is None:
+        return "Retraction status could not be checked"
+    line = checked_on_line(checked_at)
+    if unchecked:
+        line += f"; {'1 paper' if unchecked == 1 else f'{unchecked:,} papers'} could not be checked"
+    return line
+
+
 def retraction_methods_line(record: RetractionRecord) -> str:
     """The report's methods line: when the run's status was checked.
 
@@ -186,6 +219,68 @@ def retraction_methods_line(record: RetractionRecord) -> str:
 
 
 _LABEL = " (PubMed's label)"
+
+CHECK_AGAIN_LABEL = "Check again"
+CHECKING_AGAIN_LINE = "Checking retraction status…"
+CHECK_AGAIN_FAILED = "; it could not be checked again, so this is still the run's record"
+CHECK_AGAIN_NOT_SAVED = "; the new status could not be saved with this run"
+NO_AUDIT_RECORD_LINE = "Retraction status not recorded for this report"
+STORED_CHECKS_UNREAD = "; later checks could not be read"
+
+
+def not_checked_again_clause(count: int) -> str:
+    """*Check again*'s note for decided papers no source answered this time, whose record stays; "" for none."""
+    if not count:
+        return ""
+    return f"; {'1 paper' if count == 1 else f'{count:,} papers'} could not be checked again"
+
+
+def saved_work_warning(
+    changed: Sequence[tuple[str, PaperCheck]], titles: Mapping[str, str]
+) -> str | None:
+    """Warn that papers a saved report cites are now retracted or under concern.
+
+    Plain text, one paper per line. It suggests re-running the question; it
+    runs nothing, and the report is not rewritten.
+
+    Args:
+        changed: (document id, check) pairs, as ``changed_since_snapshot`` gives them.
+        titles: Titles by document id; a missing one is named by its id.
+
+    Returns:
+        The warning; ``None`` when nothing changed.
+    """
+    if not changed:
+        return None
+    count = len(changed)
+    subject = "1 paper this report cites has" if count == 1 else f"{count:,} papers this report cites have"
+    lines = [f"Since this report was written, {subject} a retraction warning:"]
+    for doc_id, check in changed:
+        title = " ".join(str(titles.get(doc_id) or doc_id).split())
+        lines.append(f"• {title}: {paper_status_line(check)}")
+    lines.append("The report has not been changed; re-run the question to bring it up to date.")
+    return "\n".join(lines)
+
+
+def with_pass_retraction_clause(text: str, clause: str) -> str:
+    """Add a pass's retraction clause (``run_summary_clause``) to its final line."""
+    return f"{text.rstrip().rstrip('.')}; {clause}." if clause else text
+
+
+#: A pass's offer counts papers before its screen runs (in the worker), so it says what the screen will do
+PASS_LEFT_OUT_SENTENCE = "Retracted papers are left out before the work starts."
+
+
+def retraction_check_line(clause: str) -> str:
+    """A screen's clause as a line of its own, e.g. "Retraction check: 2 retracted papers left out."."""
+    return f"Retraction check: {clause}."
+
+
+def pass_retraction_note(clause: str, titles: Sequence[str] = ()) -> str:
+    """A pass's retraction clause as a dialog's closing paragraph, naming the papers left out; "" without one."""
+    if not clause:
+        return ""
+    return "\n\n" + "\n".join([retraction_check_line(clause), *(f"• {' '.join(t.split())}" for t in titles)])
 
 
 def paper_status_line(check: PaperCheck) -> str:
@@ -236,14 +331,14 @@ _CONCERN_INDENT = "    "
 
 
 def _evidence_parts(row: Mapping[str, Any]) -> tuple[str | None, str | None]:
-    """The deciding notice's date and DOI from a snapshot row."""
-    deciding = row.get("deciding") or {}
+    """The date and DOI of the deciding notice the run saw, from a snapshot row."""
+    deciding = run_deciding_of(row) or {}
     return deciding.get("date"), deciding.get("notice_doi")
 
 
 def _row_by_label(row: Mapping[str, Any]) -> bool:
-    """Whether a snapshot row's verdict rests on PubMed's label."""
-    deciding = row.get("deciding") or {}
+    """Whether the run's verdict in a snapshot row rests on PubMed's label."""
+    deciding = run_deciding_of(row) or {}
     return deciding.get("source") in (None, RetractionSource.PUBMED_LABEL.value)
 
 
@@ -293,6 +388,18 @@ _BADGE_TEXTS = {
     RetractionStatus.UNCHECKED: "NOT CHECKED",
 }
 EXCLUDED_RETRACTED_LABEL = "Excluded: retracted"
+
+
+def excluded_line(run_check: PaperCheck, current: PaperCheck) -> str:
+    """A left-out paper's card line: why the run left it out, then its status now when that differs.
+
+    Args:
+        run_check: The check as the run saw it.
+        current: The latest check (*Check again*'s, or the run's own).
+    """
+    line = f"{EXCLUDED_RETRACTED_LABEL}. {paper_status_line(run_check)}"
+    now = paper_status_line(current)
+    return line if now == paper_status_line(run_check) else f"{line}. Checked again: {now}"
 
 
 def badge_text(status: RetractionStatus) -> str | None:

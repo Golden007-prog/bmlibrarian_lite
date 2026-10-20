@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from bmlib.publications.retraction_status import (
     RetractionEvidence,
     RetractionLookup,
+    RetractionSource,
     RetractionStatus,
     RetractionVerdict,
     retraction_status,
@@ -26,11 +27,63 @@ from .retraction_store import PaperCheck
 logger = logging.getLogger(__name__)
 
 _SNAPSHOT_REQUIRED = ("document_id", "status")
+#: The status the run saw, kept in a row once *Check again* rewrites ``status``;
+#: ``None`` in a row *Check again* added to a run whose check was not recorded
+RUN_STATUS_KEY = "run_status"
+#: The deciding notice the run saw, kept beside ``run_status``
+RUN_DECIDING_KEY = "run_deciding"
+_WARNING_STATUSES = (RetractionStatus.RETRACTED, RetractionStatus.CONCERN)
 
 
 def as_utc(moment: datetime) -> datetime:
     """Read a naive datetime as UTC, the zone every stored check is in."""
     return moment.replace(tzinfo=UTC) if moment.tzinfo is None else moment
+
+
+def decided_checked_at(rows: Iterable[Mapping[str, Any]]) -> datetime | None:
+    """The oldest check time among decided rows (retracted, concern, clear); ``None`` without one.
+
+    An unchecked answer's time is never a check time.
+    """
+    return min(
+        (
+            as_utc(datetime.fromisoformat(r["checked_at"]))
+            for r in rows
+            if r.get("status") != RetractionStatus.UNCHECKED.value and r.get("checked_at")
+        ),
+        default=None,
+    )
+
+
+def run_status_of(row: Mapping[str, Any]) -> str | None:
+    """The status the run saw in a snapshot row: ``run_status`` once *Check again* rewrote it."""
+    return row[RUN_STATUS_KEY] if RUN_STATUS_KEY in row else row.get("status")
+
+
+def run_deciding_of(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The deciding notice (a dict, or ``None``) the run saw in a snapshot row."""
+    return row[RUN_DECIDING_KEY] if RUN_DECIDING_KEY in row else row.get("deciding")
+
+
+def label_types_of(row: Mapping[str, Any]) -> list[str] | None:
+    """The PubMed labels a snapshot row's notices were read from; ``None`` without one.
+
+    A paper rebuilt from a saved report carries no publication types, so
+    without these a check would clear a paper only its label retracts: an
+    unread label is not a lifted one.
+    """
+    labels = {
+        notice.get("raw_kind")
+        for notice in (row.get("deciding"), run_deciding_of(row))
+        if isinstance(notice, Mapping) and notice.get("source") == RetractionSource.PUBMED_LABEL.value
+    }
+    kinds = sorted(label for label in labels if isinstance(label, str) and label)
+    return kinds or None
+
+
+def as_the_run_saw_it(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A snapshot row with the run's status and notice in place of the current ones."""
+    return {**row, "status": run_status_of(row), "deciding": run_deciding_of(row)}
 
 
 class RetractionRecord(Protocol):
@@ -144,7 +197,9 @@ class RetractionScreen:
         ``excluded`` is a strict bool (only ``true`` left a paper out), an
         unknown ``status`` reads as unchecked, a missing ``title`` as "", a
         ``deciding`` that is not a mapping as none and an unreadable
-        ``checked_at`` as none. A row is kept through all of these, so a
+        ``checked_at`` as none; ``run_status`` and ``run_deciding``, when
+        present, are read like ``status`` and ``deciding``, except that a
+        ``run_status`` of none (not recorded) stays none. A row is kept through all of these, so a
         paper left out never reads as not scored; only a row without
         ``document_id`` or ``status`` is skipped with a warning.
 
@@ -172,10 +227,17 @@ class RetractionScreen:
             if read["status"] not in known:
                 logger.warning("A retraction snapshot row's status is unknown; read as unchecked")
                 read["status"] = RetractionStatus.UNCHECKED.value
+            # a None run_status is a run saved before the feature: "not recorded", kept as is
+            run_status = read.get(RUN_STATUS_KEY)
+            if run_status is not None and run_status not in known:
+                logger.warning("A retraction snapshot row's run status is unknown; read as unchecked")
+                read[RUN_STATUS_KEY] = RetractionStatus.UNCHECKED.value
             read["excluded"] = read.get("excluded") is True
             read["title"] = str(read.get("title") or "")
             if not isinstance(read.get("deciding"), Mapping):
                 read["deciding"] = None
+            if RUN_DECIDING_KEY in read and not isinstance(read[RUN_DECIDING_KEY], Mapping):
+                read[RUN_DECIDING_KEY] = None
             out[str(read["document_id"])] = read
         return out
 
@@ -307,6 +369,8 @@ def screen_with_fallback(
     checker: Any,
     documents: Sequence[LiteDocument],
     should_cancel: Callable[[], bool] = lambda: False,
+    *,
+    refresh: bool = False,
 ) -> RetractionScreen:
     """Check the documents and leave the retracted ones out; a failed check never raises.
 
@@ -318,20 +382,147 @@ def screen_with_fallback(
         checker: A ``RetractionChecker`` (anything with ``check`` and ``close``).
         documents: The documents.
         should_cancel: Passed to the checker.
+        refresh: Passed to the checker: ask again even for a fresh stored
+            verdict (*Check again*).
 
     Returns:
         The screen; after a cancel, possibly partial.
     """
     try:
-        return screen_documents(documents, checker.check(documents, should_cancel=should_cancel))
+        return screen_documents(
+            documents, checker.check(documents, refresh=refresh, should_cancel=should_cancel)
+        )
     except Exception as e:
         # the type only: provider text never reaches the reader or the log
-        logger.warning("Retraction check failed (%s); every document unchecked", type(e).__name__)
+        logger.warning(
+            "Retraction check failed (%s); every document unchecked but those their label retracts",
+            type(e).__name__,
+        )
         return screen_documents(
             documents, {doc.id: _label_check(doc) for doc in documents}, failed=True
         )
     finally:
         checker.close()
+
+
+def changed_since_snapshot(
+    snapshot: Mapping[str, Mapping[str, Any]],
+    current: Mapping[str, PaperCheck],
+    used_ids: Collection[str],
+) -> list[tuple[str, PaperCheck]]:
+    """The used papers whose retraction status changed for the worse since the run.
+
+    A paper counts when its current check is no older than its snapshot row,
+    now says retracted or concern, and the run saw another status: the row's
+    ``run_status`` once *Check again* rewrote it, else its ``status``. A
+    paper without a row, or whose row has no check time, the run never
+    checked, so any warning is news.
+
+    Args:
+        snapshot: The run's snapshot rows by document id.
+        current: The latest checks by document id.
+        used_ids: The documents the run's report cites.
+
+    Returns:
+        (document id, check) pairs in ``current``'s order.
+    """
+    changed = []
+    for doc_id, check in current.items():
+        if doc_id not in used_ids or check.verdict.status not in _WARNING_STATUSES:
+            continue
+        row = snapshot.get(doc_id) or {}
+        stamp = row.get("checked_at")
+        if stamp and as_utc(check.checked_at) < as_utc(datetime.fromisoformat(stamp)):
+            continue
+        if row.get(RUN_STATUS_KEY, row.get("status") if stamp else None) == check.verdict.status.value:
+            continue
+        changed.append((doc_id, check))
+    return changed
+
+
+def latest_checks(
+    snapshot: Mapping[str, Mapping[str, Any]], stored: Mapping[str, PaperCheck]
+) -> dict[str, PaperCheck]:
+    """The latest check of each paper: a *Check again* row's, or the store's when no older.
+
+    A row carrying ``run_status`` holds *Check again*'s answer, so it warns
+    even when the store has no row (another machine, a reset data directory,
+    a failed read). A store row no older replaces it, except an unchecked
+    one over a decided row: an outage is not knowledge.
+
+    Args:
+        snapshot: The run's snapshot rows by document id.
+        stored: Checks by document id (the store's, or *Check again*'s).
+
+    Returns:
+        Checks by document id.
+    """
+    out = {}
+    for doc_id, row in snapshot.items():
+        seed = check_from_snapshot_row(row) if RUN_STATUS_KEY in row else None
+        if seed is not None:
+            out[doc_id] = seed
+    for doc_id, check in stored.items():
+        seed = out.get(doc_id)
+        if seed is not None and (
+            as_utc(check.checked_at) < as_utc(seed.checked_at)
+            or (
+                check.verdict.status is RetractionStatus.UNCHECKED
+                and seed.verdict.status is not RetractionStatus.UNCHECKED
+            )
+        ):
+            continue
+        out[doc_id] = check
+    return out
+
+
+def rechecked_snapshot(
+    snapshot: Mapping[str, Mapping[str, Any]], screen: RetractionScreen
+) -> RetractionSnapshot:
+    """The run's snapshot with *Check again*'s answers written in.
+
+    Status, check time and deciding notice are the new check's. ``excluded``
+    stays as the run recorded it, and ``run_status`` and ``run_deciding`` keep
+    what the run saw, set once and never overwritten: a later reopen still
+    warns, and why the run left a paper out stays its own (``None`` status
+    for a run whose check was not recorded). A row's status is the run's
+    even without a check time: a failed run's label still retracted. An
+    unchecked answer never replaces a decided row (an outage is not
+    knowledge; the checker's own rule), and a
+    document the check did not reach keeps its row. Only the run's own
+    documents are written: a document another run linked gets a row only
+    when the run has no snapshot (it predates the check). A failed check
+    changes nothing.
+
+    Args:
+        snapshot: The run's snapshot rows by document id.
+        screen: *Check again*'s screen.
+
+    Returns:
+        The new snapshot.
+    """
+    rows = {doc_id: dict(row) for doc_id, row in snapshot.items()}
+    if screen.failed:
+        return RetractionSnapshot(tuple(rows.values()))
+    for row in screen.to_snapshot():
+        doc_id = row["document_id"]
+        check = screen.checks.get(doc_id)
+        if check is None or (snapshot and doc_id not in snapshot):
+            continue
+        old = rows.get(doc_id, {})
+        if (
+            check.verdict.status is RetractionStatus.UNCHECKED
+            and old.get("status", RetractionStatus.UNCHECKED.value) != RetractionStatus.UNCHECKED.value
+        ):
+            continue
+        run_status = old.get("status") if old else None  # no row: the run's check not recorded
+        rows[doc_id] = {
+            **row,
+            "excluded": old.get("excluded") is True,
+            RUN_STATUS_KEY: old.get(RUN_STATUS_KEY, run_status),
+            RUN_DECIDING_KEY: run_deciding_of(old),
+        }
+    return RetractionSnapshot(tuple(rows.values()))
 
 
 def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:
@@ -351,7 +542,8 @@ def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:
                 RetractionEvidence.from_dict(deciding) if deciding else None,
                 tuple(RetractionLookup) if status is RetractionStatus.UNCHECKED else (),
             ),
-            # nothing displays checked_at; a row without one gets a stand-in
+            # a row without one (a failed run's) gets a stand-in, which latest_checks
+            # sees only for rows Check again wrote, and those carry their time
             as_utc(datetime.fromisoformat(stamp)) if stamp else datetime.now(UTC),
             None,
             None,

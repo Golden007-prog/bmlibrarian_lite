@@ -80,7 +80,7 @@ class FakeChecker:
 def checker(monkeypatch: pytest.MonkeyPatch) -> FakeChecker:
     """Install a fake checker, all clear until a test says otherwise."""
     fake = FakeChecker({})
-    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx: fake)
+    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx, **kw: fake)
     return fake
 
 
@@ -168,7 +168,7 @@ def test_checker_failure_leaves_everything_unchecked(monkeypatch) -> None:
             raise RuntimeError("secret provider text")
 
     fake = Boom({})
-    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx: fake)
+    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx, **kw: fake)
     good, bad = _docs()
     ctx = _make_context()
     ctx.search_agent.search.return_value = (_make_session(), [good, bad])
@@ -256,7 +256,7 @@ def test_each_workflow_screens_once(checker: FakeChecker) -> None:
 def _boom_builder(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make building the checker raise, with provider text in the message."""
 
-    def boom(ctx: object) -> None:
+    def boom(ctx: object, **kw: object) -> None:
         raise RuntimeError("secret provider text")
 
     monkeypatch.setattr(mcp_server, "_build_checker", boom)
@@ -309,7 +309,7 @@ def test_a_check_that_raises_leaves_the_single_paper_tools_unchecked(
             raise RuntimeError("secret provider text")
 
     fake = Boom({})
-    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx: fake)
+    monkeypatch.setattr(mcp_server, "_build_checker", lambda ctx, **kw: fake)
     ctx = _make_context()
     _ok_fulltext(ctx)
     ft = mcp_server._handle_fulltext({"pmid": "7"}, ctx)
@@ -508,3 +508,45 @@ def test_a_paper_without_identifiers_still_reaches_the_checker(checker: FakeChec
     check = mcp_server._paper_check(_make_context(), doc)
     assert check.verdict.status is RetractionStatus.RETRACTED
     assert checker.calls == 1
+
+
+def test_fulltext_keeps_a_stored_source_and_records_europepmc_for_a_new_row(
+    checker: FakeChecker, tmp_path
+) -> None:
+    """The upsert never overwrites a stored Europe PMC source with the default."""
+    from bmlibrarian_lite.data_models import DocumentSource, LiteDocument
+
+    ctx = _make_context()
+    ctx.storage = _real_storage(tmp_path)
+    _ok_fulltext(ctx)
+    ctx.interrogation_agent.load_document.side_effect = lambda **kw: kw["document_id"]
+    ctx.storage.add_document(
+        LiteDocument(id="pmid-7", title="T", abstract="a", pmid="7", source=DocumentSource.LOCAL_TEXT)
+    )
+    mcp_server._handle_fulltext({"pmid": "7"}, ctx)
+    assert ctx.storage.get_document("pmid-7").source is DocumentSource.LOCAL_TEXT
+    mcp_server._handle_fulltext({"pmid": "8"}, ctx)
+    assert ctx.storage.get_document("pmid-8").source is DocumentSource.EUROPEPMC
+
+
+def test_only_the_fact_check_builds_a_refreshing_checker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The review-like workflow may download the export; single-paper tools may not."""
+    flags: list[tuple[str, bool]] = []
+    current = ["paper"]
+
+    def spy(ctx, *, refresh_export=False):
+        flags.append((current[0], refresh_export))
+        return FakeChecker({})
+
+    monkeypatch.setattr(mcp_server, "_build_checker", spy)
+    good = _docs()[0]
+    ctx = _make_context()
+    mcp_server._paper_check(ctx, good)
+    ctx.search_agent.search.return_value = (_make_session(), [good])
+    current[0] = "search"
+    mcp_server._handle_search({"query": "q"}, ctx)
+    current[0] = "fact"
+    ctx.scoring_agent.score_documents.return_value = MagicMock(accepted=[], shortfall=None)
+    mcp_server._handle_fact_check({"claim": "c"}, ctx)
+    assert ("paper", False) in flags and ("fact", True) in flags
+    assert all(not flag for name, flag in flags if name != "fact")

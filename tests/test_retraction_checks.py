@@ -645,3 +645,56 @@ def test_a_cancel_after_the_first_batch_keeps_its_answers(storage, tmp_path):
     assert len(calls) == 1
     assert len(out) == 50
     assert len(storage.retraction_checks([f"doi:10.5/{i}" for i in range(60)])) == 50
+
+
+_LABEL = RetractionEvidence(RetractionSource.PUBMED_LABEL, RetractionKind.RETRACTION)
+
+
+def test_a_label_retraction_stands_when_another_id_carries_no_record(storage, tmp_path):
+    """Same paper_key through a doi- id with no types: the unreadable label is not a correction."""
+    _current_export(tmp_path)
+    old = _store(storage, RetractionStatus.RETRACTED, _LABEL)
+    out = _checker(storage, tmp_path, StubSession()).check([_doc("doi-10.1_a", doi="10.1/a")])
+    assert out["doi-10.1_a"] == old
+    assert storage.retraction_checks([_KEY])[_KEY] == old
+
+
+def test_a_corrected_record_replaces_a_stored_label_retraction(storage, tmp_path):
+    """Control: documents carrying types without the label give the fresh verdict."""
+    _current_export(tmp_path)
+    _store(storage, RetractionStatus.RETRACTED, _LABEL)
+    typed = _doc("doi-10.1_a", doi="10.1/a", types=["Journal Article"])
+    out = _checker(storage, tmp_path, StubSession()).check([typed])
+    assert out["doi-10.1_a"].verdict.status is RetractionStatus.CLEAR
+    assert storage.retraction_checks([_KEY])[_KEY].verdict.status is RetractionStatus.CLEAR
+
+
+def test_a_fresh_retraction_replaces_a_stored_label_retraction_reached_without_types(storage, tmp_path):
+    """Control: the unreadable-label guard never keeps a label row against a fresh notice of retraction."""
+    _current_export(tmp_path)
+    key = "doi:10.9/retracted"
+    _store(storage, RetractionStatus.RETRACTED, _LABEL, key=key)
+    out = _checker(storage, tmp_path, StubSession()).check([_doc("doi-10.9_retracted", doi="10.9/retracted")])
+    check = out["doi-10.9_retracted"]
+    assert check.verdict.status is RetractionStatus.RETRACTED
+    assert check.verdict.deciding.source is not RetractionSource.PUBMED_LABEL
+    assert check.verdict.deciding.notice_doi == "10.9/notice"
+    assert storage.retraction_checks([key])[key] == check
+
+
+def test_a_fresh_concern_never_downgrades_a_label_retraction_it_cannot_read(storage, tmp_path):
+    """No types to read the label from: a concern the export holds does not replace the label's retraction."""
+    _current_export(tmp_path)
+    old = _store(storage, RetractionStatus.RETRACTED, _LABEL, key="doi:10.9/concern")
+    out = _checker(storage, tmp_path, StubSession()).check([_doc("doi-10.9_concern", doi="10.9/concern")])
+    assert out["doi-10.9_concern"] == old
+    assert storage.retraction_checks(["doi:10.9/concern"])["doi:10.9/concern"] == old
+
+
+def test_one_typed_document_reads_the_label_for_the_paper(storage, tmp_path):
+    """Control: two documents of one paper, one carrying types without the label: the label was read."""
+    _current_export(tmp_path)
+    _store(storage, RetractionStatus.RETRACTED, _LABEL)
+    docs = [_doc("doi-10.1_a", doi="10.1/a"), _doc("pmid-1", doi="10.1/a", types=["Journal Article"])]
+    out = _checker(storage, tmp_path, StubSession()).check(docs)
+    assert {c.verdict.status for c in out.values()} == {RetractionStatus.CLEAR}

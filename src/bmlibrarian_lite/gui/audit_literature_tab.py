@@ -92,8 +92,9 @@ class AuditLiteratureTab(QWidget):
         # A finding, or why the document has none: a failed analysis and an
         # analysis still running used to look identical here (#361).
         self._transparency_outcomes: Dict[str, TransparencyOutcome] = {}
-        # doc id -> (check, whether the run left the paper out as retracted)
-        self._retractions: dict[str, tuple[PaperCheck, bool]] = {}
+        # doc id -> (current check, whether the run left the paper out as
+        # retracted, the check as the run saw it or None)
+        self._retractions: dict[str, tuple[PaperCheck, bool, PaperCheck | None]] = {}
 
         # Thread safety
         self._lock = threading.RLock()
@@ -302,19 +303,22 @@ class AuditLiteratureTab(QWidget):
                 # Document not yet added - store for later
                 logger.debug(f"Transparency received before document: {doc_id}")
 
-    def update_retraction(self, doc_id: str, check: PaperCheck, excluded: bool) -> None:
+    def update_retraction(
+        self, doc_id: str, check: PaperCheck, excluded: bool, run_check: PaperCheck | None = None
+    ) -> None:
         """Show a document's retraction status on its card (now, or once it is added).
 
         Args:
             doc_id: Document ID
-            check: The paper's check
+            check: The paper's latest check
             excluded: Whether the run left it out as retracted
+            run_check: The check as the run saw it, when *Check again* replaced it
         """
         with self._lock:
-            self._retractions[doc_id] = (check, excluded)
+            self._retractions[doc_id] = (check, excluded, run_check)
             card = self._cards_by_doc_id.get(doc_id)
             if card:
-                card.set_retraction_check(check, excluded)
+                card.set_retraction_check(check, excluded, run_check)
 
     def get_transparency_result(
         self,
@@ -356,7 +360,7 @@ class AuditLiteratureTab(QWidget):
 
     def _sort_key(self, doc_id: str) -> tuple[int, int]:
         """The outcome order, with the papers left out as retracted after them all."""
-        if self._retractions.get(doc_id, (None, False))[1]:
+        if self._retractions.get(doc_id, (None, False, None))[1]:
             return RETRACTED_SORT_KEY
         return outcome_sort_key(self._scores.get(doc_id))
 
