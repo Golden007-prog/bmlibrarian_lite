@@ -49,8 +49,8 @@ enum WorkflowConstants {
 
     // MARK: - Automatic Full-Text Retrieval
 
-    /// Lowest relevance score (1-5) whose papers are fetched in full when the
-    /// automatic full-text setting is on.
+    /// Default lowest relevance score (1-5) whose papers are fetched in full
+    /// when the automatic full-text setting is on; the user can change it.
     ///
     /// Scores 4 and 5 are the papers that shape the report most, so they are
     /// the ones where the full text (methods, results, funding, conflicts) is

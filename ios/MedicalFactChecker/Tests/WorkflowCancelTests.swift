@@ -166,6 +166,21 @@ final class WorkflowCancelTests: XCTestCase {
         XCTAssertFalse(session.smartSearchEnabled, "a stopped smart search stays available")
     }
 
+    /// With the original query exhausted and smart search already run, a
+    /// request for more evidence returned at once and found nothing: it now
+    /// runs a fresh round of alternative queries.
+    func testAFetchMoreAfterSmartSearchRanTriesAgain() async throws {
+        let session = makeSession(citations: 0, reportedCitations: 0, documents: false)
+        session.smartSearchEnabled = true
+        XCTAssertFalse(session.canFetchMoreDocuments)
+        let workflow = restore(session)
+        let reached = cancel(workflow, at: "Trying alternative search strategies...")
+
+        await workflow.fetchMoreEvidence()
+
+        XCTAssertEqual(reached(), true, "a fresh round of alternative queries started")
+    }
+
     // MARK: - Regenerating the report
 
     /// Stopped just before the new report's request is sent: whatever that

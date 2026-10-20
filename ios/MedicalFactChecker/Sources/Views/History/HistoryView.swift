@@ -146,12 +146,11 @@ struct HistoryView: View {
                                 }
                             }
 
-                            if session.canGetMoreEvidence {
-                                Button {
-                                    onContinueSession?(session)
-                                } label: {
-                                    Label("Continue Search", systemImage: "magnifyingglass.circle")
-                                }
+                            // Smart search can always run a fresh round
+                            Button {
+                                onContinueSession?(session)
+                            } label: {
+                                Label("Continue Search", systemImage: "magnifyingglass.circle")
                             }
 
                             Divider()
@@ -621,14 +620,12 @@ struct SessionDetailView: View {
                 .buttonStyle(.borderedProminent)
             }
 
-            // Continue Search button
-            if session.canGetMoreEvidence {
-                Button(action: { onContinueSession?() }) {
-                    Label("Continue Search", systemImage: "magnifyingglass.circle")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
+            // Continue Search button: smart search can always run a fresh round
+            Button(action: { onContinueSession?() }) {
+                Label("Continue Search", systemImage: "magnifyingglass.circle")
+                    .frame(maxWidth: .infinity)
             }
+            .buttonStyle(.bordered)
         }
     }
 }

@@ -51,6 +51,16 @@ final class FullTextAutoFetchTests: XCTestCase {
         XCTAssertEqual(FullTextAutoFetch.minimumScore(minScoreThreshold: 5), 5)
     }
 
+    /// The user's full-text score replaces the default, never below their threshold.
+    func testTheUsersFullTextScoreSetsTheFloor() {
+        XCTAssertEqual(FullTextAutoFetch.minimumScore(minScoreThreshold: 2, autoFetchMinScore: 3), 3)
+        XCTAssertEqual(FullTextAutoFetch.minimumScore(minScoreThreshold: 4, autoFetchMinScore: 3), 4)
+
+        let docs = (1...5).map { (n: Int) in makeDocument(pmid: String(n), score: n) }
+        let picked = FullTextAutoFetch.documentsToFetch(from: docs, minScoreThreshold: 2, autoFetchMinScore: 3)
+        XCTAssertEqual(picked.map { $0.pmid }, ["3", "4", "5"])
+    }
+
     // MARK: - Selection
 
     func testOnlyScoresFourAndFiveAreFetched() {
@@ -89,6 +99,19 @@ final class FullTextAutoFetchTests: XCTestCase {
         document.markFullTextUnavailable()
 
         XCTAssertTrue(FullTextAutoFetch.documentsToFetch(from: [document], minScoreThreshold: 3).isEmpty)
+    }
+
+    /// A retry the reader asks for asks again: a source may have gained a copy.
+    /// A paper that has its full text is still not fetched.
+    func testARetryAsksAgainForAPaperKnownToHaveNoFullText() {
+        let missing = makeDocument(pmid: "1")
+        missing.markFullTextUnavailable()
+        let held = makeDocument(pmid: "2")
+        held.fullTextContent = "Body text."
+
+        let picked = FullTextAutoFetch.documentsToFetch(from: [missing, held], minScoreThreshold: 3, retrying: true)
+
+        XCTAssertEqual(picked.map { $0.pmid }, ["1"])
     }
 
     /// A PDF link stored without a file or text is fetched again (#464): how

@@ -230,6 +230,9 @@ final class FactCheckSession {
     /// Returns true if:
     /// - More documents available from any active provider, OR
     /// - Smart search hasn't been tried yet (can generate alternative queries)
+    ///
+    /// Beyond these, smart search can always run a fresh round of different
+    /// queries, so this marks untried sources, not whether more can be asked for.
     var canGetMoreEvidence: Bool {
         canFetchMoreFromAnyProvider || !smartSearchEnabled
     }

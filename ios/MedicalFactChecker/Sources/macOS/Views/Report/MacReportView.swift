@@ -37,11 +37,6 @@ struct MacReportView: View {
     @State private var selectedDocument: Document?
     @State private var exportFormat: ExportFormat = .pdf
 
-    /// Whether more evidence can be fetched for this session.
-    private var canGetMoreEvidence: Bool {
-        report?.session?.canGetMoreEvidence ?? false
-    }
-
     /// Whether the workflow is currently running (fetching more evidence).
     private var isFetchingEvidence: Bool {
         workflow?.isRunning ?? false
@@ -119,8 +114,8 @@ struct MacReportView: View {
                         costSection(session)
                     }
 
-                    // Get More Evidence
-                    if workflow != nil && canGetMoreEvidence {
+                    // Get More Evidence: smart search can always run a fresh round
+                    if workflow != nil {
                         getMoreEvidenceSection(report.session)
                     }
 
@@ -376,7 +371,7 @@ struct MacReportView: View {
         } else if !session.smartSearchEnabled {
             return "Smart search available - will try alternative query strategies"
         } else {
-            return "All evidence sources have been exhausted"
+            return "Smart search can run a fresh round of different alternative queries"
         }
     }
 

@@ -48,11 +48,6 @@ struct ReportContentView: View {
         horizontalSizeClass == .regular ? 800 : .infinity
     }
 
-    /// Whether more evidence can be fetched for this session.
-    private var canGetMoreEvidence: Bool {
-        report.session?.canGetMoreEvidence ?? false
-    }
-
     /// Whether the workflow is currently running (fetching more evidence).
     private var isFetchingEvidence: Bool {
         workflow?.isRunning ?? false
@@ -191,8 +186,8 @@ struct ReportContentView: View {
                 CostSection(session: session)
             }
 
-            // Get More Evidence button
-            if onRequestMoreEvidence != nil && canGetMoreEvidence {
+            // Get More Evidence button: smart search can always run a fresh round
+            if onRequestMoreEvidence != nil {
                 GetMoreEvidenceSection(
                     session: report.session,
                     isFetching: isFetchingEvidence,
@@ -331,11 +326,6 @@ struct ReportView: View {
         horizontalSizeClass == .regular ? 800 : .infinity
     }
 
-    /// Whether more evidence can be fetched for this session.
-    private var canGetMoreEvidence: Bool {
-        report.session?.canGetMoreEvidence ?? false
-    }
-
     /// Whether the workflow is currently running (fetching more evidence).
     private var isFetchingEvidence: Bool {
         workflow?.isRunning ?? false
@@ -442,8 +432,8 @@ struct ReportView: View {
                         CostSection(session: session)
                     }
 
-                    // Get More Evidence button
-                    if workflow != nil && canGetMoreEvidence {
+                    // Get More Evidence button: smart search can always run a fresh round
+                    if workflow != nil {
                         GetMoreEvidenceSection(
                             session: report.session,
                             isFetching: isFetchingEvidence,
@@ -1620,7 +1610,7 @@ struct GetMoreEvidenceSection: View {
         } else if !session.smartSearchEnabled {
             return "Smart search available (alternative queries)"
         } else {
-            return "All sources exhausted"
+            return "Smart search can run a fresh round of different alternative queries"
         }
     }
 
