@@ -39,12 +39,11 @@ have landed):
 - **#597 merged**: export copy, Crossref lookups, checker and
   `retraction_checks` table, screening, the review choke point, audit, report,
   MCP, badges/banner, `bmll retractions-update`. Lodged #595, #599–#602.
-- **PR 3** (`feat/retraction-desktop-3`, rebased on master after #597): saved
+- **PR 3 = #605, open** (`feat/retraction-desktop-3`): saved
   work (reopened question, saved report file, *Check again*; snapshot rows
   keep `run_status`/`run_deciding` as facts of the run, normalised by
   `from_snapshot` like `status`/`deciding`), the Research Questions passes
-  screened, MCP's `fact_check_claim` refreshes the export. Its parked
-  residuals are lodged (see the PR).
+  screened, MCP's `fact_check_claim` refreshes the export. Lodged #603, #604.
 - **Next after merge:** delete the worktree `.claude/worktrees/retraction-desktop`
   (its SDD ledger is no longer needed), then the iOS and Android plans (they
   consume bmlib's FFI; pin and CI are #588), against the same contract.
