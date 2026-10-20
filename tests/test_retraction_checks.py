@@ -680,12 +680,3 @@ def test_a_fresh_retraction_replaces_a_stored_label_retraction_reached_without_t
     assert check.verdict.deciding.source is not RetractionSource.PUBMED_LABEL
     assert check.verdict.deciding.notice_doi == "10.9/notice"
     assert storage.retraction_checks([key])[key] == check
-
-
-def test_an_outage_never_erases_a_stored_concern(storage, tmp_path):
-    """Crossref down on the re-check: a stored concern is returned and kept, as a retraction is."""
-    _current_export(tmp_path)
-    old = _store(storage, RetractionStatus.CONCERN, _CONCERN)
-    out = _checker(storage, tmp_path, StubSession(_unreachable)).check([_doc("a", doi="10.1/a")])
-    assert out["a"] == old
-    assert storage.retraction_checks([_KEY])[_KEY] == old

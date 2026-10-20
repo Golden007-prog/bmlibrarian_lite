@@ -180,7 +180,9 @@ class RetractionScreen:
         ``excluded`` is a strict bool (only ``true`` left a paper out), an
         unknown ``status`` reads as unchecked, a missing ``title`` as "", a
         ``deciding`` that is not a mapping as none and an unreadable
-        ``checked_at`` as none. A row is kept through all of these, so a
+        ``checked_at`` as none; ``run_status`` and ``run_deciding``, when
+        present, are read like ``status`` and ``deciding``, except that a
+        ``run_status`` of none (not recorded) stays none. A row is kept through all of these, so a
         paper left out never reads as not scored; only a row without
         ``document_id`` or ``status`` is skipped with a warning.
 
@@ -208,10 +210,17 @@ class RetractionScreen:
             if read["status"] not in known:
                 logger.warning("A retraction snapshot row's status is unknown; read as unchecked")
                 read["status"] = RetractionStatus.UNCHECKED.value
+            # a None run_status is a run saved before the feature: "not recorded", kept as is
+            run_status = read.get(RUN_STATUS_KEY)
+            if run_status is not None and run_status not in known:
+                logger.warning("A retraction snapshot row's run status is unknown; read as unchecked")
+                read[RUN_STATUS_KEY] = RetractionStatus.UNCHECKED.value
             read["excluded"] = read.get("excluded") is True
             read["title"] = str(read.get("title") or "")
             if not isinstance(read.get("deciding"), Mapping):
                 read["deciding"] = None
+            if RUN_DECIDING_KEY in read and not isinstance(read[RUN_DECIDING_KEY], Mapping):
+                read[RUN_DECIDING_KEY] = None
             out[str(read["document_id"])] = read
         return out
 

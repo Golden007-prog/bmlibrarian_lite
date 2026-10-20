@@ -62,10 +62,11 @@ paper with its `retraction_status`.
   built, the database raised) still leaves out a paper its label retracts.
 - **A failed store is not a failed check.** The verdicts are returned even
   when they could not be stored.
-- **Only the review downloads the export.** A copy older than
+- **Only the review-like workflows download the export.** A copy older than
   `RETRACTION_WATCH_MAX_AGE_DAYS` (35) is not consulted; the review's checker
-  downloads a new one (about 68 MB) once per run, and Cancel or quit stops
-  it. MCP and the interrogation tab use the copy there is.
+  and MCP's `fact_check_claim` download a new one (about 68 MB) once per run,
+  and Cancel or quit stops it. MCP's single-paper tools and the
+  interrogation tab use the copy there is.
   `bmll retractions-update` refreshes it by hand.
 - **A shrunken export is refused.** A new copy holding fewer than
   `RETRACTION_WATCH_MIN_KEEP_RATIO` (95%) of the old copy's notices is a
@@ -75,7 +76,9 @@ paper with its `retraction_status`.
   no DOI, no usable Crossref answer, no identifiers, or a cancel. A restored
   report gives the count only, as its snapshot does not record why.
 - **`excluded` is a fact of the run.** Snapshot rows record whether the run
-  left a paper out; a later re-check may change `status`, never that.
+  left a paper out; a later re-check (*Check again*) may change `status`,
+  never that. It keeps the run's own status and notice as `run_status` and
+  `run_deciding`, which the audit counts and the "left out" lines read.
 
 ## Tests
 
