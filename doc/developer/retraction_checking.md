@@ -8,8 +8,10 @@ bmlib#504); lite's copy of its contract fixture is
 
 ## What It Does
 
-Every paper a systematic review, an MCP tool or the interrogation tab holds
-is checked against three sources:
+Every paper a systematic review, an MCP tool, the interrogation tab or a
+Research Questions pass (re-score, re-classify, transparency, benchmark)
+holds is checked against three sources, and a saved run's papers again on
+*Check again*:
 
 - **Retraction Watch's export**, a local SQLite copy in the data directory
   (`retraction_watch.db`), rebuilt whole on every refresh.
@@ -43,7 +45,12 @@ paper with its `retraction_status`.
   and replacing stored verdicts; `build_retraction_checker`.
 - `retraction_screen.py`: pure. `RetractionScreen` splits documents into kept
   and excluded; `screen_with_fallback` never lets a failed check stop the
-  caller; `RetractionSnapshot` rebuilds what a stored report needs.
+  caller; `RetractionSnapshot` rebuilds what a stored report needs. For saved
+  work: `stored_checks` (in `retraction_checks.py`) reads the shared rows,
+  `latest_checks` and `changed_since_snapshot` decide what a reopen warns of,
+  and `rechecked_snapshot` writes *Check again*'s answers into the run's
+  snapshot (a checkpoint's metadata, or a report file's `*_audit.json`,
+  replaced whole through a temp file in the same directory).
 - `retraction_text.py`: the shared reader-facing sentences.
 - `gui/retraction_badge.py`: the RETRACTED / CONCERN / NOT CHECKED badge.
 
@@ -63,10 +70,11 @@ paper with its `retraction_status`.
 - **A failed store is not a failed check.** The verdicts are returned even
   when they could not be stored.
 - **Only the review-like workflows download the export.** A copy older than
-  `RETRACTION_WATCH_MAX_AGE_DAYS` (35) is not consulted; the review's checker
-  and MCP's `fact_check_claim` download a new one (about 68 MB) once per run,
-  and Cancel or quit stops it. MCP's single-paper tools and the
-  interrogation tab use the copy there is.
+  `RETRACTION_WATCH_MAX_AGE_DAYS` (35) is not consulted; the review's checker,
+  *Check again* and MCP's `fact_check_claim` download a new one (about 68 MB)
+  once per run. Cancel or quit stops the review's and *Check again*'s
+  download; MCP's runs to the end. MCP's single-paper tools, the
+  interrogation tab and the Research Questions passes use the copy there is.
   `bmll retractions-update` refreshes it by hand.
 - **A shrunken export is refused.** A new copy holding fewer than
   `RETRACTION_WATCH_MIN_KEEP_RATIO` (95%) of the old copy's notices is a
@@ -77,8 +85,12 @@ paper with its `retraction_status`.
   report gives the count only, as its snapshot does not record why.
 - **`excluded` is a fact of the run.** Snapshot rows record whether the run
   left a paper out; a later re-check (*Check again*) may change `status`,
-  never that. It keeps the run's own status and notice as `run_status` and
-  `run_deciding`, which the audit counts and the "left out" lines read.
+  never that. *Check again* keeps the run's own status and notice as
+  `run_status` and `run_deciding`, set once, which the audit counts and the
+  "left out" lines read; a `run_status` of `None` means the run's check was
+  not recorded. A report file's papers carry the PubMed label their snapshot
+  rows were decided by, so a re-check on another machine does not clear a
+  paper only its label retracts.
 
 ## Tests
 

@@ -194,7 +194,8 @@ def leave_out_retracted(
 
     A pass over a question's documents would otherwise let papers the review
     left out back into scoring, classification or a benchmark. A check that
-    fails leaves every paper in, unchecked, and the clause says so.
+    fails leaves every paper in but those whose own PubMed label retracts
+    them, the rest unchecked, and the clause says so.
 
     Args:
         checker: The pass's retraction checker; ``None`` screens nothing
@@ -216,12 +217,16 @@ def leave_out_retracted(
 
 
 class RetractionRecheckWorker(SingleOutcome, QThread):
-    """Checks a reopened question's papers again (*Check again*), off the GUI thread.
+    """Checks a saved run's papers again (*Check again*), off the GUI thread.
+
+    The run is a reopened question's checkpoint, or a loaded report file
+    (its id then starts with ``file:``).
 
     Signals:
         rechecked: Emitted with the checkpoint id and the ``RetractionScreen``.
-            A check that fails is a failed screen (every paper unchecked),
-            never an error: the run's record is then left as it was.
+            A check that fails is a failed screen (every paper unchecked but
+            those the record's own label retracts), never an error: the
+            run's record is then left as it was.
         cancelled: Emitted with the checkpoint id when a cancel (at quit)
             stopped the run; nothing is to be saved.
 
@@ -242,8 +247,10 @@ class RetractionRecheckWorker(SingleOutcome, QThread):
 
         Args:
             checker: A ``RetractionChecker`` built for this one use.
-            documents: Every document linked to the question.
-            checkpoint_id: The run whose snapshot the result updates.
+            documents: The run's papers: every document linked to the
+                question, or the papers a report file holds.
+            checkpoint_id: The run whose snapshot the result updates (a
+                checkpoint id, or ``file:`` and the report's path).
             parent: The tab the worker belongs to.
         """
         super().__init__(parent)

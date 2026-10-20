@@ -225,10 +225,11 @@ CHECKING_AGAIN_LINE = "Checking retraction status…"
 CHECK_AGAIN_FAILED = "; it could not be checked again, so this is still the run's record"
 CHECK_AGAIN_NOT_SAVED = "; the new status could not be saved with this run"
 NO_AUDIT_RECORD_LINE = "Retraction status not recorded for this report"
+STORED_CHECKS_UNREAD = "; later checks could not be read"
 
 
 def not_checked_again_clause(count: int) -> str:
-    """*Check again*'s note for papers no source answered, whose record stays as it was; "" for none."""
+    """*Check again*'s note for decided papers no source answered this time, whose record stays; "" for none."""
     if not count:
         return ""
     return f"; {'1 paper' if count == 1 else f'{count:,} papers'} could not be checked again"

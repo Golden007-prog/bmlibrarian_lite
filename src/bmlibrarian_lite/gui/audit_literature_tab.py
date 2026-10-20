@@ -92,7 +92,8 @@ class AuditLiteratureTab(QWidget):
         # A finding, or why the document has none: a failed analysis and an
         # analysis still running used to look identical here (#361).
         self._transparency_outcomes: Dict[str, TransparencyOutcome] = {}
-        # doc id -> (check, whether the run left the paper out as retracted)
+        # doc id -> (current check, whether the run left the paper out as
+        # retracted, the check as the run saw it or None)
         self._retractions: dict[str, tuple[PaperCheck, bool, PaperCheck | None]] = {}
 
         # Thread safety

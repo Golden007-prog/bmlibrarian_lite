@@ -15,6 +15,7 @@ from typing import Any, Protocol
 from bmlib.publications.retraction_status import (
     RetractionEvidence,
     RetractionLookup,
+    RetractionSource,
     RetractionStatus,
     RetractionVerdict,
     retraction_status,
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 _SNAPSHOT_REQUIRED = ("document_id", "status")
 #: The status the run saw, kept in a row once *Check again* rewrites ``status``;
-#: ``None`` in a row *Check again* added to a run that was never checked
+#: ``None`` in a row *Check again* added to a run whose check was not recorded
 RUN_STATUS_KEY = "run_status"
 #: The deciding notice the run saw, kept beside ``run_status``
 RUN_DECIDING_KEY = "run_deciding"
@@ -59,9 +60,25 @@ def run_status_of(row: Mapping[str, Any]) -> str | None:
     return row[RUN_STATUS_KEY] if RUN_STATUS_KEY in row else row.get("status")
 
 
-def run_deciding_of(row: Mapping[str, Any]) -> Any:
+def run_deciding_of(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The deciding notice (a dict, or ``None``) the run saw in a snapshot row."""
     return row[RUN_DECIDING_KEY] if RUN_DECIDING_KEY in row else row.get("deciding")
+
+
+def label_types_of(row: Mapping[str, Any]) -> list[str] | None:
+    """The PubMed labels a snapshot row's notices were read from; ``None`` without one.
+
+    A paper rebuilt from a saved report carries no publication types, so
+    without these a check would clear a paper only its label retracts: an
+    unread label is not a lifted one.
+    """
+    labels = {
+        notice.get("raw_kind")
+        for notice in (row.get("deciding"), run_deciding_of(row))
+        if isinstance(notice, Mapping) and notice.get("source") == RetractionSource.PUBMED_LABEL.value
+    }
+    kinds = sorted(label for label in labels if isinstance(label, str) and label)
+    return kinds or None
 
 
 def as_the_run_saw_it(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -377,7 +394,10 @@ def screen_with_fallback(
         )
     except Exception as e:
         # the type only: provider text never reaches the reader or the log
-        logger.warning("Retraction check failed (%s); every document unchecked", type(e).__name__)
+        logger.warning(
+            "Retraction check failed (%s); every document unchecked but those their label retracts",
+            type(e).__name__,
+        )
         return screen_documents(
             documents, {doc.id: _label_check(doc) for doc in documents}, failed=True
         )
@@ -465,8 +485,10 @@ def rechecked_snapshot(
     stays as the run recorded it, and ``run_status`` and ``run_deciding`` keep
     what the run saw, set once and never overwritten: a later reopen still
     warns, and why the run left a paper out stays its own (``None`` status
-    for a run that was never checked). An unchecked answer never replaces a
-    decided row (an outage is not knowledge; the checker's own rule), and a
+    for a run whose check was not recorded). A row's status is the run's
+    even without a check time: a failed run's label still retracted. An
+    unchecked answer never replaces a decided row (an outage is not
+    knowledge; the checker's own rule), and a
     document the check did not reach keeps its row. Only the run's own
     documents are written: a document another run linked gets a row only
     when the run has no snapshot (it predates the check). A failed check
@@ -493,11 +515,7 @@ def rechecked_snapshot(
             and old.get("status", RetractionStatus.UNCHECKED.value) != RetractionStatus.UNCHECKED.value
         ):
             continue
-        run_status = (
-            (old.get("status") if old.get("checked_at") else RetractionStatus.UNCHECKED.value)
-            if old
-            else None  # no row: the run was never checked
-        )
+        run_status = old.get("status") if old else None  # no row: the run's check not recorded
         rows[doc_id] = {
             **row,
             "excluded": old.get("excluded") is True,
@@ -524,7 +542,8 @@ def check_from_snapshot_row(row: Mapping[str, Any]) -> PaperCheck | None:
                 RetractionEvidence.from_dict(deciding) if deciding else None,
                 tuple(RetractionLookup) if status is RetractionStatus.UNCHECKED else (),
             ),
-            # nothing displays checked_at; a row without one gets a stand-in
+            # a row without one (a failed run's) gets a stand-in, which latest_checks
+            # sees only for rows Check again wrote, and those carry their time
             as_utc(datetime.fromisoformat(stamp)) if stamp else datetime.now(UTC),
             None,
             None,

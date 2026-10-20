@@ -350,7 +350,8 @@ def build_retraction_checker(
         config: The application's configuration.
         storage: Where verdicts are stored.
         refresh_export: Whether the checker may download the export (the
-            review does; a single-paper check does not).
+            review, *Check again* and MCP's ``fact_check_claim`` do; a
+            single-paper check and a Research Questions pass do not).
 
     Returns:
         A checker over the storage and the configured data directory.

@@ -666,7 +666,8 @@ class ResearchQuestionsTab(QWidget):
     def _retraction_checker(self) -> RetractionChecker | UnbuiltChecker:
         """A checker for one pass, so retracted papers stay out of it.
 
-        It never downloads the export (only the review and *Check again* do).
+        It never downloads the export (the review, *Check again* and MCP's
+        ``fact_check_claim`` do).
         Building does no I/O, so it runs here on the GUI thread; the check
         itself runs in the pass's worker.
 

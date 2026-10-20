@@ -442,7 +442,8 @@ def _screen(
         refresh_export: Passed to the checker.
 
     Returns:
-        The screen; a failed check leaves every document unchecked.
+        The screen; a failed check leaves every document unchecked but
+        those the record's own label retracts.
     """
     checker: RetractionChecker | UnbuiltChecker
     try:
@@ -950,7 +951,7 @@ def _handle_fulltext(args: dict[str, Any], ctx: _AgentsContext) -> dict[str, Any
     # What discovery learned stands in for an identifier the request lacked
     document = LiteDocument(
         id=doc_id,
-        source=DocumentSource.EUROPEPMC,  # ArticleInfo is Europe PMC's record
+        source=DocumentSource.EUROPEPMC,  # found by Europe PMC's discovery; ArticleInfo is its record
         title=info.title if info else "",
         abstract=info.abstract if info else "",
         authors=list(info.authors) if info else [],

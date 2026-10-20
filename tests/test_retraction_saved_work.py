@@ -12,6 +12,8 @@ Fake checkers only; workers are run headless (``run()`` called directly).
 from __future__ import annotations
 
 import json
+import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any
@@ -28,6 +30,7 @@ from bmlib.publications.retraction_status import (  # noqa: E402
     RetractionSource,
     RetractionStatus,
     RetractionVerdict,
+    retraction_status,
 )
 
 from bmlibrarian_lite.audit_records import (  # noqa: E402
@@ -47,13 +50,21 @@ from bmlibrarian_lite.gui.report_tab import ReportTab  # noqa: E402
 from bmlibrarian_lite.gui.workers import RetractionRecheckWorker  # noqa: E402
 from bmlibrarian_lite.retraction_checks import paper_key  # noqa: E402
 from bmlibrarian_lite.retraction_screen import (  # noqa: E402
+    as_the_run_saw_it,
     changed_since_snapshot,
+    check_from_snapshot_row,
+    label_types_of,
     latest_checks,
     rechecked_snapshot,
     screen_documents,
+    screen_with_fallback,
 )
 from bmlibrarian_lite.retraction_store import PaperCheck  # noqa: E402
-from bmlibrarian_lite.retraction_text import CHECK_AGAIN_NOT_SAVED  # noqa: E402
+from bmlibrarian_lite.retraction_text import (  # noqa: E402
+    CHECK_AGAIN_NOT_SAVED,
+    NO_AUDIT_RECORD_LINE,
+    STORED_CHECKS_UNREAD,
+)
 from bmlibrarian_lite.storage import LiteStorage  # noqa: E402
 
 QUESTION = "Does aspirin prevent stroke?"
@@ -1183,4 +1194,292 @@ def test_a_malformed_audit_json_is_not_saved_and_left_alone(
         screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.RETRACTED, NOW)}),
     )
     assert audit_path.read_text(encoding="utf-8") == "{not json"
+    assert CHECK_AGAIN_NOT_SAVED in tab.retraction_line.text()
+
+
+# ---------------------------------------------------------------------------
+# Review round: the run's record, unread labels, unread stores
+# ---------------------------------------------------------------------------
+
+LABEL = ["Retracted Publication"]
+
+
+class DownChecker:
+    """A checker whose every check raises."""
+
+    def check(self, *_args: Any, **_kwargs: Any) -> None:
+        """Fail as an unreachable database would."""
+        raise sqlite3.OperationalError("database is locked")
+
+    def close(self) -> None:
+        """Nothing to close."""
+
+
+def test_a_failed_runs_label_retraction_stays_the_runs_after_check_again(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's check failed, its label still left a paper out: Check again keeps that as the run's status."""
+    labelled = replace(LEFT_OUT, publication_types=LABEL)
+    failed = screen_with_fallback(DownChecker(), [CITED, UNCITED, labelled])
+    assert failed.failed and [d.id for d in failed.excluded] == [LEFT_OUT.id]
+    metadata = json.loads(json.dumps(checkpoint_metadata_with_retraction_snapshot({}, failed)))
+    checkpoint_id = saved_checkpoint(storage, metadata)
+    reopen(tab, recorded_retraction_snapshot(metadata), checkpoint_id)
+    before = tab._audit_trail_data()["workflow_summary"]
+    assert (before["documents_retraction_unchecked"], before["documents_excluded_retracted"]) == (2, 1)
+
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS})
+
+    rows = recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata)
+    row = rows[LEFT_OUT.id]
+    assert row["run_status"] == "retracted" and row["excluded"] is True
+    assert row["run_deciding"]["source"] == RetractionSource.PUBMED_LABEL.value
+    run_check = check_from_snapshot_row(as_the_run_saw_it(row))
+    assert run_check is not None and run_check.verdict.status is RetractionStatus.RETRACTED
+    # control: the run's unchecked papers stay unchecked as the run saw them
+    assert rows[CITED.id]["run_status"] == rows[UNCITED.id]["run_status"] == "unchecked"
+    reopen(tab, rows, checkpoint_id)
+    after = tab._audit_trail_data()["workflow_summary"]
+    assert (after["documents_retraction_unchecked"], after["documents_excluded_retracted"]) == (2, 1)
+
+
+def test_label_types_of_reads_the_runs_and_the_current_pubmed_label() -> None:
+    """Only notices from PubMed's label give types; anything else gives none."""
+    label = retraction_status(doi=None, export=None, crossref=None, publication_types=LABEL).deciding
+    assert label is not None and label.source is RetractionSource.PUBMED_LABEL
+    assert label_types_of({"deciding": label.to_dict()}) == LABEL
+    assert label_types_of({"deciding": None, "run_deciding": label.to_dict()}) == LABEL
+    assert label_types_of({"deciding": NOTICE.to_dict()}) is None
+    assert label_types_of({"deciding": None}) is None
+    assert label_types_of({"deciding": "garbage", "run_deciding": {"source": "pubmed_label"}}) is None
+
+
+def test_a_files_check_again_carries_the_label_its_snapshot_was_decided_by(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another machine has no record of the paper: the checker is still given the run's label."""
+    label_check = PaperCheck(
+        retraction_status(doi=None, export=None, crossref=None, publication_types=LABEL), LATER_RUN, None, None
+    )
+    report_path = saved_with_left_out(
+        tab,
+        recorded_retraction_snapshot(
+            json.loads(
+                json.dumps(
+                    checkpoint_metadata_with_retraction_snapshot(
+                        {}, screen_documents(DOCUMENTS, {**run_checks(), LEFT_OUT.id: label_check})
+                    )
+                )
+            )
+        ),
+    )
+    load(tab, report_path, monkeypatch)
+    given: list[LiteDocument] = []
+
+    class Capturing(RecordingChecker):
+        def check(self, documents: Any, **kwargs: Any) -> dict[str, PaperCheck]:
+            given.extend(documents)
+            return super().check(documents, **kwargs)
+
+    monkeypatch.setattr(report_tab_module, "build_retraction_checker", lambda *_a, **_k: Capturing(storage, {}))
+    monkeypatch.setattr(RetractionRecheckWorker, "start", RetractionRecheckWorker.run)
+    tab.check_again_btn.click()
+    types = {d.id: d.publication_types for d in given}
+    assert types == {CITED.id: None, UNCITED.id: None, LEFT_OUT.id: LABEL}
+
+
+def test_a_failed_store_read_on_reopen_says_so_and_still_warns(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Not knowing later checks is not "no change": the line says so; the snapshot's own warning stands."""
+    def unreadable(*_a: Any) -> None:
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(report_tab_module, "stored_checks", unreadable)
+    reopen(tab, rechecked_retracted())
+    assert tab.retraction_line.text() == "Retraction status checked 2026-10-15" + STORED_CHECKS_UNREAD
+    assert CITED.title in tab.retraction_warning.text()
+    # control: a store that reads adds no such clause
+    monkeypatch.setattr(report_tab_module, "stored_checks", lambda *_a: {})
+    reopen(tab, rechecked_retracted())
+    assert STORED_CHECKS_UNREAD not in tab.retraction_line.text()
+
+
+def test_a_file_screened_without_a_snapshot_reads_as_not_recorded(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Saved before reports kept a snapshot, its summary says it was screened: never "never checked"."""
+    report_path = saved_with_left_out(tab, run_snapshot())
+    audit_path = audit_of(report_path)
+    audit = json.loads(audit_path.read_text(encoding="utf-8"))
+    del audit["retraction"]
+    assert audit["workflow_summary"]["documents_excluded_retracted"] == 1
+    audit_path.write_text(json.dumps(audit), encoding="utf-8")
+    load(tab, report_path, monkeypatch)
+    assert tab.retraction_line.text() == NO_AUDIT_RECORD_LINE
+    assert not tab.check_again_btn.isHidden()
+    # a reopened question afterwards is not taken for that file
+    reopen(tab, None)
+    assert tab.retraction_line.text() == "Retraction status never checked"
+
+
+def test_a_check_again_not_saved_after_the_reader_moved_on_is_said_on_return(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run's checkpoint is gone by the time the answer comes: said when that run is shown again."""
+    reopen(tab, run_snapshot(), "other")
+    screen = screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    tab._on_rechecked("gone", screen)
+    assert CHECK_AGAIN_NOT_SAVED not in tab.retraction_line.text()  # another run is shown
+    reopen(tab, run_snapshot(), "gone")
+    assert tab.retraction_line.text().endswith(CHECK_AGAIN_NOT_SAVED)
+    # a later Check again that is saved clears it
+    checkpoint_id = saved_checkpoint(storage, checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, run_checks())))
+    tab._unsaved_rechecks.add(checkpoint_id)
+    reopen(tab, run_snapshot(), checkpoint_id)
+    assert tab.retraction_line.text().endswith(CHECK_AGAIN_NOT_SAVED)
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS})
+    reopen(tab, recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata), checkpoint_id)
+    assert CHECK_AGAIN_NOT_SAVED not in tab.retraction_line.text()
+
+
+def test_check_again_on_an_older_run_leaves_the_newer_one_reopened(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A note on an old run must not make it the question's latest."""
+    metadata = checkpoint_metadata_with_retraction_snapshot({}, screen_documents(DOCUMENTS, run_checks()))
+    older = saved_checkpoint(storage, metadata)
+    newer = saved_checkpoint(storage, metadata)
+    assert storage.get_checkpoint_for_question(QUESTION).id == newer
+    stamp = storage.get_checkpoint(older).updated_at
+    reopen(tab, recorded_retraction_snapshot(metadata), older)
+    run_check_again(tab, storage, monkeypatch, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    assert recorded_retraction_snapshot(storage.get_checkpoint(older).metadata)[CITED.id]["status"] == "retracted"
+    assert storage.get_checkpoint(older).updated_at == stamp
+    assert storage.get_checkpoint_for_question(QUESTION).id == newer
+    storage.update_checkpoint(older, touch=False)  # nothing to write: no statement at all
+
+
+def test_a_pre_feature_run_checked_again_twice_stays_not_recorded(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A second Check again never turns "not recorded" into the first one's answer."""
+    checkpoint_id = saved_checkpoint(storage, {})
+    reopen(tab, None, checkpoint_id)
+    clear = {d.id: check(RetractionStatus.CLEAR, NOW) for d in DOCUMENTS}
+    run_check_again(tab, storage, monkeypatch, clear)
+    reopen(tab, recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata), checkpoint_id)
+    run_check_again(tab, storage, monkeypatch, {d.id: check(RetractionStatus.CLEAR, NOW + timedelta(days=1)) for d in DOCUMENTS})
+    rows = recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata)
+    assert {r["run_status"] for r in rows.values()} == {None}
+    reopen(tab, rows, checkpoint_id)
+    summary = tab._audit_trail_data()["workflow_summary"]
+    assert summary["documents_excluded_retracted"] is None
+    assert summary["documents_retraction_unchecked"] is None
+
+
+def test_a_pre_feature_run_warns_of_a_cited_paper_check_again_found_retracted(
+    tab: ReportTab, storage: LiteStorage, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run never checked the paper, so a retraction found since is news, now and on every reopen."""
+    checkpoint_id = saved_checkpoint(storage, {})
+    reopen(tab, None, checkpoint_id)
+    run_check_again(tab, storage, monkeypatch, {CITED.id: check(RetractionStatus.RETRACTED, NOW)})
+    assert CITED.title in tab.retraction_warning.text()
+    reopen(tab, recorded_retraction_snapshot(storage.get_checkpoint(checkpoint_id).metadata), checkpoint_id)
+    assert CITED.title in tab.retraction_warning.text()
+
+
+def test_a_second_check_again_waits_for_the_first(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One at a time: the button is off and a click starts nothing while one runs."""
+    reopen(tab, run_snapshot())
+    tab._recheck_worker = MagicMock()
+    forbid_requests(monkeypatch)
+    reopen(tab, run_snapshot())
+    assert not tab.check_again_btn.isEnabled()
+    tab._check_again()
+    tab._recheck_worker = None
+    reopen(tab, run_snapshot())
+    assert tab.check_again_btn.isEnabled()  # control
+
+
+def test_building_the_report_tab_hooks_quit(qapp: Any, storage: LiteStorage) -> None:
+    """Check again may be downloading the export: the tab is told when the app quits."""
+    from PySide6.QtCore import SIGNAL
+
+    hooked = qapp.receivers(SIGNAL("aboutToQuit()"))
+    widget = ReportTab(config=LiteConfig(), storage=storage)
+    assert qapp.receivers(SIGNAL("aboutToQuit()")) == hooked + 1
+    qapp.aboutToQuit.disconnect(widget._cancel_at_quit)
+
+
+def test_a_pass_whose_check_fails_goes_on_and_says_so(monkeypatch: pytest.MonkeyPatch, qapp: Any) -> None:
+    """Every paper is worked on but the one its label retracts, and the clause says the check failed."""
+    from bmlibrarian_lite.gui.workers import ReclassifyWorker
+    from bmlibrarian_lite.quality.data_models import StudyClassification, StudyDesign
+
+    seen: list[str] = []
+
+    class Classifier:
+        def __init__(self, config: Any) -> None:
+            pass
+
+        def classify(self, document: LiteDocument) -> StudyClassification:
+            seen.append(document.id)
+            return StudyClassification(study_design=StudyDesign.RCT, confidence=0.9)
+
+    monkeypatch.setattr("bmlibrarian_lite.quality.study_classifier.LiteStudyClassifier", Classifier)
+    labelled = replace(LEFT_OUT, publication_types=LABEL)
+    worker = ReclassifyWorker(LiteConfig(), MagicMock(), [CITED, UNCITED, labelled], retraction_checker=DownChecker())
+    said = watch(worker)
+    worker.run()
+    assert seen == [CITED.id, UNCITED.id]
+    assert said == ["1 retracted paper left out; 2 papers' retraction status could not be checked: the check failed"]
+
+
+@pytest.mark.parametrize(
+    ("handler", "args"),
+    [
+        ("_on_benchmark_error", ("boom",)),
+        ("_on_benchmark_cancelled", (None, "boom")),
+        ("_on_reclassify_finished", ("outcome",)),
+        ("_on_reclassify_error", ("boom",)),
+        ("_on_reclassify_cancelled", ("outcome", "boom")),
+        ("_on_rescore_finished", ("outcome",)),
+        ("_on_rescore_error", ("boom",)),
+        ("_on_rescore_cancelled", ("outcome", "boom")),
+        ("_on_transparency_finished", ("outcome",)),
+        ("_on_transparency_error", ("boom",)),
+        ("_on_transparency_cancelled", ("outcome", "boom")),
+    ],
+)
+def test_every_pass_dialog_names_the_papers_left_out(questions_tab: Any, handler: str, args: tuple[Any, ...]) -> None:
+    """Whatever ends a pass, its dialog carries the left-out note."""
+    from bmlibrarian_lite.data_models import PassOutcome
+
+    boxes = questions_module.QMessageBox
+    questions_tab._on_retractions_screened("1 retracted paper left out", [LEFT_OUT.title])
+    outcome = PassOutcome(succeeded=2, total=2)
+    getattr(questions_tab, handler)(*(outcome if a == "outcome" else a for a in args))
+    shown = [c for kind in ("information", "warning", "critical") for c in getattr(boxes, kind).call_args_list]
+    assert shown, "no dialog"
+    assert shown[-1].args[2].endswith(f"Retraction check: 1 retracted paper left out.\n• {LEFT_OUT.title}")
+    assert questions_tab.progress_label.text().endswith("; 1 retracted paper left out.")
+
+
+def test_an_audit_json_that_is_not_an_object_is_not_saved_and_left_alone(
+    tab: ReportTab, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Valid JSON of the wrong shape at rewrite time: not-saved wording, bytes unchanged, no raise."""
+    report_path = save_report(tab, run_snapshot())
+    load(tab, report_path, monkeypatch)
+    audit_path = audit_of(report_path)
+    audit_path.write_text("[]", encoding="utf-8")
+    tab._on_rechecked(
+        "file:" + str(report_path),
+        screen_documents(DOCUMENTS, {CITED.id: check(RetractionStatus.RETRACTED, NOW)}),
+    )
+    assert audit_path.read_text(encoding="utf-8") == "[]"
     assert CHECK_AGAIN_NOT_SAVED in tab.retraction_line.text()
