@@ -167,8 +167,7 @@ final class WorkflowCancelTests: XCTestCase {
     }
 
     /// With the original query exhausted and smart search already run, a
-    /// request for more evidence returned at once and found nothing: it now
-    /// runs a fresh round of alternative queries.
+    /// request for more evidence runs a fresh round of alternative queries.
     func testAFetchMoreAfterSmartSearchRanTriesAgain() async throws {
         let session = makeSession(citations: 0, reportedCitations: 0, documents: false)
         session.smartSearchEnabled = true
@@ -179,6 +178,82 @@ final class WorkflowCancelTests: XCTestCase {
         await workflow.fetchMoreEvidence()
 
         XCTAssertEqual(reached(), true, "a fresh round of alternative queries started")
+    }
+
+    // MARK: - Retrying full text
+
+    /// Runs `body` with automatic full-text retrieval off, so the fixture's
+    /// document, which has a PubMed ID to look up, is never fetched.
+    private func withAutoFetchOff(_ body: () async throws -> Void) async rethrows {
+        let settings = AppSettings.shared
+        let original = settings.autoFetchFullTextEnabled
+        settings.autoFetchFullTextEnabled = false
+        defer { settings.autoFetchFullTextEnabled = original }
+        try await body()
+    }
+
+    /// A retry with no full text to read asks the model nothing, keeps the
+    /// report, and says so.
+    func testARetryWithNothingToReadKeepsTheReport() async throws {
+        try await withAutoFetchOff {
+            let session = makeSession(citations: 1, reportedCitations: 1)
+            let report = try XCTUnwrap(session.report)
+            let workflow = restore(session, llm: Self.unservedScheme)
+            var completed = false
+            workflow.onComplete = { _ in completed = true }
+
+            await workflow.retryFullTextRetrieval()
+
+            XCTAssertTrue(session.report === report)
+            XCTAssertFalse(completed, "no new report")
+            XCTAssertNil(session.errorMessage)
+            XCTAssertEqual(session.currentStep, .completed)
+            XCTAssertEqual(workflow.fullTextNotice, FactCheckWorkflow.noNewFullTextNotice)
+        }
+    }
+
+    /// An uploaded text whose extraction fails leaves the paper the citations
+    /// it had, the report it had, and the offer to try again.
+    func testAFailedReExtractionKeepsTheCitations() async throws {
+        try await withAutoFetchOff {
+            let session = makeSession(citations: 1, reportedCitations: 1)
+            session.citationsExtracted = 1
+            let report = try XCTUnwrap(session.report)
+            let document = try XCTUnwrap(session.documents?.first)
+            document.citationsReadFullText = false
+            document.applyFullTextResult(.uploaded(content: .markdown("The full text of the trial.")))
+            let workflow = restore(session, llm: Self.unservedScheme)
+
+            await workflow.retryFullTextRetrieval()
+
+            XCTAssertEqual(document.citations?.map(\.passage), ["Passage 0."])
+            XCTAssertEqual(session.citationsExtracted, 1)
+            XCTAssertTrue(session.report === report)
+            XCTAssertFalse(report.isDeleted)
+            XCTAssertEqual(document.citationsReadFullText, false, "still unread")
+            XCTAssertTrue(
+                workflow.fullTextNotice?.contains(FactCheckWorkflow.fullTextExtractionFailureNotice(count: 1)) ?? false,
+                "the failure is told, not only logged"
+            )
+            XCTAssertEqual(workflow.fullTextRetryNotice, "1 paper has a full text the analysis has not read yet.")
+        }
+    }
+
+    /// A relevant paper whose abstract gave no citations is still offered the
+    /// text the reader uploaded for it; once read, it is not.
+    func testAnUploadOnAPaperWithoutCitationsIsOffered() async throws {
+        try await withAutoFetchOff {
+            let session = makeSession(citations: 0, reportedCitations: 0)
+            let document = try XCTUnwrap(session.documents?.first)
+            document.citationsReadFullText = false
+            document.applyFullTextResult(.uploaded(content: .markdown("The full text of the trial.")))
+            let workflow = restore(session)
+
+            XCTAssertEqual(workflow.fullTextRetryNotice, "1 paper has a full text the analysis has not read yet.")
+
+            document.citationsReadFullText = true
+            XCTAssertNil(workflow.fullTextRetryNotice)
+        }
     }
 
     // MARK: - Regenerating the report

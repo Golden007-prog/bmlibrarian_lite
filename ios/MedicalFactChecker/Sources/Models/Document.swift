@@ -341,6 +341,15 @@ final class Document {
     /// When the full text was fetched.
     var fullTextFetchedAt: Date?
 
+    /// Whether the last successful citation extraction had the full text in
+    /// its prompt: `false` when it read the abstract only.
+    ///
+    /// `nil` for a paper never extracted, or extracted before this was
+    /// recorded; ``fullTextUnreadByCitations`` then judges by the citations'
+    /// dates. Set even when the text yielded no passage, so a text that has
+    /// been read is not paid for again.
+    var citationsReadFullText: Bool?
+
     /// True if full text fetch was attempted but no source was available.
     var fullTextUnavailable: Bool = false
 
@@ -725,13 +734,17 @@ final class Document {
         fullTextSource == AppFullTextSource.uploaded.rawValue
     }
 
-    /// Whether citations were extracted before the full text arrived, so
-    /// they were taken from the abstract while a full text now exists.
-    var citationsPredateFullText: Bool {
-        guard let fetched = fullTextFetchedAt,
-              let text = analyzableFullText,
+    /// Whether the paper holds a readable full text its citations have not read.
+    ///
+    /// As recorded by ``citationsReadFullText``. A record from before that
+    /// was kept judges by dates instead: a citation older than the full text
+    /// may have been taken from the abstract.
+    var fullTextUnreadByCitations: Bool {
+        guard let text = analyzableFullText,
               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return false }
+        if let read = citationsReadFullText { return !read }
+        guard let fetched = fullTextFetchedAt else { return false }
         return (citations ?? []).contains { $0.extractedAt < fetched }
     }
 

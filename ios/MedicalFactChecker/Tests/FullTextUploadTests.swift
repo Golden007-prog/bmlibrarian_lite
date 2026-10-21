@@ -17,12 +17,10 @@
 import XCTest
 import CoreText
 import SwiftData
+import BioMedLit
 @testable import MedicalFactChecker
 
 /// A full text the reader uploads is kept, read, and redone into the analysis.
-///
-/// The iOS upload kept a PDF in the caches folder the system may empty, and
-/// extracted none of its text, so the analysis went on reading the abstract.
 @MainActor
 final class FullTextUploadTests: XCTestCase {
     private var container: ModelContainer!
@@ -100,7 +98,42 @@ final class FullTextUploadTests: XCTestCase {
         XCTAssertTrue(document.analyzableFullText?.contains("found a benefit") ?? false)
         XCTAssertThrowsError(
             try FullTextUpload.result(forFileAt: try writeFile("paper.docx", "x"), pmid: document.pmid)
-        )
+        ) { error in
+            guard case FullTextUploadError.unsupportedFormat = error else {
+                return XCTFail("refused as unsupported, not \(error)")
+            }
+        }
+    }
+
+    /// The picker offers any plain-text file, so any is read.
+    func testAnyPlainTextFileThePickerOffersIsRead() throws {
+        let result = try FullTextUpload.result(forFileAt: try writeFile("paper.text", "Full text body."), pmid: "1")
+
+        XCTAssertEqual(result.source, .uploaded)
+    }
+
+    /// A second upload replaces the first; one that cannot be stored leaves it.
+    func testAReuploadReplacesTheEarlierPDF() throws {
+        let store = directory.appendingPathComponent("store", isDirectory: true)
+        try FileManager.default.createDirectory(at: store, withIntermediateDirectories: true)
+        _ = try FullTextUpload.result(forFileAt: try writePDF("The first copy."), pmid: "1", directory: store)
+
+        let second = try FullTextUpload.result(forFileAt: try writePDF("The second copy."), pmid: "1", directory: store)
+        XCTAssertTrue(second.extractedText?.contains("second copy") ?? false)
+
+        let missing = directory.appendingPathComponent("gone.pdf")
+        XCTAssertThrowsError(try FullTextUpload.result(forFileAt: missing, pmid: "1", directory: store))
+        let kept = PDFKitTextExtractor().extract(from: store.appendingPathComponent("uploaded-1.pdf"))
+        XCTAssertTrue(kept.text.contains("second copy"), "the earlier upload survives a failed one")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: store.path), ["uploaded-1.pdf"])
+    }
+
+    /// Clearing the PDF cache must never delete a copy no source could supply.
+    func testUploadsAreKeptOutsideThePDFCache() {
+        let cache = BMLFullTextService.pdfCacheDirectory.standardizedFileURL.path
+        let uploads = FullTextUpload.directory.standardizedFileURL.path
+
+        XCTAssertFalse(uploads.hasPrefix(cache + "/") || uploads == cache)
     }
 
     /// The reader chose the text for the analysis: read whatever the full-text
@@ -120,9 +153,24 @@ final class FullTextUploadTests: XCTestCase {
         ))
     }
 
-    /// Citations taken before the full text arrived came from the abstract, so
-    /// a retry redoes them; ones taken after came from the text.
-    func testCitationsTakenBeforeTheFullTextArePickedUp() throws {
+    /// What the last extraction read is recorded; the full text counts as
+    /// unread until an extraction has read it.
+    func testAFullTextIsUnreadUntilAnExtractionReadsIt() throws {
+        let document = makeDocument()
+        document.citationsReadFullText = false
+        XCTAssertFalse(document.fullTextUnreadByCitations, "no text, nothing unread")
+
+        let picked = try writeFile("paper.md", "The full text.")
+        document.applyFullTextResult(try FullTextUpload.result(forFileAt: picked, pmid: document.pmid))
+        XCTAssertTrue(document.fullTextUnreadByCitations, "read from the abstract, even with no citations")
+
+        document.citationsReadFullText = true
+        XCTAssertFalse(document.fullTextUnreadByCitations)
+    }
+
+    /// A record from before what extractions read was kept judges by dates:
+    /// citations taken before the full text arrived may be the abstract's.
+    func testARecordWithoutTheFlagJudgesByDates() throws {
         let document = makeDocument()
         let early = Citation(passage: "From the abstract.")
         early.extractedAt = Date(timeIntervalSinceNow: -60)
@@ -131,13 +179,14 @@ final class FullTextUploadTests: XCTestCase {
 
         let picked = try writeFile("paper.md", "The full text.")
         document.applyFullTextResult(try FullTextUpload.result(forFileAt: picked, pmid: document.pmid))
-        XCTAssertTrue(document.citationsPredateFullText)
+        XCTAssertNil(document.citationsReadFullText)
+        XCTAssertTrue(document.fullTextUnreadByCitations)
 
         context.delete(early)
         try context.save()
         let late = Citation(passage: "From the text.")
         context.insert(late)
         late.document = document
-        XCTAssertFalse(document.citationsPredateFullText)
+        XCTAssertFalse(document.fullTextUnreadByCitations)
     }
 }

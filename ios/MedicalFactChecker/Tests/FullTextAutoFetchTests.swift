@@ -462,6 +462,24 @@ final class FullTextAutoFetchTests: XCTestCase {
         XCTAssertTrue(FullTextAutoFetch.needsTransparencyPass(document, autoFetchEnabled: true))
     }
 
+    /// A text the reader uploaded redoes an abstract-only analysis whatever
+    /// the setting; a fetched one does not.
+    func testAnUploadRedoesAnAbstractOnlyAnalysisWhateverTheSetting() {
+        let document = Document(pmid: "12345678", title: "A Study", abstract: "")
+        document.doi = "10.1000/example"
+        var builder = TransparencyResultBuilder(pmid: "12345678")
+        builder.title = "A Study"
+        builder.fullTextSearched = false
+        document.storeTransparencyResult(builder.build())
+        document.fullTextContent = "Body text."
+
+        document.fullTextSource = AppFullTextSource.uploaded.rawValue
+        XCTAssertTrue(FullTextAutoFetch.needsTransparencyPass(document, autoFetchEnabled: false))
+
+        document.fullTextSource = AppFullTextSource.europePMC.rawValue
+        XCTAssertFalse(FullTextAutoFetch.needsTransparencyPass(document, autoFetchEnabled: false))
+    }
+
     // MARK: - Retrieval
 
     private struct Boom: Error {}

@@ -315,8 +315,10 @@ struct DocumentScoreRow: View {
             }
 
             // The reader's own copy, for a paper no source had
-            if FullTextUpload.isOffered(for: document) {
-                UploadFullTextButton(document: document)
+            UploadFullTextButton(document: document) { result in
+                // The viewer shows the upload, not a result fetched before it
+                fullTextResult = result
+                showFullTextViewer = true
             }
         }
         .padding(12)

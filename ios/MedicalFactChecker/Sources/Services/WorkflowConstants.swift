@@ -65,6 +65,11 @@ enum WorkflowConstants {
     /// so, so the model does not treat the cut as the end of the paper.
     static let maxCitationFullTextCharacters = 40_000
 
+    /// Folder, beside BioMedLit's PDF cache, holding the PDFs the reader uploaded.
+    ///
+    /// Apart from the cache, so clearing it never deletes a copy no source could supply.
+    static let uploadedFullTextFolderName = "UploadedFullTexts"
+
     /// Characters per token assumed when estimating what a text costs to send.
     ///
     /// A rough rule for English prose; it only has to be close enough to keep a

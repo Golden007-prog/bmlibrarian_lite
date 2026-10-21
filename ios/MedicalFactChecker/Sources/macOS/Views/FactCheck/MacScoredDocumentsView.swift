@@ -204,10 +204,8 @@ struct MacDocumentCard: View {
             }
 
             // The reader's own copy, for a paper no source had
-            if FullTextUpload.isOffered(for: document) {
-                UploadFullTextButton(document: document)
-                    .padding([.horizontal, .bottom], MacSpacing.large)
-            }
+            UploadFullTextButton(document: document)
+                .padding([.horizontal, .bottom], MacSpacing.large)
         }
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(MacCornerRadius.standard)

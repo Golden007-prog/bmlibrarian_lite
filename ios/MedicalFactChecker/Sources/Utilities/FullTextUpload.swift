@@ -15,6 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 import Foundation
+import OSLog
 import UniformTypeIdentifiers
 import BioMedLit
 
@@ -24,17 +25,24 @@ enum FullTextUploadError: LocalizedError {
     case unsupportedFormat
 
     var errorDescription: String? {
-        "Unsupported file format. Please use PDF, HTML, or Markdown"
+        "Unsupported file format. Please use PDF, HTML, Markdown, or plain text"
     }
 }
 
 /// A full text the reader supplies by hand, for a paper no source had.
 ///
-/// One reader for both platforms. An uploaded PDF is kept with the PDFs the
-/// retrieval chain downloads, not in the caches folder the system may empty,
-/// and its text is extracted, so citation extraction and transparency
+/// One reader for both platforms. An uploaded PDF is kept in its own folder
+/// beside the PDFs the retrieval chain downloads (``directory``): not in the
+/// caches folder the system may empty, nor where clearing the PDF cache would
+/// delete it. Its text is extracted, so citation extraction and transparency
 /// analysis read it rather than the abstract.
 enum FullTextUpload {
+    /// Where uploads log what the reader is not shown (both platforms; `AppLogger` is iOS-only).
+    static let log = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.bmlibrarian.MedicalFactChecker",
+        category: "FullText"
+    )
+
     /// The file types the picker offers.
     static let allowedContentTypes: [UTType] = [
         .pdf, .html, .plainText, UTType(filenameExtension: "md") ?? .plainText,
@@ -54,11 +62,13 @@ enum FullTextUpload {
     ///   - pmid: The document's identifier, naming the stored PDF.
     ///   - directory: Where an uploaded PDF is kept.
     /// - Returns: The result to apply to the document.
-    /// - Throws: ``FullTextUploadError/unsupportedFormat``, or the file system's error.
+    /// - Throws: ``FullTextUploadError/unsupportedFormat``, or the file system's
+    ///   error; a PDF uploaded before for the paper is kept unless the new one
+    ///   is stored whole.
     static func result(
         forFileAt url: URL,
         pmid: String,
-        directory: URL = BMLFullTextService.pdfCacheDirectory
+        directory: URL = Self.directory
     ) throws -> AppFullTextResult {
         // A picked file is security-scoped; a refused one fails at the read below
         let scoped = url.startAccessingSecurityScopedResource()
@@ -69,13 +79,15 @@ enum FullTextUpload {
             // An accession may hold characters a file name cannot
             let name = String(pmid.map { $0.isLetter || $0.isNumber ? $0 : "_" })
             let destination = directory.appendingPathComponent("uploaded-\(name).pdf")
-            if FileManager.default.fileExists(atPath: destination.path) {
-                try FileManager.default.removeItem(at: destination)
-            }
-            try FileManager.default.copyItem(at: url, to: destination)
+            try store(url, at: destination)
 
             let extraction = PDFKitTextExtractor().extract(from: destination)
             let text = extraction.success && extraction.charCount > 0 ? extraction.text : nil
+            if text == nil {
+                log.warning(
+                    "No text read from the PDF uploaded for \(pmid, privacy: .public): \(extraction.errorMessage ?? "no text on its pages", privacy: .public)"
+                )
+            }
             return AppFullTextResult(
                 content: .pdfURL(destination),
                 source: .uploaded,
@@ -90,8 +102,44 @@ enum FullTextUpload {
             return .uploaded(content: .html(content: html, markdown: html))
         case "md", "markdown", "txt":
             return .uploaded(content: .markdown(try String(contentsOf: url, encoding: .utf8)))
+        case let other where UTType(filenameExtension: other)?.conforms(to: .plainText) == true:
+            // Any other text file the picker's plain-text type offers
+            return .uploaded(content: .markdown(try String(contentsOf: url, encoding: .utf8)))
         default:
             throw FullTextUploadError.unsupportedFormat
+        }
+    }
+
+    /// Where uploaded PDFs are kept: their own folder beside BioMedLit's PDF
+    /// cache, created when first asked for.
+    static var directory: URL {
+        let folder = BMLFullTextService.pdfCacheDirectory.deletingLastPathComponent()
+            .appendingPathComponent(WorkflowConstants.uploadedFullTextFolderName, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        } catch {
+            // The copy into it then fails, and the reader is shown that error
+            log.error("Could not create the uploads folder: \(error.localizedDescription, privacy: .public)")
+        }
+        return folder
+    }
+
+    /// Copy a picked file to its stored name, replacing an earlier upload
+    /// only once the copy is whole.
+    ///
+    /// - Parameters:
+    ///   - source: The file the reader chose.
+    ///   - destination: The stored name.
+    /// - Throws: The file system's error, with any earlier upload left in place.
+    private static func store(_ source: URL, at destination: URL) throws {
+        let staged = destination.deletingLastPathComponent()
+            .appendingPathComponent(".\(UUID().uuidString)-\(destination.lastPathComponent)")
+        defer { try? FileManager.default.removeItem(at: staged) }
+        try FileManager.default.copyItem(at: source, to: staged)
+        if FileManager.default.fileExists(atPath: destination.path) {
+            _ = try FileManager.default.replaceItemAt(destination, withItemAt: staged)
+        } else {
+            try FileManager.default.moveItem(at: staged, to: destination)
         }
     }
 }

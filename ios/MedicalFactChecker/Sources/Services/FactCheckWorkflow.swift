@@ -97,10 +97,11 @@ final class FactCheckWorkflow {
         session?.canFetchMoreFromAnyProvider ?? false
     }
 
-    /// Why no alternative search ran, for the screen to show while the session proceeds.
+    /// Why smart search added nothing, for the screen to show while the session
+    /// proceeds: no alternative search could run, or a round the reader asked
+    /// for found no new documents (``noNewEvidenceNotice``).
     ///
-    /// Also says when alternative queries asked for more evidence found none.
-    /// `nil` when smart search has not failed. Generating alternative queries is
+    /// `nil` when smart search found something or has not run. Generating alternative queries is
     /// the model's work, not a literature source's, so failing at it never ends
     /// the run and records no shortfall: the documents already found and scored
     /// still make a report. The run this notice belongs to keeps it until the
@@ -1245,12 +1246,15 @@ final class FactCheckWorkflow {
     ///
     /// Fetching more evidence extracts citations before it regenerates the
     /// report, so one stopped in between — the app closed, or the run
-    /// cancelled — leaves citations the report never saw. `0` without a
-    /// report, or when the report rests on them all.
+    /// cancelled — leaves citations the report never saw. A retry that
+    /// replaced a paper's citations can leave as many as before, so a citation
+    /// newer than the report counts too. `0` without a report, or when the
+    /// report rests on them all.
     var unreportedCitationCount: Int {
         guard let session, let report = session.report else { return 0 }
-        let held = (session.documents ?? []).reduce(0) { $0 + ($1.citations?.count ?? 0) }
-        return max(0, held - report.citationCount)
+        let citations = (session.documents ?? []).flatMap { $0.citations ?? [] }
+        let newer = citations.filter { $0.extractedAt > report.generatedAt }.count
+        return max(citations.count - report.citationCount, newer)
     }
 
     /// Whether to offer regenerating the report with citations it lacks.
@@ -1379,10 +1383,10 @@ final class FactCheckWorkflow {
     /// 4. Analyse the transparency of documents not yet rated
     /// 5. Regenerate the report with all accumulated evidence
     ///
-    /// Steps 3-5 are ``regenerateReportWithNewEvidence(analyzeTransparencyUsing:)``.
+    /// Steps 3-5 are ``regenerateReportWithNewEvidence(analyzeTransparencyUsing:retryingFullText:)``.
     ///
-    /// Can be called multiple times until PubMed is exhausted and smart search has been tried.
-    /// Fetches additional evidence for the current session.
+    /// Can be called repeatedly: once the original query is exhausted, each
+    /// call runs a fresh round of alternative queries, told of the earlier ones.
     ///
     /// - Parameter searchOptions: Optional updated search options. If provided,
     ///   these will override the session's stored search options, allowing the
@@ -1475,7 +1479,7 @@ final class FactCheckWorkflow {
 
             // Documents an earlier fetch found and a stop left unscored. The
             // branches below score only what they fetch: smart search only
-            // its new PubMed IDs, and with both exhausted nothing at all
+            // its new PubMed IDs
             let finishesStoppedFetch = session.unscoredDocuments.contains { !$0.scoreParseFailed }
             if finishesStoppedFetch {
                 try Task.checkCancellation()
@@ -1502,16 +1506,22 @@ final class FactCheckWorkflow {
                     await computeEmbeddingScores()
                 }
             } else if !session.smartSearchEnabled || !finishesStoppedFetch {
-                try Task.checkCancellation()
                 // The original query is exhausted: try alternative queries, a
-                // fresh round told of the earlier ones when smart search has run
+                // fresh round told of the earlier ones when smart search has run.
+                // Once it has, finishing a stopped fetch's documents is the
+                // request, so no paid round runs on top of it
+                try Task.checkCancellation()
                 let documentsBefore = session.documents?.count ?? 0
                 updateProgress(.fetchingMoreEvidence, "Trying alternative search strategies...")
                 try await executeSmartSearch(askedForMoreEvidence: true)
-                if !finishesStoppedFetch && (session.documents?.count ?? 0) == documentsBefore {
-                    // Nothing new to cite, so the report stands as it is
+                if !finishesStoppedFetch && session.report != nil
+                    && (session.documents?.count ?? 0) == documentsBefore {
+                    // Nothing new to cite, so the report stands as it is. A
+                    // session without one goes on to make it
                     smartSearchNotice = Self.noNewEvidenceNotice
                     session.currentStep = .completed
+                    session.stopReason = .completed
+                    session.updatedAt = Date()
                     try? modelContext.save()
                     isRunning = false
                     isCancelling = false
@@ -1565,7 +1575,8 @@ final class FactCheckWorkflow {
     /// The same order as ``runWorkflow()`` and Android's `fetchMoreEvidence`.
     /// Without the transparency step, a study the batch made relevant was cited
     /// in the new report but never rated (#461). Each step picks up only what
-    /// still needs it: documents without citations, and documents without a
+    /// still needs it: documents without citations (and, on a retry, documents
+    /// whose full text their citations have not read), and documents without a
     /// current transparency result.
     ///
     /// The previous report is deleted only once a new one has replaced it, so
@@ -1576,8 +1587,8 @@ final class FactCheckWorkflow {
     ///     ``TransparencyAnalysisService``. Tests pass their own.
     ///   - retryingFullText: The reader asked to retry full-text retrieval
     ///     (``extractCitations(retryingFullText:)``).
-    /// - Returns: Whether a report was generated: a retry that read no full
-    ///   text redoes nothing.
+    /// - Returns: Whether a report was generated: a retry whose citations read
+    ///   no full text skips transparency and the report.
     /// - Throws: `CancellationError` when the user stops the run between
     ///   steps, or whatever citation extraction or report generation throws.
     @discardableResult
@@ -1588,7 +1599,7 @@ final class FactCheckWorkflow {
         guard let session = session else { return false }
 
         try Task.checkCancellation()
-        // Citations from the new relevant documents only
+        // Citations from the new relevant documents, and on a retry from unread full texts
         updateProgress(.fetchingMoreEvidence, "Extracting citations from new documents...")
         let readFullTexts = try await extractCitations(retryingFullText: retryingFullText)
         if retryingFullText && readFullTexts == 0 { return false }
@@ -1620,15 +1631,18 @@ final class FactCheckWorkflow {
 
     // MARK: - Retrying Full Text
 
-    /// Shown when a retry of full-text retrieval found no full text to read.
-    static let noNewFullTextNotice = "No further full texts could be retrieved. The report is unchanged."
+    /// Shown when a retry of full-text retrieval read no full text: none
+    /// arrived, the budget left it out (``fullTextNotice`` says so), or its
+    /// extraction failed.
+    static let noNewFullTextNotice = "No further full text was read, so the report is unchanged."
 
     /// What a retry of full-text retrieval would do, for the screen to offer
     /// ``retryFullTextRetrieval()`` beside.
     ///
-    /// `nil` unless the session has a report and either, with the setting on,
-    /// a paper scored high enough has no full text, or a paper has a full text
-    /// (an upload, say) its citations were not taken from.
+    /// `nil` while a run is under way, and unless the session has a report and
+    /// either, with the setting on, a paper scored high enough has no full text
+    /// (or holds only a PDF link never downloaded), or a relevant paper has a
+    /// full text (an upload, say) its citations have not read.
     var fullTextRetryNotice: String? {
         guard !isRunning, let session, session.report != nil else { return nil }
         let documents = session.documents ?? []
@@ -1661,11 +1675,12 @@ final class FactCheckWorkflow {
     /// Fetch full text again for the papers that have none, and redo the
     /// analysis with any that arrive.
     ///
-    /// Asks again for papers an earlier attempt found no source for, and for
-    /// those a lowered full-text score now covers. A paper whose text arrived
-    /// after its citations (fetched now, or uploaded) has its citations
+    /// With the full-text setting on, asks again for papers an earlier attempt
+    /// found no source for, and for those a lowered full-text score now covers.
+    /// A relevant paper whose full text its citations have not read (fetched
+    /// now, uploaded, or now covered by the setting) has its citations
     /// extracted again from the text and its transparency analysed again, and
-    /// the report is regenerated; with no new text the report stands.
+    /// the report is regenerated; with no new text read the report stands.
     func retryFullTextRetrieval() async {
         await runAsWorkflowTask { [weak self] in
             await self?.retryFullTextRetrievalWork()
@@ -1675,6 +1690,8 @@ final class FactCheckWorkflow {
     /// The work of ``retryFullTextRetrieval()``, run as ``workflowTask`` so a cancel reaches it.
     private func retryFullTextRetrievalWork() async {
         guard let session = session, await ensureServices() else { return }
+        // What the last run and other sessions spent, as every other entry point reads it
+        await loadMonthlyUsage()
 
         if monthlyUsedUSD >= settings.monthlyBudgetUSD {
             onBudgetExceeded?("Monthly budget of \(CostCalculator.formatCost(settings.monthlyBudgetUSD)) exceeded")
@@ -2482,11 +2499,13 @@ final class FactCheckWorkflow {
     /// - Local inference (Ollama): 1 (sequential)
     ///
     /// - Parameter retryingFullText: The reader asked to retry full-text
-    ///   retrieval: papers an earlier attempt found no source for are asked
-    ///   again, and a paper whose citations were taken from its abstract
-    ///   before its full text arrived (fetched or uploaded) has them replaced
-    ///   by ones from the text.
-    /// - Returns: How many papers had citations extracted from a full text.
+    ///   retrieval: with the setting on, papers an earlier attempt found no
+    ///   source for are asked again, and a relevant paper whose full text its
+    ///   citations have not read (fetched or uploaded) has them replaced by
+    ///   ones from the text. One whose text the run budget leaves out keeps
+    ///   the citations it has.
+    /// - Returns: How many papers' citations were extracted, successfully,
+    ///   with a full text in the prompt.
     @discardableResult
     private func extractCitations(retryingFullText: Bool = false) async throws -> Int {
         guard let session = session, let llmService = llmService else { return 0 }
@@ -2565,6 +2584,16 @@ final class FactCheckWorkflow {
             }
         }
 
+        // Every paper being replaced was given its text above, so one without
+        // it now lost it to the budget: it keeps the citations it has rather
+        // than paying for the same abstract again, and stays unread
+        inputs.removeAll { input in
+            guard input.fullText == nil, let document = documentsByPMID[input.pmid] else { return false }
+            return replacing.contains(document.persistentModelID) && !(document.citations ?? []).isEmpty
+        }
+        guard !inputs.isEmpty else { return 0 }
+        let readingFullText = Set(inputs.filter { $0.fullText != nil }.map(\.pmid))
+
         // Create parallel citation service
         let citationService = ParallelCitationService(
             llmService: llmService,
@@ -2575,7 +2604,7 @@ final class FactCheckWorkflow {
         updateProgress(.extractingCitations, "Extracting citations 0/\(total)...")
 
         // Extract citations in parallel with incremental result handling
-        _ = await citationService.extractCitations(
+        let results = await citationService.extractCitations(
             inputs,
             claim: session.claim,
             onProgress: { @MainActor [weak self] (pmid: String, completed: Int, total: Int) in
@@ -2583,16 +2612,33 @@ final class FactCheckWorkflow {
             },
             onResult: { @MainActor [weak self] result in
                 // Apply result immediately on main actor for UI update
-                self?.applyCitationResult(result, replacingCitationsOf: replacing)
+                self?.applyCitationResult(
+                    result, readFullText: readingFullText.contains(result.pmid), replacingCitationsOf: replacing
+                )
             }
         )
-        return inputs.filter { $0.fullText != nil }.count
+        let failedReads = results.filter { $0.isError && readingFullText.contains($0.pmid) }.count
+        if failedReads > 0 {
+            fullTextNotice = [fullTextNotice, Self.fullTextExtractionFailureNotice(count: failedReads)]
+                .compactMap { $0 }.joined(separator: " ")
+        }
+        return results.filter { $0.isSuccess && readingFullText.contains($0.pmid) }.count
     }
 
-    /// Whether a relevant paper has a full text its citations were not taken from.
+    /// The notice for full texts whose citation extraction failed.
+    ///
+    /// - Parameter count: How many papers' extraction failed.
+    /// - Returns: A sentence saying so; each failure is logged as it arrives.
+    static func fullTextExtractionFailureNotice(count: Int) -> String {
+        "Citations could not be extracted from \(count) full text\(count == 1 ? "" : "s"); "
+            + "\(count == 1 ? "that paper keeps the citations it had" : "those papers keep the citations they had"). "
+            + "Try again later."
+    }
+
+    /// Whether a relevant paper has a full text its citations have not read.
     private func hasUnreadFullText(_ document: Document) -> Bool {
         document.meetsThreshold(settings.minScoreThreshold)
-            && document.citationsPredateFullText
+            && document.fullTextUnreadByCitations
             && FullTextAutoFetch.citationFullText(
                 for: document,
                 autoFetchEnabled: settings.autoFetchFullTextEnabled,
@@ -2630,7 +2676,16 @@ final class FactCheckWorkflow {
         let failures = try await FullTextAutoFetch.retrieve(
             targets,
             fetch: { document in
-                let bmlResult = try await service.fetchFullText(for: document)
+                // The reader may upload a copy while the targets are fetched:
+                // theirs stands, and no fetch may record it as missing
+                guard !document.holdsUploadedFullText else { return }
+                let bmlResult: BMLFullTextResult
+                do {
+                    bmlResult = try await service.fetchFullText(for: document)
+                } catch FullTextError.noFullTextAvailable where document.holdsUploadedFullText {
+                    return
+                }
+                guard !document.holdsUploadedFullText else { return }
                 if let kept = FullTextAutoFetch.storedLinkKept(document, refetched: bmlResult) {
                     throw kept
                 }
@@ -2673,9 +2728,11 @@ final class FactCheckWorkflow {
     ///
     /// - Parameters:
     ///   - result: The citation result to apply.
-    ///   - replacing: Documents whose existing citations a successful result replaces.
+    ///   - readFullText: Whether the extraction had the paper's full text in its prompt.
+    ///   - replacing: Documents whose existing citations a successful result
+    ///     with passages replaces.
     private func applyCitationResult(
-        _ result: CitationResult, replacingCitationsOf replacing: Set<PersistentIdentifier> = []
+        _ result: CitationResult, readFullText: Bool, replacingCitationsOf replacing: Set<PersistentIdentifier>
     ) {
         guard let session = session else { return }
 
@@ -2684,9 +2741,14 @@ final class FactCheckWorkflow {
             return
         }
 
-        if result.isSuccess {
-            // Only once the new ones exist: a failed extraction keeps the old
-            if replacing.contains(document.persistentModelID) {
+        if let failure = result.errorMessage {
+            // The paper keeps what it had, and a retry asks again
+            logger.error("Citation extraction failed for \(result.pmid): \(failure)")
+        } else {
+            document.citationsReadFullText = readFullText
+            // Only once new ones exist: a failed extraction, or one that found
+            // nothing in the text, keeps the old
+            if replacing.contains(document.persistentModelID) && !result.passages.isEmpty {
                 for old in document.citations ?? [] {
                     modelContext.delete(old)
                     session.citationsExtracted = max(0, session.citationsExtracted - 1)
@@ -3155,19 +3217,16 @@ final class FactCheckWorkflow {
         let alternatives = try await generateAlternativeQueries()
 
         guard !alternatives.isEmpty else {
-            // No answer held a usable query: marked as tried, so no later batch
-            // asks and pays again, and the user is told why
+            // No answer held a usable query: marked as tried, so the workflow
+            // does not ask and pay again on its own (a request for more
+            // evidence still runs a fresh round), and the user is told why
             session.smartSearchEnabled = true
             try? modelContext.save()
             throw SmartSearchError.noUsableQuery
         }
 
-        // Stored after the earlier rounds' queries, so the next round is told of them all
-        let allTried = triedAlternativeQueries(of: session) + alternatives.map { $0.concepts }
-        if let data = try? JSONEncoder().encode(allTried),
-           let jsonString = String(data: data, encoding: .utf8) {
-            session.alternativeQueries = jsonString
-        }
+        // Each query is added once it has run, after the earlier rounds', so the next round is told of them all
+        var tried = triedAlternativeQueries(of: session)
         session.currentAlternativeQueryIndex = 0
 
         // Track already-fetched PMIDs
@@ -3195,6 +3254,7 @@ final class FactCheckWorkflow {
             updateProgress(.searchingPubMed, "Smart search \(index + 1)/\(alternatives.count): \(queryDescription)...")
 
             let found: Bool
+            let lostBefore = pendingShortfalls.count
             do {
                 found = try await executeAlternativeQuery(
                     structuredQuery, pendingShortfalls: &pendingShortfalls
@@ -3205,6 +3265,11 @@ final class FactCheckWorkflow {
                 break
             }
             foundDocuments = foundDocuments || found
+            // A query a source could not answer has not run: a later round may ask it again
+            if found || pendingShortfalls.count == lostBefore {
+                tried.append(structuredQuery.concepts)
+                recordTriedAlternativeQueries(tried, in: session)
+            }
 
             // Check if we now have enough relevant documents
             let relevant = (session.documents ?? []).filter { $0.meetsThreshold(settings.minScoreThreshold) }.count
@@ -3238,10 +3303,29 @@ final class FactCheckWorkflow {
 
     /// The alternative queries earlier smart search rounds ran, each as its concepts.
     ///
-    /// Empty before the first round, or when the stored record cannot be read.
+    /// Empty before the first round, or when the stored record cannot be read
+    /// (logged; the next query run replaces it).
     private func triedAlternativeQueries(of session: FactCheckSession) -> [[SearchConcept]] {
         guard let data = session.alternativeQueries?.data(using: .utf8) else { return [] }
-        return (try? JSONDecoder().decode([[SearchConcept]].self, from: data)) ?? []
+        do {
+            return try JSONDecoder().decode([[SearchConcept]].self, from: data)
+        } catch {
+            logger.error("Unreadable record of the alternative queries already run: \(error.localizedDescription)")
+            return []
+        }
+    }
+
+    /// Store the alternative queries run so far, for the next round's prompt.
+    ///
+    /// - Parameters:
+    ///   - tried: Every query run, earlier rounds' first, each as its concepts.
+    ///   - session: The session to store them on.
+    private func recordTriedAlternativeQueries(_ tried: [[SearchConcept]], in session: FactCheckSession) {
+        do {
+            session.alternativeQueries = String(decoding: try JSONEncoder().encode(tried), as: UTF8.self)
+        } catch {
+            logger.error("Could not record the alternative queries already run: \(error.localizedDescription)")
+        }
     }
 
     /// Execute a single alternative structured query, avoiding duplicates.
@@ -3447,7 +3531,8 @@ final class FactCheckWorkflow {
 enum SmartSearchError: LocalizedError, Equatable {
     /// The model's answers held no usable query, after every retry.
     ///
-    /// Smart search is marked as tried, so no later batch asks and pays again.
+    /// Smart search is marked as tried, so the workflow does not ask and pay
+    /// again on its own; a request for more evidence still runs a fresh round.
     case noUsableQuery
 
     /// The request to the model failed, so that request asked nothing and paid

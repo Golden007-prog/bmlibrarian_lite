@@ -121,7 +121,9 @@ public enum PromptTemplates {
         /// Number of relevant documents found.
         public let relevantCount: Int
 
-        /// Alternative queries earlier rounds already ran, one line each.
+        /// Alternative queries earlier rounds already ran, one line each: each
+        /// query's concept names joined by " AND ", not the provider query
+        /// string it ran as.
         public let triedQueries: [String]
 
         /// Initialize with search context.
@@ -146,7 +148,8 @@ public enum PromptTemplates {
 
     /// Generate a prompt for creating alternative search strategies.
     ///
-    /// Called when the initial search doesn't find enough relevant documents.
+    /// Called when the initial search doesn't find enough relevant documents,
+    /// and for each further round the reader asks for.
     /// The LLM generates 2-3 alternative structured queries using different
     /// search approaches.
     ///

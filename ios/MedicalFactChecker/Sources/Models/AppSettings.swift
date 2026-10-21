@@ -16,6 +16,7 @@
 
 import Foundation
 import SwiftUI
+import BioMedLit
 
 /// User-configurable settings for the app.
 ///
@@ -305,7 +306,8 @@ final class AppSettings {
     }
 
     /// Lowest relevance score (1-5) whose papers are fetched in full when
-    /// `autoFetchFullTextEnabled` is on; never below `minScoreThreshold`.
+    /// `autoFetchFullTextEnabled` is on. The floor actually used is never
+    /// below `minScoreThreshold` (``FullTextAutoFetch/minimumScore(minScoreThreshold:autoFetchMinScore:)``).
     var fullTextAutoFetchMinScore: Int {
         didSet { UserDefaults.standard.set(fullTextAutoFetchMinScore, forKey: Keys.fullTextAutoFetchMinScore) }
     }
@@ -411,8 +413,15 @@ final class AppSettings {
         }
         self.includePreprints = defaults.bool(forKey: Keys.includePreprints)
         self.autoFetchFullTextEnabled = defaults.bool(forKey: Keys.autoFetchFullTextEnabled)
-        self.fullTextAutoFetchMinScore = defaults.object(forKey: Keys.fullTextAutoFetchMinScore) as? Int
-            ?? WorkflowConstants.fullTextAutoFetchMinScore
+        // A stored value outside the score range would fetch every paper, or none, unsaid
+        self.fullTextAutoFetchMinScore = min(
+            max(
+                defaults.object(forKey: Keys.fullTextAutoFetchMinScore) as? Int
+                    ?? WorkflowConstants.fullTextAutoFetchMinScore,
+                BioMedLitConstants.minRelevanceScore
+            ),
+            BioMedLitConstants.maxRelevanceScore
+        )
 
         self.embeddingScoringEnabled = defaults.bool(forKey: Keys.embeddingScoringEnabled)
 

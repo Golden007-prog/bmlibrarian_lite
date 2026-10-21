@@ -153,7 +153,7 @@ struct FactCheckView: View {
                             }
                         }
 
-                        // Papers the full-text setting covers that have no full text
+                        // Papers the full-text setting covers with no full text, or a full text the analysis has not read
                         if let notice = workflow.fullTextRetryNotice {
                             RegenerateReportSection(
                                 text: notice,

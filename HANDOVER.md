@@ -26,9 +26,11 @@ points, from a survey of the code on 2026-10-21 (Android paths under
     `CitationInput.kt` reads `abstractText ?: fullTextMarkdown`, abstract
     first, which must change for full text to be read.
   - *Retry*: reuse `extractCitations`, `analyzeTransparency`,
-    `generateReport`; `CitationEntity.created_at` and
-    `DocumentEntity.fullTextFetchedAt` give the "citations older than the
-    full text" rule.
+    `generateReport`; add a per-document "last extraction read the full
+    text" column (Swift's `Document.citationsReadFullText`). Comparing
+    `CitationEntity.created_at` with `DocumentEntity.fullTextFetchedAt` is
+    only Swift's fallback for records written before that flag: it misses a
+    text fetched before the citations and re-reads after a manual re-fetch.
   - *Upload*: no file picker exists; `Constants.FULLTEXT_SOURCE_UPLOADED`
     is the source label.
 - **Python desktop:** citations are abstract-only (`agents/citation_agent.py`)
@@ -39,8 +41,12 @@ points, from a survey of the code on 2026-10-21 (Android paths under
   `research_questions_tab.py` *Re-run Search* / `IncrementalSearchWorker`,
   `TransparencyReanalysisWorker`, `pdf_utils.save_fulltext_markdown`.
 - **Verify:** mirror the Swift tests (`WorkflowCancelTests`
-  `testAFetchMoreAfterSmartSearchRanTriesAgain`, `FullTextAutoFetchTests`,
-  `FullTextUploadTests`, BioMedLit `AlternativeQueryPromptTests`).
+  `testAFetchMoreAfterSmartSearchRanTriesAgain` and its retry tests,
+  `FullTextAutoFetchTests`, `FullTextUploadTests`, `ReportRetryOfferTests`,
+  BioMedLit `AlternativeQueryPromptTests`).
+- **Apple follow-ups from the review:** issue #612 (LLM and search test
+  seams; the rules no test pins yet are listed there) and issue #613 (upload
+  edge cases).
 
 **Owed by the maintainer** (stages C1 and C2 and the desktop browser rescue
 have landed):
