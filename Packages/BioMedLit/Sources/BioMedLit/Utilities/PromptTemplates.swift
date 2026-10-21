@@ -121,6 +121,11 @@ public enum PromptTemplates {
         /// Number of relevant documents found.
         public let relevantCount: Int
 
+        /// Alternative queries earlier rounds already ran, one line each: each
+        /// query's concept names joined by " AND ", not the provider query
+        /// string it ran as.
+        public let triedQueries: [String]
+
         /// Initialize with search context.
         ///
         /// - Parameters:
@@ -128,17 +133,23 @@ public enum PromptTemplates {
         ///   - initialQuery: The initial query that was tried.
         ///   - totalResults: Total results from the initial search.
         ///   - relevantCount: Number of relevant documents found.
-        public init(claim: String, initialQuery: String?, totalResults: Int, relevantCount: Int) {
+        ///   - triedQueries: Alternative queries earlier rounds already ran.
+        public init(
+            claim: String, initialQuery: String?, totalResults: Int, relevantCount: Int,
+            triedQueries: [String] = []
+        ) {
             self.claim = claim
             self.initialQuery = initialQuery
             self.totalResults = totalResults
             self.relevantCount = relevantCount
+            self.triedQueries = triedQueries
         }
     }
 
     /// Generate a prompt for creating alternative search strategies.
     ///
-    /// Called when the initial search doesn't find enough relevant documents.
+    /// Called when the initial search doesn't find enough relevant documents,
+    /// and for each further round the reader asks for.
     /// The LLM generates 2-3 alternative structured queries using different
     /// search approaches.
     ///
@@ -152,7 +163,7 @@ public enum PromptTemplates {
         Initial query: \(context.initialQuery ?? "N/A")
         Results found: \(context.totalResults)
         Relevant documents: \(context.relevantCount)
-
+        \(triedQueriesSection(context.triedQueries))
         Generate 2-3 alternative search strategies as structured queries. Consider:
         1. If comparing two treatments/medications, search for each one separately
         2. Use different synonyms or related terms
@@ -180,6 +191,21 @@ public enum PromptTemplates {
         ]
 
         Generate alternative structured queries for the medical question:
+        """
+    }
+
+    /// The prompt's lines naming the alternative queries already run, so a
+    /// later round asks for different ones; empty on the first round.
+    private static func triedQueriesSection(_ tried: [String]) -> String {
+        guard !tried.isEmpty else { return "" }
+        let lines = tried.map { "- \($0)" }.joined(separator: "\n")
+        return """
+
+        These alternative queries were already run. \
+        Do not repeat them; take different approaches (broader terms, related \
+        conditions, mechanisms or outcomes):
+        \(lines)
+
         """
     }
 

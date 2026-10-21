@@ -105,6 +105,19 @@ final class ReportRetryOfferTests: XCTestCase {
         XCTAssertNil(workflow.unreportedCitationsNotice)
     }
 
+    /// A retry replaced a paper's citations and stopped before its report:
+    /// as many as before, but newer than the report, so they are offered.
+    func testCitationsNewerThanTheReportAreOffered() throws {
+        let session = makeSession(citations: 2, reportedCitations: 2)
+        let report = try XCTUnwrap(session.report)
+        for citation in session.documents?.first?.citations ?? [] {
+            citation.extractedAt = report.generatedAt.addingTimeInterval(1)
+        }
+        let workflow = restore(session)
+
+        XCTAssertEqual(workflow.unreportedCitationCount, 2)
+    }
+
     /// Without a report there is nothing to regenerate.
     func testNothingIsOfferedWithoutAReport() {
         let workflow = restore(makeSession(citations: 2, reportedCitations: nil))

@@ -80,7 +80,8 @@ struct FactCheckView: View {
                         onSubmit: {
                             isTextEditorFocused = false
                             handleSubmit()
-                        }
+                        },
+                        onNewQuestion: workflow == nil ? nil : startNewQuestion
                     )
 
                     // Search Options
@@ -152,6 +153,16 @@ struct FactCheckView: View {
                             }
                         }
 
+                        // Papers the full-text setting covers with no full text, or a full text the analysis has not read
+                        if let notice = workflow.fullTextRetryNotice {
+                            RegenerateReportSection(
+                                text: notice,
+                                onRegenerate: { Task { await workflow.retryFullTextRetrieval() } },
+                                buttonTitle: "Retry Full Text Fetching",
+                                accessibilityHint: "Fetches their full text again and redoes the analysis with any that arrive"
+                            )
+                        }
+
                         // Scored Documents Section
                         if let session = workflow.session,
                            !(session.documents ?? []).filter({ $0.isScored }).isEmpty {
@@ -206,10 +217,21 @@ struct FactCheckView: View {
 
     // MARK: - Computed Properties
 
+    /// Whether the claim on screen is the one the current session searched,
+    /// so the submit button finds more evidence for it instead of starting over.
+    ///
+    /// An edited claim is a new question.
+    private var isFollowUp: Bool {
+        guard let session = workflow?.session, !(session.documents ?? []).isEmpty else { return false }
+        return claimText == session.claim
+    }
+
     /// The text to display on the submit button based on workflow state.
     private var buttonText: String {
         if workflow?.isRunning ?? false {
             return "Checking..."
+        } else if isFollowUp {
+            return "Find More Evidence"
         } else {
             return "Check Evidence"
         }
@@ -221,16 +243,32 @@ struct FactCheckView: View {
     /// - Claim text is not empty (after trimming whitespace)
     /// - LLM is configured in settings
     /// - No workflow is currently running
+    /// - A follow-up is not paused for the user's decision
     private var canSubmit: Bool {
         let trimmed = claimText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && settings.isLLMConfigured && !(workflow?.isRunning ?? false)
+        guard !trimmed.isEmpty && settings.isLLMConfigured && !(workflow?.isRunning ?? false) else { return false }
+        // A paused run is answered by its decision section's buttons. Otherwise
+        // there is always more to try: smart search can run a fresh round
+        return !(isFollowUp && workflow?.awaitingUserDecision == true)
     }
 
     // MARK: - Actions
 
-    /// Handles the submit button action — always starts a new fact-check.
+    /// Finds more evidence for the claim already searched, or starts a new fact-check.
     private func handleSubmit() {
-        startFactCheck()
+        if isFollowUp, let workflow {
+            Task {
+                await workflow.fetchMoreEvidence(searchOptions: searchOptions)
+            }
+        } else {
+            startFactCheck()
+        }
+    }
+
+    /// Clears the claim and the current session so a new question starts fresh.
+    private func startNewQuestion() {
+        claimText = ""
+        workflow = nil
     }
 
     private func startFactCheck() {
@@ -301,11 +339,14 @@ struct ClaimInputSection: View {
     /// Text to display on the submit button.
     ///
     /// Allows the parent view to customize the button text based on context
-    /// (e.g., "Check Evidence" for new searches, "Add More Results" for resumed sessions).
+    /// (e.g., "Check Evidence" for new searches, "Find More Evidence" after one).
     let buttonText: String
 
     /// Callback when user submits the claim.
     let onSubmit: () -> Void
+
+    /// Callback when the user clears the claim for a new one; `nil` hides the button.
+    var onNewQuestion: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -344,6 +385,15 @@ struct ClaimInputSection: View {
                 .cornerRadius(10)
             }
             .disabled(!canSubmit)
+
+            if let onNewQuestion, !isRunning {
+                Button(action: onNewQuestion) {
+                    Text("New Question")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+            }
         }
     }
 }
@@ -728,6 +778,12 @@ struct RegenerateReportSection: View {
     /// Called when the user taps the button.
     let onRegenerate: () -> Void
 
+    /// The button's title.
+    var buttonTitle = "Regenerate Report"
+
+    /// What the button does, for VoiceOver.
+    var accessibilityHint = "Writes the report again from all citations, including the new ones"
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -740,11 +796,11 @@ struct RegenerateReportSection: View {
             Button(action: onRegenerate) {
                 HStack {
                     Image(systemName: "arrow.clockwise")
-                    Text("Regenerate Report")
+                    Text(buttonTitle)
                 }
             }
             .buttonStyle(.borderedProminent)
-            .accessibilityHint("Writes the report again from all citations, including the new ones")
+            .accessibilityHint(accessibilityHint)
         }
         .padding()
         .frame(maxWidth: .infinity, alignment: .leading)

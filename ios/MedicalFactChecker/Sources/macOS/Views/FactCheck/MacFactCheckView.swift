@@ -50,10 +50,21 @@ struct MacFactCheckView: View {
 
     // MARK: - Computed Properties
 
+    /// Whether the claim on screen is the one the current session searched,
+    /// so the submit button finds more evidence for it instead of starting over.
+    ///
+    /// An edited claim is a new question.
+    private var isFollowUp: Bool {
+        guard let session = workflow?.session, !(session.documents ?? []).isEmpty else { return false }
+        return claimText == session.claim
+    }
+
     /// The text to display on the submit button based on workflow state.
     private var buttonText: String {
         if workflow?.isRunning ?? false {
             return "Checking..."
+        } else if isFollowUp {
+            return "Find More Evidence"
         } else {
             return "Check Evidence"
         }
@@ -129,7 +140,8 @@ struct MacFactCheckView: View {
                     selectedSearchProvider: $selectedSearchProvider,
                     includePreprints: $includePreprints,
                     onSubmit: handleSubmit,
-                    onCancel: { workflow?.cancelFactCheck() }
+                    onCancel: { workflow?.cancelFactCheck() },
+                    onNewQuestion: workflow == nil ? nil : startNewQuestion
                 )
 
                 // Budget display
@@ -195,6 +207,15 @@ struct MacFactCheckView: View {
                             await workflow.retryReportGeneration()
                         }
                     }
+                }
+
+                // Papers the full-text setting covers with no full text, or a full text the analysis has not read
+                if let workflow = workflow, let notice = workflow.fullTextRetryNotice {
+                    MacRegenerateReportSection(
+                        text: notice,
+                        onRegenerate: { Task { await workflow.retryFullTextRetrieval() } },
+                        buttonTitle: "Retry Full Text Fetching"
+                    )
                 }
 
                 Spacer(minLength: MacSpacing.xLarge)
@@ -268,14 +289,29 @@ struct MacFactCheckView: View {
 
     private var canSubmit: Bool {
         let trimmed = claimText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return !trimmed.isEmpty && settings.isLLMConfigured && !(workflow?.isRunning ?? false)
+        guard !trimmed.isEmpty && settings.isLLMConfigured && !(workflow?.isRunning ?? false) else { return false }
+        // A paused run is answered by its decision section's buttons. Otherwise
+        // there is always more to try: smart search can run a fresh round
+        return !(isFollowUp && workflow?.awaitingUserDecision == true)
     }
 
     // MARK: - Actions
 
-    /// Handles the submit button action — always starts a new fact-check.
+    /// Finds more evidence for the claim already searched, or starts a new fact-check.
     private func handleSubmit() {
-        startFactCheck()
+        if isFollowUp, let workflow {
+            Task {
+                await workflow.fetchMoreEvidence(searchOptions: buildSearchOptions())
+            }
+        } else {
+            startFactCheck()
+        }
+    }
+
+    /// Clears the claim and the current session so a new question starts fresh.
+    private func startNewQuestion() {
+        claimText = ""
+        workflow = nil
     }
 
     /// Builds search options from the current UI state.
@@ -355,7 +391,7 @@ struct MacConfigurationWarningView: View {
 ///
 /// Includes a multiline text editor with example hints, search provider options,
 /// and a submit button. The button text is configurable to support both new
-/// fact-checks ("Check Evidence") and resumed sessions ("Add More Results").
+/// fact-checks ("Check Evidence") and follow-ups ("Find More Evidence").
 struct MacClaimInputSection: View {
     /// The claim text binding.
     @Binding var claimText: String
@@ -366,7 +402,7 @@ struct MacClaimInputSection: View {
     /// The text to display on the submit button.
     ///
     /// Allows the parent view to customize the button text based on context
-    /// (e.g., "Check Evidence" for new searches, "Add More Results" for resumed sessions).
+    /// (e.g., "Check Evidence" for new searches, "Find More Evidence" after one).
     let buttonText: String
     /// The selected search provider binding.
     @Binding var selectedSearchProvider: SearchProvider
@@ -376,6 +412,8 @@ struct MacClaimInputSection: View {
     let onSubmit: () -> Void
     /// Callback when the user cancels the run under way.
     let onCancel: () -> Void
+    /// Callback when the user clears the claim for a new one; `nil` hides the button.
+    var onNewQuestion: (() -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: MacSpacing.standard) {
@@ -411,6 +449,12 @@ struct MacClaimInputSection: View {
 
                 // Submit and cancel buttons
                 HStack {
+                    if let onNewQuestion, !isRunning {
+                        Button("New Question", action: onNewQuestion)
+                            .buttonStyle(.bordered)
+                            .controlSize(.large)
+                    }
+
                     Button(action: onSubmit) {
                         HStack(spacing: MacSpacing.medium) {
                             if isRunning {
@@ -787,6 +831,9 @@ struct MacRegenerateReportSection: View {
     /// Called when the user clicks the button.
     let onRegenerate: () -> Void
 
+    /// The button's title.
+    var buttonTitle = "Regenerate Report"
+
     var body: some View {
         HStack(spacing: MacSpacing.large) {
             Image(systemName: "doc.badge.plus")
@@ -801,7 +848,7 @@ struct MacRegenerateReportSection: View {
             Button(action: onRegenerate) {
                 HStack(spacing: MacSpacing.medium) {
                     Image(systemName: "arrow.clockwise")
-                    Text("Regenerate Report")
+                    Text(buttonTitle)
                 }
             }
             .buttonStyle(.borderedProminent)
@@ -871,82 +918,6 @@ struct MacResumedSessionBanner: View {
         }
         .padding(MacSpacing.large)
         .background(Color.blue.opacity(MacOpacity.light))
-        .cornerRadius(MacCornerRadius.large)
-    }
-}
-
-// MARK: - Get More Evidence Section
-
-/// Section shown when more evidence can be fetched for a completed session.
-///
-/// Displays:
-/// - "More Evidence Available" heading
-/// - Estimated remaining results count
-/// - Button to fetch more evidence
-///
-/// This section is shown for completed sessions that were NOT resumed from history.
-/// For resumed sessions, the main "Add More Results" button handles fetching.
-struct MacGetMoreEvidenceSection: View {
-    /// The session to fetch more evidence for.
-    let session: FactCheckSession
-
-    /// Whether evidence is currently being fetched.
-    let isFetching: Bool
-
-    /// Called when user wants to fetch more evidence.
-    let onFetchMore: () -> Void
-
-    /// Description of what evidence sources are available.
-    private var availableSourcesText: String {
-        if session.canFetchMoreDocuments {
-            let remaining = session.remainingPubMedResults
-            if !session.smartSearchEnabled {
-                return "\(remaining) more results available, plus smart search"
-            } else {
-                return "\(remaining) more results available"
-            }
-        } else if !session.smartSearchEnabled {
-            return "Smart search available (alternative queries)"
-        } else {
-            return "All sources exhausted"
-        }
-    }
-
-    var body: some View {
-        HStack(spacing: MacSpacing.large) {
-            VStack(alignment: .leading, spacing: MacSpacing.xSmall) {
-                HStack(spacing: MacSpacing.medium) {
-                    Image(systemName: "plus.magnifyingglass")
-                        .foregroundColor(.accentColor)
-                    Text("Need More Evidence?")
-                        .font(.headline)
-                }
-
-                Text(availableSourcesText)
-                    .font(.body)
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            Button(action: onFetchMore) {
-                HStack(spacing: MacSpacing.medium) {
-                    if isFetching {
-                        ProgressView()
-                            .scaleEffect(MacScale.progressViewMedium)
-                            .progressViewStyle(CircularProgressViewStyle())
-                    } else {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                    }
-                    Text(isFetching ? "Fetching..." : "Get More Evidence")
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .disabled(isFetching)
-        }
-        .padding(MacSpacing.large)
-        .background(Color.green.opacity(MacOpacity.light))
         .cornerRadius(MacCornerRadius.large)
     }
 }

@@ -16,6 +16,7 @@
 
 import Foundation
 import SwiftUI
+import BioMedLit
 
 /// User-configurable settings for the app.
 ///
@@ -296,12 +297,19 @@ final class AppSettings {
     }
 
     /// Fetch full text automatically for the most relevant papers: those at or
-    /// above `WorkflowConstants.fullTextAutoFetchMinScore` (and the user's threshold).
+    /// above `fullTextAutoFetchMinScore` (and the user's threshold).
     ///
     /// Those papers influence the report most, so their full text is retrieved
     /// before citation extraction and transparency analysis, and both read it.
     var autoFetchFullTextEnabled: Bool {
         didSet { UserDefaults.standard.set(autoFetchFullTextEnabled, forKey: Keys.autoFetchFullTextEnabled) }
+    }
+
+    /// Lowest relevance score (1-5) whose papers are fetched in full when
+    /// `autoFetchFullTextEnabled` is on. The floor actually used is never
+    /// below `minScoreThreshold` (``FullTextAutoFetch/minimumScore(minScoreThreshold:autoFetchMinScore:)``).
+    var fullTextAutoFetchMinScore: Int {
+        didSet { UserDefaults.standard.set(fullTextAutoFetchMinScore, forKey: Keys.fullTextAutoFetchMinScore) }
     }
 
     // MARK: - Search Provider Settings
@@ -405,6 +413,15 @@ final class AppSettings {
         }
         self.includePreprints = defaults.bool(forKey: Keys.includePreprints)
         self.autoFetchFullTextEnabled = defaults.bool(forKey: Keys.autoFetchFullTextEnabled)
+        // A stored value outside the score range would fetch every paper, or none, unsaid
+        self.fullTextAutoFetchMinScore = min(
+            max(
+                defaults.object(forKey: Keys.fullTextAutoFetchMinScore) as? Int
+                    ?? WorkflowConstants.fullTextAutoFetchMinScore,
+                BioMedLitConstants.minRelevanceScore
+            ),
+            BioMedLitConstants.maxRelevanceScore
+        )
 
         self.embeddingScoringEnabled = defaults.bool(forKey: Keys.embeddingScoringEnabled)
 
@@ -457,6 +474,7 @@ final class AppSettings {
         static let selectedSearchProvider = "selected_search_provider"
         static let includePreprints = "include_preprints"
         static let autoFetchFullTextEnabled = "auto_fetch_full_text_enabled"
+        static let fullTextAutoFetchMinScore = "full_text_auto_fetch_min_score"
         static let embeddingScoringEnabled = "embedding_scoring_enabled"
         static let maxRunBudgetUSD = "max_run_budget_usd"
         static let monthlyBudgetUSD = "monthly_budget_usd"
@@ -515,6 +533,7 @@ final class AppSettings {
         selectedSearchProvider = .pubmed
         includePreprints = false
         autoFetchFullTextEnabled = false
+        fullTextAutoFetchMinScore = WorkflowConstants.fullTextAutoFetchMinScore
         embeddingScoringEnabled = false
         maxRunBudgetUSD = 1.0
         monthlyBudgetUSD = 10.0

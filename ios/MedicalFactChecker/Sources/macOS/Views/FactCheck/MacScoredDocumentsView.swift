@@ -202,6 +202,10 @@ struct MacDocumentCard: View {
 
                 expandedContent
             }
+
+            // The reader's own copy, for a paper no source had
+            UploadFullTextButton(document: document)
+                .padding([.horizontal, .bottom], MacSpacing.large)
         }
         .background(Color(NSColor.controlBackgroundColor))
         .cornerRadius(MacCornerRadius.standard)

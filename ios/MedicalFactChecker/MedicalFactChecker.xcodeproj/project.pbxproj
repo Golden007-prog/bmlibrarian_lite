@@ -61,6 +61,8 @@
 		A1000039001 /* SearchServiceProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000039000 /* SearchServiceProtocol.swift */; };
 		A1000040001 /* FullTextConstants.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000040000 /* FullTextConstants.swift */; };
 		A10000C1001 /* FullTextAutoFetch.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000C1000 /* FullTextAutoFetch.swift */; };
+		A10000C2001 /* FullTextUpload.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000C2000 /* FullTextUpload.swift */; };
+		A10000C3001 /* UploadFullTextButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000C3000 /* UploadFullTextButton.swift */; };
 		A1000041001 /* JATSXMLParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000041000 /* JATSXMLParser.swift */; };
 		A1000042001 /* PlatformHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000042000 /* PlatformHelper.swift */; };
 		A1000090001 /* Logger.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000090000 /* Logger.swift */; };
@@ -176,6 +178,8 @@
 		A1000039000 /* SearchServiceProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchServiceProtocol.swift; sourceTree = "<group>"; };
 		A1000040000 /* FullTextConstants.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullTextConstants.swift; sourceTree = "<group>"; };
 		A10000C1000 /* FullTextAutoFetch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullTextAutoFetch.swift; sourceTree = "<group>"; };
+		A10000C2000 /* FullTextUpload.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FullTextUpload.swift; sourceTree = "<group>"; };
+		A10000C3000 /* UploadFullTextButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UploadFullTextButton.swift; sourceTree = "<group>"; };
 		A1000041000 /* JATSXMLParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JATSXMLParser.swift; sourceTree = "<group>"; };
 		A1000042000 /* PlatformHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatformHelper.swift; sourceTree = "<group>"; };
 		A1000090000 /* Logger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Logger.swift; sourceTree = "<group>"; };
@@ -359,6 +363,7 @@
 				A1000013000 /* CostCalculator.swift */,
 				A1000040000 /* FullTextConstants.swift */,
 				A10000C1000 /* FullTextAutoFetch.swift */,
+				A10000C2000 /* FullTextUpload.swift */,
 				A1000041000 /* JATSXMLParser.swift */,
 				A1000014000 /* KeychainHelper.swift */,
 				A1000090000 /* Logger.swift */,
@@ -451,6 +456,7 @@
 				A1000046000 /* DocumentSourceBadge.swift */,
 				A1000061000 /* ErrorQueueView.swift */,
 				A1000047000 /* FetchMoreView.swift */,
+				A10000C3000 /* UploadFullTextButton.swift */,
 				A1000048000 /* FullTextSourceBadge.swift */,
 				A1000099000 /* ParseWarningBanner.swift */,
 				A10000A0000 /* ReportRichText.swift */,
@@ -676,6 +682,8 @@
 				A1000039001 /* SearchServiceProtocol.swift in Sources */,
 				A1000040001 /* FullTextConstants.swift in Sources */,
 				A10000C1001 /* FullTextAutoFetch.swift in Sources */,
+				A10000C2001 /* FullTextUpload.swift in Sources */,
+				A10000C3001 /* UploadFullTextButton.swift in Sources */,
 				A1000041001 /* JATSXMLParser.swift in Sources */,
 				A1000042001 /* PlatformHelper.swift in Sources */,
 				A1000090001 /* Logger.swift in Sources */,

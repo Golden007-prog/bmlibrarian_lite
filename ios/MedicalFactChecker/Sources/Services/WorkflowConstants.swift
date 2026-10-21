@@ -49,8 +49,8 @@ enum WorkflowConstants {
 
     // MARK: - Automatic Full-Text Retrieval
 
-    /// Lowest relevance score (1-5) whose papers are fetched in full when the
-    /// automatic full-text setting is on.
+    /// Default lowest relevance score (1-5) whose papers are fetched in full
+    /// when the automatic full-text setting is on; the user can change it.
     ///
     /// Scores 4 and 5 are the papers that shape the report most, so they are
     /// the ones where the full text (methods, results, funding, conflicts) is
@@ -64,6 +64,11 @@ enum WorkflowConstants {
     /// paper is a separate paid call. A longer text is cut and the prompt says
     /// so, so the model does not treat the cut as the end of the paper.
     static let maxCitationFullTextCharacters = 40_000
+
+    /// Folder, beside BioMedLit's PDF cache, holding the PDFs the reader uploaded.
+    ///
+    /// Apart from the cache, so clearing it never deletes a copy no source could supply.
+    static let uploadedFullTextFolderName = "UploadedFullTexts"
 
     /// Characters per token assumed when estimating what a text costs to send.
     ///

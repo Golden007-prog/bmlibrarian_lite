@@ -286,7 +286,15 @@ struct LLMSettingsTab: View {
             Section("Full Text") {
                 Toggle("Fetch Full Text for Top Papers", isOn: $settings.autoFetchFullTextEnabled)
 
-                Text("Automatically retrieve the full text of papers scored 4 or 5 before extracting citations and analysing transparency. Slower, and uses more tokens per paper; papers with no open full text fall back to the abstract.")
+                Picker("Fetch Full Text From Score", selection: $settings.fullTextAutoFetchMinScore) {
+                    ForEach(1...5, id: \.self) { score in
+                        Text("\(score) or higher").tag(score)
+                    }
+                }
+                .disabled(!settings.autoFetchFullTextEnabled)
+                .pickerStyle(.menu)
+
+                Text("Automatically retrieve the full text of papers scored \(settings.fullTextAutoFetchMinScore) or higher (never below the minimum relevance score) before extracting citations and analysing transparency. Slower, and uses more tokens per paper; papers with no open full text fall back to the abstract.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

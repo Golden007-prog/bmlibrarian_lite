@@ -161,10 +161,9 @@ struct MacHistoryView: View {
                                 }
                             }
 
-                            if session.canGetMoreEvidence {
-                                Button("Continue Search") {
-                                    onContinueSession?(session)
-                                }
+                            // Smart search can always run a fresh round
+                            Button("Continue Search") {
+                                onContinueSession?(session)
                             }
 
                             Divider()
@@ -546,18 +545,16 @@ struct MacSessionDetailView: View {
                         .controlSize(.large)
                     }
 
-                    // Continue Search button
-                    if session.canGetMoreEvidence {
-                        Button(action: { onContinueSession?() }) {
-                            HStack {
-                                Image(systemName: "magnifyingglass.circle")
-                                Text("Continue Search")
-                            }
-                            .frame(maxWidth: .infinity)
+                    // Continue Search button: smart search can always run a fresh round
+                    Button(action: { onContinueSession?() }) {
+                        HStack {
+                            Image(systemName: "magnifyingglass.circle")
+                            Text("Continue Search")
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
+                        .frame(maxWidth: .infinity)
                     }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
                 }
 
                 // Scored Documents

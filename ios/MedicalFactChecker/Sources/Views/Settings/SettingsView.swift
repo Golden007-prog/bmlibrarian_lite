@@ -375,6 +375,12 @@ struct SettingsView: View {
                 // Full-text retrieval
                 Section {
                     Toggle("Fetch Full Text for Top Papers", isOn: $settings.autoFetchFullTextEnabled)
+                    Picker("Fetch Full Text From Score", selection: $settings.fullTextAutoFetchMinScore) {
+                        ForEach(1...5, id: \.self) { score in
+                            Text("\(score) or higher").tag(score)
+                        }
+                    }
+                    .disabled(!settings.autoFetchFullTextEnabled)
                     SecureField("CORE API Key (optional)", text: $coreAPIKey)
                         .textContentType(.password)
                     Button("Save CORE API Key") {
@@ -407,7 +413,7 @@ struct SettingsView: View {
                     Text("Full Text")
                 } footer: {
                     VStack(alignment: .leading) {
-                        Text("Automatically retrieve the full text of papers scored 4 or 5 before extracting citations and analysing transparency. Slower, and uses more tokens per paper; papers with no open full text fall back to the abstract. Optional. A free CORE API key (core.ac.uk/services/api) lets the app read the text CORE extracted from repository copies when no other source has the article.")
+                        Text("Automatically retrieve the full text of papers scored \(settings.fullTextAutoFetchMinScore) or higher (never below the minimum relevance score) before extracting citations and analysing transparency. Slower, and uses more tokens per paper; papers with no open full text fall back to the abstract. Optional. A free CORE API key (core.ac.uk/services/api) lets the app read the text CORE extracted from repository copies when no other source has the article.")
                         Text(AppSettings.elsevierAPIKeyExplanation)
                         Text(AppSettings.elsevierInstTokenExplanation)
                     }

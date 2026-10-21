@@ -24,16 +24,21 @@ import BioMedLit
 /// Pure functions, so the rules can be tested without a workflow, a network or
 /// a model container.
 enum FullTextAutoFetch {
-    /// The lowest score fetched: the app's constant, but never below the
-    /// user's own relevance threshold.
+    /// The lowest score fetched: the user's full-text score, but never below
+    /// the user's own relevance threshold.
     ///
     /// A paper under that threshold is not in the report, so fetching it would
     /// spend retrieval time on text nothing reads.
     ///
-    /// - Parameter minScoreThreshold: The user's relevance threshold (1-5).
+    /// - Parameters:
+    ///   - minScoreThreshold: The user's relevance threshold (1-5).
+    ///   - autoFetchMinScore: The user's full-text score (1-5).
     /// - Returns: The lowest score (1-5) whose papers are fetched.
-    static func minimumScore(minScoreThreshold: Int) -> Int {
-        max(WorkflowConstants.fullTextAutoFetchMinScore, minScoreThreshold)
+    static func minimumScore(
+        minScoreThreshold: Int,
+        autoFetchMinScore: Int = WorkflowConstants.fullTextAutoFetchMinScore
+    ) -> Int {
+        max(autoFetchMinScore, minScoreThreshold)
     }
 
     /// The documents to fetch full text for.
@@ -51,18 +56,25 @@ enum FullTextAutoFetch {
     /// that could not reach the open-access copy keeps the stored link
     /// (``storedLinkKept(_:refetched:)``).
     ///
+    /// A retry the reader asks for also asks again for the documents an earlier
+    /// attempt found no source for: a source may have gained a copy since.
+    ///
     /// - Parameters:
     ///   - documents: Candidate documents, in the order to fetch them.
     ///   - minScoreThreshold: The user's relevance threshold (1-5).
+    ///   - autoFetchMinScore: The user's full-text score (1-5).
+    ///   - retrying: Whether the reader asked to retry, so attempted documents count.
     /// - Returns: The qualifying documents, in the order given.
     static func documentsToFetch(
         from documents: [Document],
-        minScoreThreshold: Int
+        minScoreThreshold: Int,
+        autoFetchMinScore: Int = WorkflowConstants.fullTextAutoFetchMinScore,
+        retrying: Bool = false
     ) -> [Document] {
-        let minimum = minimumScore(minScoreThreshold: minScoreThreshold)
+        let minimum = minimumScore(minScoreThreshold: minScoreThreshold, autoFetchMinScore: autoFetchMinScore)
         return documents.filter { document in
             document.meetsThreshold(minimum)
-                && ((!document.hasFullText && !document.fullTextAttempted)
+                && ((!document.hasFullText && (retrying || !document.fullTextAttempted))
                     || document.holdsOnlyUndownloadedPDFLink)
                 && hasIdentifier(document)
         }
@@ -148,28 +160,34 @@ enum FullTextAutoFetch {
     /// The article text citation extraction should read for one document.
     ///
     /// Only for the papers the setting is about, so a text fetched by hand for
-    /// a lower-scored paper does not change what that paper costs.
+    /// a lower-scored paper does not change what that paper costs. A text the
+    /// reader uploaded is always read: they chose it for the analysis.
     ///
     /// - Parameters:
     ///   - document: The document to read.
     ///   - autoFetchEnabled: The automatic full-text setting.
     ///   - minScoreThreshold: The user's relevance threshold (1-5).
+    ///   - autoFetchMinScore: The user's full-text score (1-5).
     /// - Returns: The text and whether it was cut, or nil to use the abstract.
     static func citationFullText(
         for document: Document,
         autoFetchEnabled: Bool,
-        minScoreThreshold: Int
+        minScoreThreshold: Int,
+        autoFetchMinScore: Int = WorkflowConstants.fullTextAutoFetchMinScore
     ) -> (text: String, truncated: Bool)? {
-        guard autoFetchEnabled,
-              document.meetsThreshold(minimumScore(minScoreThreshold: minScoreThreshold))
+        guard document.holdsUploadedFullText
+                || (autoFetchEnabled && document.meetsThreshold(
+                    minimumScore(minScoreThreshold: minScoreThreshold, autoFetchMinScore: autoFetchMinScore)
+                ))
         else { return nil }
         return citationText(for: document)
     }
 
     /// Whether a document is due a transparency pass.
     ///
-    /// With the setting on, an analysis made before the full text arrived is
-    /// redone. With it off the rule is the one the app always had.
+    /// With the setting on, or for a text the reader uploaded, an analysis
+    /// made before the full text arrived is redone. Otherwise the rule is the
+    /// one the app always had.
     ///
     /// - Parameters:
     ///   - document: The document to check.
@@ -177,7 +195,7 @@ enum FullTextAutoFetch {
     /// - Returns: Whether transparency analysis should run for it.
     static func needsTransparencyPass(_ document: Document, autoFetchEnabled: Bool) -> Bool {
         document.needsTransparencyAnalysis
-            || (autoFetchEnabled && document.transparencyNeedsFullTextRerun)
+            || ((autoFetchEnabled || document.holdsUploadedFullText) && document.transparencyNeedsFullTextRerun)
     }
 
     // MARK: - Retrieval

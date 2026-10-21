@@ -8,6 +8,46 @@ its slice has landed; add a new section when handing off new work.
 
 ## In flight
 
+**Parity: taking a fact check further** (iOS/macOS done in PR #611, branch
+`feat/fact-check-more-evidence-and-fulltext-retry`; the rules per feature are
+in `ROADMAP.md`). Android and the Python desktop are owed all five. Starting
+points, from a survey of the code on 2026-10-21 (Android paths under
+`android/MedicalFactChecker/app/src/main/java/com/bmlibrarian/factchecker/`):
+- **Android, in this order:**
+  - *Find More Evidence / New Question*: `ui/factcheck/components/ClaimInput.kt`
+    (the submit button), `FactCheckViewModel.addMoreResults()` and the
+    unused `startNewQuestion()`.
+  - *Repeated smart search*: `FactCheckWorkflow.kt` `executeSmartSearch`,
+    `requestAlternativeQueries` (passes only `initialQuery`), the prompt in
+    `LLMService.generateAlternativeQueries`, `SessionEntity.smartSearchEnabled`
+    / `canGetMoreEvidence`, `SessionRepository.updateSmartSearchState`.
+  - *Automatic full text* (missing entirely): a step after scoring in
+    `FactCheckWorkflow`, the setting in `SettingsRepository`/`WorkflowConfig`;
+    `CitationInput.kt` reads `abstractText ?: fullTextMarkdown`, abstract
+    first, which must change for full text to be read.
+  - *Retry*: reuse `extractCitations`, `analyzeTransparency`,
+    `generateReport`; add a per-document "last extraction read the full
+    text" column (Swift's `Document.citationsReadFullText`). Comparing
+    `CitationEntity.created_at` with `DocumentEntity.fullTextFetchedAt` is
+    only Swift's fallback for records written before that flag: it misses a
+    text fetched before the citations and re-reads after a manual re-fetch.
+  - *Upload*: no file picker exists; `Constants.FULLTEXT_SOURCE_UPLOADED`
+    is the source label.
+- **Python desktop:** citations are abstract-only (`agents/citation_agent.py`)
+  and the `citations` table (`storage.py`) has no timestamp; full text is
+  fetched only for transparency (`study_transparency_analyzer`) and the
+  Document Interrogation tab. Settle the design with the maintainer first
+  (`ROADMAP.md`); then the nearest existing pieces are
+  `research_questions_tab.py` *Re-run Search* / `IncrementalSearchWorker`,
+  `TransparencyReanalysisWorker`, `pdf_utils.save_fulltext_markdown`.
+- **Verify:** mirror the Swift tests (`WorkflowCancelTests`
+  `testAFetchMoreAfterSmartSearchRanTriesAgain` and its retry tests,
+  `FullTextAutoFetchTests`, `FullTextUploadTests`, `ReportRetryOfferTests`,
+  BioMedLit `AlternativeQueryPromptTests`).
+- **Apple follow-ups from the review:** issue #612 (LLM and search test
+  seams; the rules no test pins yet are listed there) and issue #613 (upload
+  edge cases).
+
 **Owed by the maintainer** (stages C1 and C2 and the desktop browser rescue
 have landed):
 - **C2's probe, off-network**: `ELSEVIER_API_KEY=… python
