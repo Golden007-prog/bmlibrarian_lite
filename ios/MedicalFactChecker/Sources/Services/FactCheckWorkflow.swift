@@ -1576,8 +1576,8 @@ final class FactCheckWorkflow {
     ///     ``TransparencyAnalysisService``. Tests pass their own.
     ///   - retryingFullText: The reader asked to retry full-text retrieval
     ///     (``extractCitations(retryingFullText:)``).
-    /// - Returns: Whether a report was generated: a retry that brought no new
-    ///   full text redoes nothing.
+    /// - Returns: Whether a report was generated: a retry that read no full
+    ///   text redoes nothing.
     /// - Throws: `CancellationError` when the user stops the run between
     ///   steps, or whatever citation extraction or report generation throws.
     @discardableResult
@@ -1590,8 +1590,8 @@ final class FactCheckWorkflow {
         try Task.checkCancellation()
         // Citations from the new relevant documents only
         updateProgress(.fetchingMoreEvidence, "Extracting citations from new documents...")
-        let gainedText = try await extractCitations(retryingFullText: retryingFullText)
-        if retryingFullText && gainedText == 0 { return false }
+        let readFullTexts = try await extractCitations(retryingFullText: retryingFullText)
+        if retryingFullText && readFullTexts == 0 { return false }
 
         try Task.checkCancellation()
         // Rate the documents this batch made relevant before the report is
@@ -1620,39 +1620,52 @@ final class FactCheckWorkflow {
 
     // MARK: - Retrying Full Text
 
-    /// Shown when a retry of full-text retrieval brought no new full text.
+    /// Shown when a retry of full-text retrieval found no full text to read.
     static let noNewFullTextNotice = "No further full texts could be retrieved. The report is unchanged."
 
-    /// How many papers a retry of full-text retrieval would ask for, for the
-    /// screen to offer ``retryFullTextRetrieval()`` beside.
+    /// What a retry of full-text retrieval would do, for the screen to offer
+    /// ``retryFullTextRetrieval()`` beside.
     ///
-    /// `nil` unless the setting is on, the session has a report, and a paper
-    /// scored high enough has no full text.
+    /// `nil` unless the session has a report and either, with the setting on,
+    /// a paper scored high enough has no full text, or a paper has a full text
+    /// (an upload, say) its citations were not taken from.
     var fullTextRetryNotice: String? {
-        guard settings.autoFetchFullTextEnabled, !isRunning, let session, session.report != nil else { return nil }
-        let count = FullTextAutoFetch.documentsToFetch(
-            from: session.documents ?? [],
-            minScoreThreshold: settings.minScoreThreshold,
-            autoFetchMinScore: settings.fullTextAutoFetchMinScore,
-            retrying: true
-        ).count
-        guard count > 0 else { return nil }
+        guard !isRunning, let session, session.report != nil else { return nil }
+        let documents = session.documents ?? []
+        let missing = settings.autoFetchFullTextEnabled
+            ? FullTextAutoFetch.documentsToFetch(
+                from: documents,
+                minScoreThreshold: settings.minScoreThreshold,
+                autoFetchMinScore: settings.fullTextAutoFetchMinScore,
+                retrying: true
+            ).count
+            : 0
+        let unread = documents.filter(hasUnreadFullText).count
         let minimum = FullTextAutoFetch.minimumScore(
             minScoreThreshold: settings.minScoreThreshold, autoFetchMinScore: settings.fullTextAutoFetchMinScore
         )
-        return count == 1
-            ? "1 paper scored \(minimum) or higher has no full text."
-            : "\(count) papers scored \(minimum) or higher have no full text."
+        var sentences: [String] = []
+        if missing > 0 {
+            sentences.append(missing == 1
+                ? "1 paper scored \(minimum) or higher has no full text."
+                : "\(missing) papers scored \(minimum) or higher have no full text.")
+        }
+        if unread > 0 {
+            sentences.append(unread == 1
+                ? "1 paper has a full text the analysis has not read yet."
+                : "\(unread) papers have a full text the analysis has not read yet.")
+        }
+        return sentences.isEmpty ? nil : sentences.joined(separator: " ")
     }
 
     /// Fetch full text again for the papers that have none, and redo the
     /// analysis with any that arrive.
     ///
     /// Asks again for papers an earlier attempt found no source for, and for
-    /// those a lowered full-text score now covers. A paper whose text arrives
-    /// has its citations extracted again from the text and its transparency
-    /// analysed again, and the report is regenerated; with no new text the
-    /// report stands.
+    /// those a lowered full-text score now covers. A paper whose text arrived
+    /// after its citations (fetched now, or uploaded) has its citations
+    /// extracted again from the text and its transparency analysed again, and
+    /// the report is regenerated; with no new text the report stands.
     func retryFullTextRetrieval() async {
         await runAsWorkflowTask { [weak self] in
             await self?.retryFullTextRetrievalWork()
@@ -2470,9 +2483,10 @@ final class FactCheckWorkflow {
     ///
     /// - Parameter retryingFullText: The reader asked to retry full-text
     ///   retrieval: papers an earlier attempt found no source for are asked
-    ///   again, and a paper whose full text arrives has the citations taken
-    ///   from its abstract replaced by ones from the text.
-    /// - Returns: How many papers gained a full text citation extraction reads.
+    ///   again, and a paper whose citations were taken from its abstract
+    ///   before its full text arrived (fetched or uploaded) has them replaced
+    ///   by ones from the text.
+    /// - Returns: How many papers had citations extracted from a full text.
     @discardableResult
     private func extractCitations(retryingFullText: Bool = false) async throws -> Int {
         guard let session = session, let llmService = llmService else { return 0 }
@@ -2481,25 +2495,19 @@ final class FactCheckWorkflow {
 
         // Before the filter below: transparency analysis reads the same text,
         // so a paper that already has its citations still gets fetched.
-        var gainedText: Set<PersistentIdentifier> = []
         if settings.autoFetchFullTextEnabled {
-            func readable() -> Set<PersistentIdentifier> {
-                Set((session.documents ?? [])
-                    .filter { FullTextAutoFetch.citationText(for: $0) != nil }
-                    .map(\.persistentModelID))
-            }
-            let before = readable()
             try await fetchFullTextsForTopDocuments(retrying: retryingFullText)
-            gainedText = readable().subtracting(before)
         }
-        let replacing = retryingFullText ? gainedText : []
+        let replacing: Set<PersistentIdentifier> = retryingFullText
+            ? Set((session.documents ?? []).filter(hasUnreadFullText).map(\.persistentModelID))
+            : []
 
         let relevantDocs = (session.documents ?? []).filter {
             $0.meetsThreshold(settings.minScoreThreshold)
                 && (($0.citations ?? []).isEmpty || replacing.contains($0.persistentModelID))
         }
 
-        guard !relevantDocs.isEmpty else { return gainedText.count }
+        guard !relevantDocs.isEmpty else { return 0 }
 
         // Check budget before starting
         try checkBudget()
@@ -2578,7 +2586,19 @@ final class FactCheckWorkflow {
                 self?.applyCitationResult(result, replacingCitationsOf: replacing)
             }
         )
-        return gainedText.count
+        return inputs.filter { $0.fullText != nil }.count
+    }
+
+    /// Whether a relevant paper has a full text its citations were not taken from.
+    private func hasUnreadFullText(_ document: Document) -> Bool {
+        document.meetsThreshold(settings.minScoreThreshold)
+            && document.citationsPredateFullText
+            && FullTextAutoFetch.citationFullText(
+                for: document,
+                autoFetchEnabled: settings.autoFetchFullTextEnabled,
+                minScoreThreshold: settings.minScoreThreshold,
+                autoFetchMinScore: settings.fullTextAutoFetchMinScore
+            ) != nil
     }
 
     /// Retrieve the full text of the top-scoring documents, one at a time.

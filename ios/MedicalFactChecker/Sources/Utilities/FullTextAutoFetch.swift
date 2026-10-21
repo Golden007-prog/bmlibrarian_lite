@@ -160,7 +160,8 @@ enum FullTextAutoFetch {
     /// The article text citation extraction should read for one document.
     ///
     /// Only for the papers the setting is about, so a text fetched by hand for
-    /// a lower-scored paper does not change what that paper costs.
+    /// a lower-scored paper does not change what that paper costs. A text the
+    /// reader uploaded is always read: they chose it for the analysis.
     ///
     /// - Parameters:
     ///   - document: The document to read.
@@ -174,18 +175,19 @@ enum FullTextAutoFetch {
         minScoreThreshold: Int,
         autoFetchMinScore: Int = WorkflowConstants.fullTextAutoFetchMinScore
     ) -> (text: String, truncated: Bool)? {
-        guard autoFetchEnabled,
-              document.meetsThreshold(
-                minimumScore(minScoreThreshold: minScoreThreshold, autoFetchMinScore: autoFetchMinScore)
-              )
+        guard document.holdsUploadedFullText
+                || (autoFetchEnabled && document.meetsThreshold(
+                    minimumScore(minScoreThreshold: minScoreThreshold, autoFetchMinScore: autoFetchMinScore)
+                ))
         else { return nil }
         return citationText(for: document)
     }
 
     /// Whether a document is due a transparency pass.
     ///
-    /// With the setting on, an analysis made before the full text arrived is
-    /// redone. With it off the rule is the one the app always had.
+    /// With the setting on, or for a text the reader uploaded, an analysis
+    /// made before the full text arrived is redone. Otherwise the rule is the
+    /// one the app always had.
     ///
     /// - Parameters:
     ///   - document: The document to check.
@@ -193,7 +195,7 @@ enum FullTextAutoFetch {
     /// - Returns: Whether transparency analysis should run for it.
     static func needsTransparencyPass(_ document: Document, autoFetchEnabled: Bool) -> Bool {
         document.needsTransparencyAnalysis
-            || (autoFetchEnabled && document.transparencyNeedsFullTextRerun)
+            || ((autoFetchEnabled || document.holdsUploadedFullText) && document.transparencyNeedsFullTextRerun)
     }
 
     // MARK: - Retrieval

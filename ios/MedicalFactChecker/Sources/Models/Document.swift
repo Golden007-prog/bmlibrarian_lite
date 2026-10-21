@@ -720,6 +720,21 @@ final class Document {
         fullTextHTML != nil || fullTextContent != nil || fullTextPDFPath != nil
     }
 
+    /// Whether the stored full text is one the reader uploaded.
+    var holdsUploadedFullText: Bool {
+        fullTextSource == AppFullTextSource.uploaded.rawValue
+    }
+
+    /// Whether citations were extracted before the full text arrived, so
+    /// they were taken from the abstract while a full text now exists.
+    var citationsPredateFullText: Bool {
+        guard let fetched = fullTextFetchedAt,
+              let text = analyzableFullText,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        return (citations ?? []).contains { $0.extractedAt < fetched }
+    }
+
     /// Whether we've already tried to fetch full text (success or failure).
     var fullTextAttempted: Bool {
         fullTextFetchedAt != nil || fullTextUnavailable

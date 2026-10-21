@@ -18,7 +18,6 @@
 import BioMedLit
 import SwiftData
 import SwiftUI
-import UniformTypeIdentifiers
 
 // MARK: - Constants
 
@@ -271,10 +270,6 @@ struct DocumentScoreRow: View {
     @State private var showFullTextViewer = false
     @State private var fullTextResult: AppFullTextResult?
 
-    // File upload state
-    @State private var showFileImporter = false
-    @State private var isProcessingUpload = false
-
     @Environment(\.openURL) private var openURL
 
     var body: some View {
@@ -318,19 +313,17 @@ struct DocumentScoreRow: View {
             if isExpanded {
                 expandedContent
             }
+
+            // The reader's own copy, for a paper no source had
+            if FullTextUpload.isOffered(for: document) {
+                UploadFullTextButton(document: document)
+            }
         }
         .padding(12)
         .background(Color(.systemBackground))
         .cornerRadius(8)
         .sheet(isPresented: $showFullTextViewer) {
             fullTextViewerSheet
-        }
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: [.pdf, .html, .plainText, UTType(filenameExtension: "md") ?? .plainText],
-            allowsMultipleSelection: false
-        ) { result in
-            handleFileImport(result)
         }
     }
 
@@ -492,9 +485,6 @@ struct DocumentScoreRow: View {
                         .foregroundColor(.secondary)
                 }
             }
-
-            // Upload button when full text is unavailable
-            uploadFullTextButton
         }
     }
 
@@ -554,7 +544,7 @@ struct DocumentScoreRow: View {
                     }
                 }
                 .buttonStyle(.bordered)
-                .disabled(isLoadingFullText || isProcessingUpload)
+                .disabled(isLoadingFullText)
                 .accessibilityHint("Downloads the full text of this article if available")
 
                 if let error = fullTextError {
@@ -562,128 +552,6 @@ struct DocumentScoreRow: View {
                         .font(.caption)
                         .foregroundColor(.red)
                         .lineLimit(2)
-                }
-            }
-
-            // Upload button when full text fetch is available
-            uploadFullTextButton
-        }
-    }
-
-    /// Button to upload full text manually.
-    private var uploadFullTextButton: some View {
-        Button(action: { showFileImporter = true }) {
-            if isProcessingUpload {
-                ProgressView()
-                    .scaleEffect(ScoredDocumentsConstants.inlineProgressScale)
-            } else {
-                Label("Upload Full Text", systemImage: "square.and.arrow.up")
-            }
-        }
-        .buttonStyle(.bordered)
-        .tint(.purple)
-        .disabled(isLoadingFullText || isProcessingUpload)
-        .accessibilityHint("Upload a PDF, HTML, or Markdown file containing the full text")
-    }
-
-    // MARK: - File Upload Handling
-
-    /// Handle file import result from the file picker.
-    ///
-    /// - Parameter result: The result from the file importer.
-    private func handleFileImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            processUploadedFile(url)
-        case .failure(let error):
-            fullTextError = error.localizedDescription
-        }
-    }
-
-    /// Process an uploaded file and store its content.
-    ///
-    /// - Parameter url: The URL of the uploaded file.
-    private func processUploadedFile(_ url: URL) {
-        isProcessingUpload = true
-        fullTextError = nil
-
-        Task {
-            do {
-                // Start accessing security-scoped resource
-                guard url.startAccessingSecurityScopedResource() else {
-                    throw FullTextUploadError.accessDenied
-                }
-                defer { url.stopAccessingSecurityScopedResource() }
-
-                let fileExtension = url.pathExtension.lowercased()
-
-                switch fileExtension {
-                case "pdf":
-                    // Copy PDF to app's cache directory
-                    let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-                    let pdfDir = cacheDir.appendingPathComponent("fulltext_pdfs", isDirectory: true)
-                    try FileManager.default.createDirectory(at: pdfDir, withIntermediateDirectories: true)
-                    let destURL = pdfDir.appendingPathComponent("\(document.pmid).pdf")
-
-                    if FileManager.default.fileExists(atPath: destURL.path) {
-                        try FileManager.default.removeItem(at: destURL)
-                    }
-                    try FileManager.default.copyItem(at: url, to: destURL)
-
-                    await MainActor.run {
-                        // Through the one writer, so the warnings from an earlier
-                        // fetch go with the content they described. Assigning by
-                        // hand here left them behind to label the reader's own
-                        // upload as truncated, and left the superseded HTML in
-                        // place to shadow the PDF they had just chosen.
-                        // The copied file's path travels *in* the result, so the
-                        // one writer records the path and the "this is a local
-                        // file" flag together. Assigning `fullTextPDFPath` by
-                        // hand afterwards — which is what this did — could not
-                        // touch the flag, because `storePDFPath` is private:
-                        // the record ended up holding a filesystem path
-                        // labelled as a remote link, and every reopen of an
-                        // uploaded PDF failed with a server error.
-                        let result = AppFullTextResult.uploaded(
-                            content: .pdfURL(destURL),
-                            localPDFPath: destURL.path
-                        )
-                        document.applyFullTextResult(result)
-                        fullTextResult = result
-                        isProcessingUpload = false
-                        showFullTextViewer = true
-                    }
-
-                case "html", "htm":
-                    let htmlContent = try String(contentsOf: url, encoding: .utf8)
-                    await MainActor.run {
-                        let result = AppFullTextResult.uploaded(
-                            content: .html(content: htmlContent, markdown: htmlContent)
-                        )
-                        document.applyFullTextResult(result)
-                        fullTextResult = result
-                        isProcessingUpload = false
-                        showFullTextViewer = true
-                    }
-
-                case "md", "markdown", "txt":
-                    let markdownContent = try String(contentsOf: url, encoding: .utf8)
-                    await MainActor.run {
-                        let result = AppFullTextResult.uploaded(content: .markdown(markdownContent))
-                        document.applyFullTextResult(result)
-                        fullTextResult = result
-                        isProcessingUpload = false
-                        showFullTextViewer = true
-                    }
-
-                default:
-                    throw FullTextUploadError.unsupportedFormat
-                }
-            } catch {
-                await MainActor.run {
-                    fullTextError = error.localizedDescription
-                    isProcessingUpload = false
                 }
             }
         }
@@ -1018,25 +886,6 @@ struct AbstractTextView: View {
 }
 
 // MARK: - Preview
-
-// MARK: - Full Text Upload Error
-
-/// Errors that can occur during full-text file upload.
-enum FullTextUploadError: LocalizedError {
-    /// Access to the file was denied.
-    case accessDenied
-    /// The file format is not supported.
-    case unsupportedFormat
-
-    var errorDescription: String? {
-        switch self {
-        case .accessDenied:
-            return "Unable to access the selected file"
-        case .unsupportedFormat:
-            return "Unsupported file format. Please use PDF, HTML, or Markdown"
-        }
-    }
-}
 
 #Preview {
     let doc = Document(
