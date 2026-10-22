@@ -10,7 +10,7 @@ its slice has landed; add a new section when handing off new work.
 
 **Parity: taking a fact check further.** iOS/macOS landed in PR #611;
 **Android is done on branch `feat/android-fact-check-more-evidence-and-fulltext`**
-(PR open, see below). **The Python desktop is owed all five**, and is a design
+(PR #616). **The Python desktop is owed all five**, and is a design
 question first (`ROADMAP.md`): citations are abstract-only
 (`agents/citation_agent.py`), the `citations` table (`storage.py`) has no
 timestamp, and full text is fetched only for transparency
