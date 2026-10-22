@@ -42,6 +42,10 @@ import com.bmlibrarian.factchecker.util.Constants
  * @property ncbiEmail Email for NCBI API requests (recommended for higher rate limits)
  * @property embeddingEnabled Whether to compute embedding-based similarity scores
  * @property enableHyde Whether to generate HyDE abstracts for better embedding matching
+ * @property autoFetchFullTextEnabled Whether a fact check fetches the full text of its top papers
+ *   before extracting citations
+ * @property fullTextAutoFetchMinScore Lowest relevance score (1-5) whose papers are fetched in full;
+ *   the floor used is never below [relevanceThreshold]
  */
 data class AppSettings(
     val llmProviderId: String = LLMProvider.OPENAI.id,
@@ -60,7 +64,9 @@ data class AppSettings(
     val unpaywallEmail: String = "",
     val embeddingEnabled: Boolean = true,
     val enableHyde: Boolean = true,
-    val parallelConcurrency: Int = DEFAULT_PARALLEL_CONCURRENCY
+    val parallelConcurrency: Int = DEFAULT_PARALLEL_CONCURRENCY,
+    val autoFetchFullTextEnabled: Boolean = false,
+    val fullTextAutoFetchMinScore: Int = Constants.FULLTEXT_AUTO_FETCH_MIN_SCORE
 ) {
     /**
      * Get the current LLM provider configuration.

@@ -83,6 +83,7 @@ class FactCheckViewModelFullTextTest {
             every { searchFailureMessage } returns MutableStateFlow<String?>(null)
             every { searchRecordDamaged } returns MutableStateFlow(false)
             every { smartSearchNotice } returns MutableStateFlow(null)
+            every { fullTextNotice } returns MutableStateFlow(null)
         }
         val settingsRepository = mockk<SettingsRepository>(relaxed = true) {
             every { configurationVersion } returns MutableStateFlow(0)

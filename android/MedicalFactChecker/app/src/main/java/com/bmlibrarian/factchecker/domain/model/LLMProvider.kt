@@ -267,6 +267,10 @@ data class ModelInfo(
         return inputCost + outputCost
     }
 
+    /** The price of one input token in USD, for estimating what a long prompt costs. */
+    val inputPricePerToken: Double
+        get() = inputPricePer1M / TOKENS_PER_MILLION
+
     /**
      * Check if this model is free (local/zero cost).
      *

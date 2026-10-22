@@ -68,13 +68,15 @@ interface DocumentDao {
     suspend fun updateAllColumns(document: DocumentEntity)
 
     /**
-     * Update an existing document, keeping its stored transparency result.
+     * Update an existing document, keeping its stored transparency result and
+     * its record of what its citations read.
      *
      * Callers read a row, `copy()` it and write it back to change its full text
      * or score; none of them means to change the transparency result. Writing
      * the copy whole would erase a result the workflow stored after the read,
      * so the stored result is carried over inside the same transaction.
-     * Transparency is written only by [updateTransparency].
+     * Transparency is written only by [updateTransparency], and whether the
+     * citations read the full text only by [updateCitationsReadFullText].
      *
      * @param document The document entity with updated values
      */
@@ -84,7 +86,8 @@ interface DocumentDao {
         updateAllColumns(
             document.copy(
                 transparencyResultJson = stored?.transparencyResultJson,
-                transparencyAnalyzedAt = stored?.transparencyAnalyzedAt
+                transparencyAnalyzedAt = stored?.transparencyAnalyzedAt,
+                citationsReadFullText = stored?.citationsReadFullText
             )
         )
     }
@@ -194,6 +197,16 @@ interface DocumentDao {
         embeddingScore: Double,
         embeddingScoreNormalized: Int
     )
+
+    /**
+     * Record whether a document's last successful citation extraction read its
+     * full text; the only writer of that column ([update] keeps it).
+     *
+     * @param id Document ID
+     * @param readFullText Whether the full text was in the prompt
+     */
+    @Query("UPDATE documents SET citations_read_full_text = :readFullText WHERE id = :id")
+    suspend fun updateCitationsReadFullText(id: String, readFullText: Boolean)
 
     /**
      * Store a document's transparency result.

@@ -611,6 +611,27 @@ object Constants {
     /** Full-text source: User-uploaded content (PDF, HTML, or Markdown). */
     const val FULLTEXT_SOURCE_UPLOADED = "uploaded"
 
+    // ==================== Automatic Full-Text Retrieval ====================
+
+    /**
+     * Default lowest relevance score (1-5) whose papers are fetched in full when
+     * the automatic full-text setting is on; the user can change it.
+     *
+     * Scores 4 and 5 are the papers that shape the report most, so they are the
+     * ones where the full text is worth the extra retrieval time and tokens.
+     */
+    const val FULLTEXT_AUTO_FETCH_MIN_SCORE = 4
+
+    /**
+     * Longest full text given to citation extraction, in characters (about
+     * 10,000 tokens). A longer text is cut, and the prompt says so, so the model
+     * does not treat the cut as the end of the paper.
+     */
+    const val MAX_CITATION_FULL_TEXT_CHARACTERS = 40_000
+
+    /** How many failed papers a full-text notice names before it only counts them. */
+    const val MAX_FAILED_TITLES_TO_NAME = 3
+
     // ==================== JATS Parsing Constants ====================
 
     /** Maximum heading level in markdown output. */

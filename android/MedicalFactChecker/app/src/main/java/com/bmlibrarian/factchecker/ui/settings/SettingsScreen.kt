@@ -167,7 +167,9 @@ fun SettingsScreen(
                 onEmbeddingEnabledChange = viewModel::setEmbeddingEnabled,
                 onBatchSizeChange = viewModel::setBatchSize,
                 onRelevanceThresholdChange = viewModel::setRelevanceThreshold,
-                onTargetRelevantDocsChange = viewModel::setTargetRelevantDocuments
+                onTargetRelevantDocsChange = viewModel::setTargetRelevantDocuments,
+                onAutoFetchFullTextChange = viewModel::setAutoFetchFullTextEnabled,
+                onFullTextAutoFetchMinScoreChange = viewModel::setFullTextAutoFetchMinScore
             )
 
             Spacer(modifier = Modifier.height(Constants.UI_SECTION_SPACING.dp))
@@ -411,7 +413,9 @@ private fun SearchSettingsSection(
     onEmbeddingEnabledChange: (Boolean) -> Unit,
     onBatchSizeChange: (Int) -> Unit,
     onRelevanceThresholdChange: (Int) -> Unit,
-    onTargetRelevantDocsChange: (Int) -> Unit
+    onTargetRelevantDocsChange: (Int) -> Unit,
+    onAutoFetchFullTextChange: (Boolean) -> Unit,
+    onFullTextAutoFetchMinScoreChange: (Int) -> Unit
 ) {
     SettingsSection(title = "Search Settings") {
         // Search provider
@@ -497,6 +501,43 @@ private fun SearchSettingsSection(
             steps = Constants.SCORING_MAX_SCORE - Constants.SCORING_MIN_SCORE - 1,
             valueDisplay = "${settings.relevanceThreshold}/${Constants.SCORING_MAX_SCORE} minimum"
         )
+
+        Spacer(modifier = Modifier.height(Constants.UI_ELEMENT_SPACING.dp))
+
+        // Automatic full text for the top papers
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Fetch Full Text for Top Papers",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = "Retrieve the full text of papers scored ${settings.fullTextAutoFetchMinScore} or higher " +
+                        "(never below the relevance threshold) before extracting citations. Slower, and uses more " +
+                        "tokens per paper; papers with no open full text fall back to the abstract.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = settings.autoFetchFullTextEnabled,
+                onCheckedChange = onAutoFetchFullTextChange
+            )
+        }
+
+        if (settings.autoFetchFullTextEnabled) {
+            SliderSetting(
+                label = "Fetch Full Text From Score",
+                value = settings.fullTextAutoFetchMinScore.toFloat(),
+                onValueChange = { onFullTextAutoFetchMinScoreChange(it.toInt()) },
+                valueRange = Constants.SCORING_MIN_SCORE.toFloat()..Constants.SCORING_MAX_SCORE.toFloat(),
+                steps = Constants.SCORING_MAX_SCORE - Constants.SCORING_MIN_SCORE - 1,
+                valueDisplay = "${settings.fullTextAutoFetchMinScore} or higher"
+            )
+        }
 
         Spacer(modifier = Modifier.height(Constants.UI_ELEMENT_SPACING.dp))
 

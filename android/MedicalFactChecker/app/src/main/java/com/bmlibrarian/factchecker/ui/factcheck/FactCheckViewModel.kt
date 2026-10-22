@@ -33,7 +33,9 @@ import com.bmlibrarian.factchecker.domain.model.DocumentSortOrder
 import com.bmlibrarian.factchecker.domain.model.RetrievalShortfall
 import com.bmlibrarian.factchecker.domain.model.SearchFailureReporting
 import com.bmlibrarian.factchecker.domain.model.UnpaywallContact
+import com.bmlibrarian.factchecker.domain.model.WorkflowStep
 import com.bmlibrarian.factchecker.domain.workflow.FactCheckWorkflow
+import com.bmlibrarian.factchecker.domain.workflow.FullTextAutoFetch
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowConfig
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowProgress
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowState
@@ -115,7 +117,16 @@ data class FactCheckUiState(
     val searchedClaim: String? = null,
 
     /** Why a request for more evidence added nothing new, while the report stands; null when none. */
-    val smartSearchNotice: String? = null
+    val smartSearchNotice: String? = null,
+
+    /** What the full-text step could not do; null when nothing went wrong. */
+    val fullTextNotice: String? = null,
+
+    /** Whether the session has completed, so it holds a report. */
+    val sessionComplete: Boolean = false,
+
+    /** What a retry of full-text retrieval would do, offered beside its button; null when nothing. */
+    val fullTextRetryNotice: String? = null
 ) {
     /**
      * Whether the claim on screen is the one the current session searched, so
@@ -233,9 +244,15 @@ class FactCheckViewModel @Inject constructor(
         viewModelScope.launch {
             workflow.state.collect { state ->
                 _uiState.update {
-                    it.copy(
+                    withRetryNotice(it.copy(
                         workflowState = state,
                         isRunning = state.isProcessing(),
+                        // A restored session is idle; its completeness was read from it
+                        sessionComplete = when (state) {
+                            is WorkflowState.Completed -> true
+                            is WorkflowState.Idle -> it.sessionComplete
+                            else -> false
+                        },
                         errorMessage = when (state) {
                             is WorkflowState.Failed -> state.error
                             is WorkflowState.BudgetExceeded -> state.message
@@ -246,7 +263,7 @@ class FactCheckViewModel @Inject constructor(
                             is WorkflowState.Searching -> state.query
                             else -> it.generatedQuery // Keep existing query
                         }
-                    )
+                    ))
                 }
             }
         }
@@ -285,6 +302,11 @@ class FactCheckViewModel @Inject constructor(
         viewModelScope.launch {
             workflow.smartSearchNotice.collect { notice ->
                 _uiState.update { it.copy(smartSearchNotice = notice) }
+            }
+        }
+        viewModelScope.launch {
+            workflow.fullTextNotice.collect { notice ->
+                _uiState.update { it.copy(fullTextNotice = notice) }
             }
         }
     }
@@ -475,7 +497,7 @@ class FactCheckViewModel @Inject constructor(
         viewModelScope.launch {
             documentRepository.getDocumentsBySession(sessionId)
                 .collect { docs ->
-                    _uiState.update { it.copy(documents = docs) }
+                    _uiState.update { withRetryNotice(it.copy(documents = docs)) }
                 }
         }
 
@@ -485,7 +507,7 @@ class FactCheckViewModel @Inject constructor(
                 .collect { citations ->
                     // Group citations by document ID
                     val citationsMap = citations.groupBy { it.documentId }
-                    _uiState.update { it.copy(citationsByDocument = citationsMap) }
+                    _uiState.update { withRetryNotice(it.copy(citationsByDocument = citationsMap)) }
                 }
         }
     }
@@ -506,7 +528,9 @@ class FactCheckViewModel @Inject constructor(
             relevanceThreshold = settingsRepository.getRelevanceThreshold(),
             targetRelevantDocuments = settingsRepository.getTargetRelevantDocuments(),
             maxRunBudgetUsd = settingsRepository.getMaxRunBudgetUsd().toDouble(),
-            monthlyBudgetUsd = settingsRepository.getMonthlyBudgetUsd().toDouble()
+            monthlyBudgetUsd = settingsRepository.getMonthlyBudgetUsd().toDouble(),
+            autoFetchFullText = settingsRepository.settings.value.autoFetchFullTextEnabled,
+            fullTextAutoFetchMinScore = settingsRepository.settings.value.fullTextAutoFetchMinScore
         )
     }
 
@@ -548,6 +572,7 @@ class FactCheckViewModel @Inject constructor(
                         searchedClaim = session.claimText.trim(),
                         generatedQuery = session.pubmedQuery,
                         isResumedSession = true,
+                        sessionComplete = session.workflowStep == WorkflowStep.COMPLETED,
                         canFetchMoreDocuments = session.hasMoreDocuments,
                         workflowState = WorkflowState.Idle,
                         isRunning = false,
@@ -589,6 +614,32 @@ class FactCheckViewModel @Inject constructor(
             }
         }
     }
+
+    /**
+     * Fetch full text again for the papers that have none, and redo the analysis
+     * with any that arrive, under the current settings.
+     */
+    fun retryFullText() {
+        viewModelScope.launch {
+            try {
+                workflow.retryFullTextRetrieval(buildWorkflowConfig())
+            } catch (e: Exception) {
+                _uiState.update { it.copy(errorMessage = e.message ?: "Failed to retry full text") }
+            }
+        }
+    }
+
+    /**
+     * The state with what a retry of full-text retrieval would do, under the
+     * current settings: offered only for a completed session, while nothing runs.
+     */
+    private fun withRetryNotice(state: FactCheckUiState): FactCheckUiState = state.copy(
+        fullTextRetryNotice = if (state.isRunning || !state.sessionComplete) {
+            null
+        } else {
+            FullTextAutoFetch.retryNotice(state.documents, state.citationsByDocument, buildWorkflowConfig())
+        }
+    )
 
     /**
      * Clear restored session state and start a new question.

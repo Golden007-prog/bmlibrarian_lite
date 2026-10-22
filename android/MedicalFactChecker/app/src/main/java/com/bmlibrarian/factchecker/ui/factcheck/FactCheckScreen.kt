@@ -44,6 +44,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -191,6 +192,20 @@ fun FactCheckScreen(
             uiState.smartSearchNotice?.let { notice ->
                 item(key = "smart_search_notice") {
                     IncompleteSearchCard(text = notice)
+                }
+            }
+
+            // What the full-text step could not do
+            uiState.fullTextNotice?.let { notice ->
+                item(key = "full_text_notice") {
+                    IncompleteSearchCard(text = notice)
+                }
+            }
+
+            // Papers the full-text setting covers with no full text, or a full text the analysis has not read
+            uiState.fullTextRetryNotice?.let { notice ->
+                item(key = "full_text_retry") {
+                    FullTextRetryCard(text = notice, onRetry = viewModel::retryFullText)
                 }
             }
 
@@ -575,6 +590,33 @@ private fun SearchFailureMessage(
             Spacer(modifier = Modifier.height(Constants.UI_ICON_TEXT_SPACING.dp))
             TextButton(onClick = onDismiss) {
                 Text("Dismiss")
+            }
+        }
+    }
+}
+
+/**
+ * What a retry of full-text retrieval would do, with the button that runs it.
+ *
+ * @param text Which papers have no full text, or a full text the analysis has not read
+ * @param onRetry Fetches their full text again and redoes the analysis with any that arrive
+ */
+@Composable
+private fun FullTextRetryCard(
+    text: String,
+    onRetry: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(Constants.UI_CARD_PADDING.dp)
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(Constants.UI_ELEMENT_SPACING.dp))
+            Button(onClick = onRetry) {
+                Text("Retry Full Text Fetching")
             }
         }
     }
