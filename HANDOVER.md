@@ -69,7 +69,7 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Retraction checking, desktop: PRs 1 and 2 merged, PR 3 in review** (plan
+**Retraction checking, desktop: all three PRs merged** (plan
 `docs/superpowers/plans/2026-10-18-retraction-checking-desktop.md`, spec
 `docs/superpowers/specs/2026-10-18-retraction-checking-design.md`, doc
 `doc/developer/retraction_checking.md`; all 14 tasks done subagent-driven).
@@ -79,7 +79,7 @@ have landed):
 - **#597 merged**: export copy, Crossref lookups, checker and
   `retraction_checks` table, screening, the review choke point, audit, report,
   MCP, badges/banner, `bmll retractions-update`. Lodged #595, #599–#602.
-- **PR 3 = #605, open** (`feat/retraction-desktop-3`): saved
+- **#605 merged**: saved
   work (reopened question, saved report file, *Check again*; snapshot rows
   keep `run_status`/`run_deciding` as facts of the run, set once; a `None`
   `run_status` stays `None`, "not recorded"), the Research Questions passes
@@ -89,9 +89,8 @@ have landed):
   an unread store, and a *Check again* not saved, are said on the line; a
   file screened without a snapshot reads "not recorded"; *Check again* no
   longer bumps the checkpoint's `updated_at`. Lodged #607.
-- **Next after merge:** delete the worktree `.claude/worktrees/retraction-desktop`
-  (its SDD ledger is no longer needed), then the iOS and Android plans (they
-  consume bmlib's FFI; pin and CI are #588), against the same contract.
+- **Next:** the iOS and Android plans (they consume bmlib's FFI; pin and CI
+  are #588), against the same contract.
 
 ## Recently landed (context)
 
