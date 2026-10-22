@@ -58,6 +58,13 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  * one served and not saved also gets the caching note. Elsevier's PDF arrives
  * already saved, and is recorded as the local file it is (#480, stage C2).
  *
+ * Every PDF saved is read for its text ([readPdfText]), stored beside it for the
+ * analysis. When the chain held back an abstract-only deposit
+ * ([FullTextResult.EuropePmcPdf.heldAbstract]), a PDF without text does not beat
+ * it: the walk goes on for a copy with text, and the abstract is recorded when
+ * none arrives, as a render that could not be downloaded, refused or not saved
+ * gives way to it too.
+ *
  * Every PDF downloaded here is checked against the document's title by the
  * download itself, before it is cached (#546, #561): one whose first page with
  * text does not carry it is another article's, set aside unread
@@ -76,6 +83,7 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  *   once, only when every open-access candidate failed and none was served
  *   (#480, stage C). Null is no key: nothing asked, nothing recorded. Required,
  *   with no default, for the same reason as [askOpenAlex]
+ * @param readPdfText Reads a saved PDF's text; null when it has none or cannot be read
  * @return The document to store, and the result to show; the document is
  *   unchanged for [FullTextResult.NotEstablished] and
  *   [FullTextResult.OpenAccessNotEstablished], which are not facts about the
@@ -85,19 +93,75 @@ suspend fun DocumentEntity.recordingFullTextFetch(
     result: FullTextResult,
     downloadPdf: suspend (String) -> PdfDownload,
     askOpenAlex: suspend (doi: String, tried: List<String>) -> List<OpenAccessStep>,
-    askCore: suspend (doi: String) -> CoreFetch?
+    askCore: suspend (doi: String) -> CoreFetch?,
+    readPdfText: suspend (path: String) -> String? = ::extractedPdfText
 ): RecordedFetch = when (result) {
-    is FullTextResult.OpenAccessPdfs -> obtainingOpenAccessPdf(result, downloadPdf, askOpenAlex, askCore)
+    is FullTextResult.OpenAccessPdfs -> obtainingOpenAccessPdf(result, downloadPdf, askOpenAlex, askCore, readPdfText)
     is FullTextResult.EuropePmcPdf -> when (val download = downloadPdf(result.pdfUrl)) {
-        PdfDownload.NotSaved ->
-            RecordedFetch(recording(result, pdfPath = null).copy(fullTextPdfNotSavedFrom = result.pdfUrl), result)
-        is PdfDownload.Saved -> RecordedFetch(recording(result, download.path), result)
+        PdfDownload.NotSaved -> result.heldAbstract?.let { recordingHeld(it.notingHeldAbstract(null, result.pdfUrl)) }
+            ?: RecordedFetch(recording(result, pdfPath = null).copy(fullTextPdfNotSavedFrom = result.pdfUrl), result)
+        is PdfDownload.Saved -> recordingPdf(result, download.path, result.heldAbstract, readPdfText)
         PdfDownload.WrongArticle -> renderOfAnotherArticle(result)
-        is PdfDownload.Failed -> RecordedFetch(recording(result, pdfPath = null), result)
+        is PdfDownload.Failed -> result.heldAbstract?.let(::recordingHeld)
+            ?: RecordedFetch(recording(result, pdfPath = null), result)
     }
-    // Already saved by the chain: a local file, never a URL to download (#480, stage C2)
-    is FullTextResult.ElsevierPdf -> RecordedFetch(recording(result, result.pdfPath), result)
+    // Already saved by the chain: a local file, never a URL to download (#480, stage C2).
+    // shortcut: one without text gives way to a held abstract here, where Swift walks on to Unpaywall
+    // for a copy with text; walk on too if textless Elsevier PDFs turn up in practice
+    is FullTextResult.ElsevierPdf -> recordingPdf(result, result.pdfPath, result.heldAbstract, readPdfText)
     else -> RecordedFetch(recording(result, pdfPath = null), result)
+}
+
+/**
+ * A saved PDF recorded with its text, unless it has none and an abstract was held back.
+ *
+ * @param result The PDF result
+ * @param path Where the PDF is saved
+ * @param heldAbstract The abstract-only deposit the chain held back, or null
+ * @param readPdfText Reads the PDF's text
+ * @return The PDF with its text; or the held abstract when the PDF has no text.
+ *   The copy was served either way, so nothing about open access is left unsettled
+ */
+private suspend fun DocumentEntity.recordingPdf(
+    result: FullTextResult,
+    path: String,
+    heldAbstract: FullTextResult?,
+    readPdfText: suspend (String) -> String?
+): RecordedFetch {
+    val text = readPdfText(path)
+    if (text == null && heldAbstract != null) return recordingHeld(heldAbstract)
+    return RecordedFetch(recording(result, path).copy(pdfExtractedText = text), result)
+}
+
+/** The abstract-only deposit the chain held back, recorded as what the fetch came to. */
+private fun DocumentEntity.recordingHeld(heldAbstract: FullTextResult): RecordedFetch =
+    RecordedFetch(recording(heldAbstract, pdfPath = null), heldAbstract)
+
+/**
+ * A held abstract-only deposit carrying what the chain met after holding it back.
+ *
+ * @param shortfall What the open-access walk left unsettled, or null
+ * @param pdfNotSavedFrom A PDF served that could not be saved here, or null
+ * @return The deposit with both noted; any other result unchanged
+ */
+internal fun FullTextResult.notingHeldAbstract(shortfall: OpenAccessShortfall?, pdfNotSavedFrom: String?): FullTextResult =
+    when (this) {
+        is FullTextResult.EuropePmcXml -> copy(openAccessShortfall = shortfall, pdfNotSavedFrom = pdfNotSavedFrom)
+        is FullTextResult.PmcOpenDataXml -> copy(openAccessShortfall = shortfall, pdfNotSavedFrom = pdfNotSavedFrom)
+        else -> this
+    }
+
+/**
+ * What the walk left unsettled, once it is known whether a copy was served.
+ *
+ * A copy served, whether not saved or saved without text, settles the
+ * open-access question, so nothing is told then but CORE's entry: a copy
+ * without text is no full text obtained, so a CORE left unreachable keeps it
+ * open (#499), as Swift's `settledOpenAccessShortfall` does.
+ */
+private fun settledShortfall(shortfall: OpenAccessShortfall?, copyServed: Boolean): OpenAccessShortfall? {
+    if (!copyServed || shortfall == null) return shortfall
+    return shortfall.entries.filter { it.source == OpenAccessSource.CORE }.ifEmpty { null }?.let(::OpenAccessShortfall)
 }
 
 /**
@@ -115,6 +179,7 @@ suspend fun DocumentEntity.recordingFullTextFetch(
  */
 private fun DocumentEntity.renderOfAnotherArticle(result: FullTextResult.EuropePmcPdf): RecordedFetch {
     val shortfall = OpenAccessShortfall.wrongArticle(OpenAccessSource.EUROPE_PMC_PDF, result.pdfUrl)
+    result.heldAbstract?.let { return recordingHeld(it.notingHeldAbstract(shortfall, pdfNotSavedFrom = null)) }
     val usableDoi = doi?.trim()?.ifEmpty { null }
         ?: return RecordedFetch(this, FullTextResult.OpenAccessNotEstablished(shortfall))
     val link = FullTextResult.DoiUrl(doiLink(usableDoi), shortfall)
@@ -150,10 +215,15 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
     result: FullTextResult.OpenAccessPdfs,
     downloadPdf: suspend (String) -> PdfDownload,
     askOpenAlex: suspend (String, List<String>) -> List<OpenAccessStep>,
-    askCore: suspend (String) -> CoreFetch?
+    askCore: suspend (String) -> CoreFetch?,
+    readPdfText: suspend (String) -> String?
 ): RecordedFetch {
     var shortfall: OpenAccessShortfall? = null
     val tried = mutableListOf<String>()
+    val held = result.heldAbstract
+    // A copy saved without text while an abstract is held: it settles the open-access
+    // question, and the walk goes on for a copy with text
+    var copyServed = false
 
     /** Walk [steps]; the recorded fetch when a copy was served, else null. */
     suspend fun walk(steps: List<OpenAccessStep>): RecordedFetch? {
@@ -167,7 +237,13 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
                     tried += step.addresses
                     val found = FullTextResult.OpenAccessPdf(step.pdfUrl, result.doi, step.namedBy)
                     when (val download = downloadPdf(step.pdfUrl)) {
-                        is PdfDownload.Saved -> return RecordedFetch(recording(found, download.path), found)
+                        is PdfDownload.Saved -> {
+                            val text = readPdfText(download.path)
+                            if (text != null || held == null) {
+                                return RecordedFetch(recording(found, download.path).copy(pdfExtractedText = text), found)
+                            }
+                            copyServed = true
+                        }
                         // Another article's, set aside by the download (#546, #561): it
                         // settles nothing about this one, so the walk goes on, as for a
                         // copy refused
@@ -175,6 +251,10 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
                             OpenAccessShortfall.wrongArticle(step.namedBy.refusedAs, step.pdfUrl), shortfall
                         )
                         PdfDownload.NotSaved -> {
+                            // Ends the walk, as with no abstract held: saving is our problem
+                            if (held != null) {
+                                return recordingHeld(held.notingHeldAbstract(settledShortfall(shortfall, true), step.pdfUrl))
+                            }
                             val linked = found.copy(notSaved = true)
                             return RecordedFetch(recording(linked, pdfPath = null), linked)
                         }
@@ -208,6 +288,7 @@ private suspend fun DocumentEntity.obtainingOpenAccessPdf(
         CoreFetch.KeyRefused -> shortfall = OpenAccessShortfall.adding(OpenAccessShortfall.CORE_KEY_REFUSED, shortfall)
         CoreFetch.Absent, null -> Unit
     }
+    held?.let { return recordingHeld(it.notingHeldAbstract(settledShortfall(shortfall, copyServed), pdfNotSavedFrom = null)) }
     val refused = FullTextResult.DoiUrl(doiLink(result.doi), shortfall)
     return RecordedFetch(recording(refused, pdfPath = null), refused)
 }
@@ -231,23 +312,26 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
     is FullTextResult.EuropePmcXml -> copy(
         fullTextMarkdown = result.markdown,
         fullTextHTML = result.html,
+        fullTextAbstractOnly = result.abstractOnly,
         fullTextSource = Constants.FULLTEXT_SOURCE_EUROPE_PMC,
         fullTextFetchedAt = Date(),
-        fullTextOpenAccessShortfallJson = null,
-        fullTextPdfNotSavedFrom = null
+        fullTextOpenAccessShortfallJson = result.openAccessShortfall?.toJson(),
+        fullTextPdfNotSavedFrom = result.pdfNotSavedFrom
     )
     is FullTextResult.PmcOpenDataXml -> copy(
         fullTextMarkdown = result.markdown,
         fullTextHTML = result.html,
+        fullTextAbstractOnly = result.abstractOnly,
         fullTextSource = Constants.FULLTEXT_SOURCE_PMC_OPEN_DATA,
         fullTextFetchedAt = Date(),
-        fullTextOpenAccessShortfallJson = null,
-        fullTextPdfNotSavedFrom = null
+        fullTextOpenAccessShortfallJson = result.openAccessShortfall?.toJson(),
+        fullTextPdfNotSavedFrom = result.pdfNotSavedFrom
     )
     // Plain text, untrusted: no HTML is stored, so nothing renders it as HTML
     is FullTextResult.CoreText -> copy(
         fullTextMarkdown = result.text,
         fullTextHTML = null,
+        fullTextAbstractOnly = false,
         fullTextSource = Constants.FULLTEXT_SOURCE_CORE,
         fullTextFetchedAt = Date(),
         fullTextOpenAccessShortfallJson = null,
@@ -255,8 +339,10 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
     )
     is FullTextResult.EuropePmcPdf -> copy(
         pdfPath = pdfPath,
+        pdfExtractedText = null,
         fullTextMarkdown = null,
         fullTextHTML = null,
+        fullTextAbstractOnly = false,
         fullTextSource = Constants.FULLTEXT_SOURCE_EUROPE_PMC,
         fullTextFetchedAt = Date(),
         fullTextOpenAccessShortfallJson = null,
@@ -266,8 +352,10 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
     // holds it, and a served PDF settles the open-access question (#480, stage C2)
     is FullTextResult.ElsevierPdf -> copy(
         pdfPath = pdfPath,
+        pdfExtractedText = null,
         fullTextMarkdown = null,
         fullTextHTML = null,
+        fullTextAbstractOnly = false,
         fullTextSource = Constants.FULLTEXT_SOURCE_ELSEVIER,
         fullTextFetchedAt = Date(),
         fullTextOpenAccessShortfallJson = null,
@@ -276,8 +364,10 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
     is FullTextResult.OpenAccessPdfs -> error("resolved by obtainingOpenAccessPdf before recording")
     is FullTextResult.OpenAccessPdf -> copy(
         pdfPath = pdfPath,
+        pdfExtractedText = null,
         fullTextMarkdown = null,
         fullTextHTML = null,
+        fullTextAbstractOnly = false,
         fullTextSource = result.namedBy.fullTextSource,
         fullTextFetchedAt = Date(),
         fullTextOpenAccessShortfallJson = null,
@@ -286,6 +376,7 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
     is FullTextResult.DoiUrl -> copy(
         fullTextMarkdown = null,
         fullTextHTML = null,
+        fullTextAbstractOnly = false,
         fullTextSource = Constants.FULLTEXT_SOURCE_DOI,
         fullTextFetchedAt = Date(),
         fullTextOpenAccessShortfallJson = result.openAccessShortfall?.toJson(),
@@ -294,6 +385,7 @@ private fun DocumentEntity.recording(result: FullTextResult, pdfPath: String?): 
     is FullTextResult.Unavailable -> copy(
         fullTextMarkdown = null,
         fullTextHTML = null,
+        fullTextAbstractOnly = false,
         fullTextUnavailable = true,
         fullTextFetchedAt = Date(),
         fullTextOpenAccessShortfallJson = null,

@@ -644,7 +644,8 @@ class FactCheckViewModel @Inject constructor(
                             chainResult,
                             downloadPdf = { url -> fullTextService.downloadPdf(url, document.id, document.title) },
                             askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
-                            askCore = { doi -> fullTextService.askCore(doi) }
+                            askCore = { doi -> fullTextService.askCore(doi) },
+                            readPdfText = { path -> fullTextService.readPdfText(path) }
                         )
 
                         documentRepository.updateDocument(updatedDoc)

@@ -193,6 +193,35 @@ data class DocumentEntity(
     @ColumnInfo(name = "full_text_pdf_not_saved_from")
     val fullTextPdfNotSavedFrom: String? = null,
 
+    /**
+     * Whether [fullTextMarkdown] is an abstract-only deposit: JATS whose
+     * `<body>` rendered no paragraph. The chain holds such a deposit back so
+     * that a PDF of the article can win, and returns it only when nothing better
+     * arrives; it is shown, but never read as the article ([analysisFullText]).
+     * False for a record written before this was kept, which reads as the article.
+     */
+    @ColumnInfo(name = "full_text_abstract_only", defaultValue = "0")
+    val fullTextAbstractOnly: Boolean = false,
+
+    /**
+     * The text extracted from the PDF at [pdfPath], downloaded or uploaded; null
+     * when there is no PDF, its pages hold no text (a scan), or it was saved
+     * before this was kept. Written and cleared with [pdfPath].
+     */
+    @ColumnInfo(name = "full_text_pdf_text")
+    val pdfExtractedText: String? = null,
+
+    /**
+     * Whether the last successful citation extraction had the full text in its
+     * prompt: false when it read the abstract only.
+     *
+     * Null for a paper never extracted, or extracted before this was recorded;
+     * the retry then judges by the citations' dates. Set even when the text
+     * yielded no passage, so a text that has been read is not paid for again.
+     */
+    @ColumnInfo(name = "citations_read_full_text")
+    val citationsReadFullText: Boolean? = null,
+
     // ==================== Transparency Analysis ====================
 
     /**
@@ -289,6 +318,22 @@ data class DocumentEntity(
      */
     val hasFullText: Boolean
         get() = fullTextMarkdown != null || fullTextHTML != null || pdfPath != null
+
+    /**
+     * The stored full text the analysis may read as the article's, or null when
+     * there is none: the markdown unless it is an abstract-only deposit, else the
+     * text extracted from the PDF. Blank text is none.
+     *
+     * Read by citation extraction; the transparency analysis still reads no full
+     * text on Android (#384).
+     */
+    val analysisFullText: String?
+        get() = (fullTextMarkdown?.takeUnless { fullTextAbstractOnly } ?: pdfExtractedText)
+            ?.trim()?.ifEmpty { null }
+
+    /** Whether the stored full text is one the reader uploaded. */
+    val holdsUploadedFullText: Boolean
+        get() = fullTextSource == Constants.FULLTEXT_SOURCE_UPLOADED
 
     /**
      * Whether the last fetch ran to the end and left only a link (#471).

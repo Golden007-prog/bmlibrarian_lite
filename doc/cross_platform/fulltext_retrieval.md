@@ -252,8 +252,8 @@ computing it.
 PMC publishes its open-access and author-manuscript collections in the public
 S3 bucket `pmc-oa-opendata`. Asked **after Europe PMC's `fullTextXML` returned no
 text (a body-less deposit Europe PMC served counts as text on every platform:
-Swift holds it back but does not ask the bucket, for parity with Python and
-Kotlin, which have no content kind), by PMC ID only** (a preprint has none), and before Europe PMC's
+Swift and Kotlin hold it back but do not ask the bucket, for parity with Python,
+which has no content kind), by PMC ID only** (a preprint has none), and before Europe PMC's
 PDF render. Service name: **"PMC's open-access collection"**; source
 `pmc_open_data` in the apps (the desktop's `FulltextSourceType` spells it
 `pmc_open_data_xml`, as it spells Europe PMC's `europepmc_xml`). Pinned by
@@ -1530,9 +1530,9 @@ async function fetch_fulltext(
 
     # 2a. PMC's open-data bucket (#480), reached only when step 2 returned no
     #     FULLTEXT result. Its abstract-only deposit is held back as Europe PMC's is.
-    #     Not asked while Swift holds a body-less Europe PMC deposit: Python and
-    #     Kotlin have no content kind and treat that deposit as served, so Swift
-    #     matches them.
+    #     Not asked while Swift or Kotlin holds a body-less Europe PMC deposit:
+    #     Python has no content kind and treats that deposit as served, so the
+    #     apps match it. (Kotlin keeps the kind as `full_text_abstract_only`.)
     if pmc_id and held_abstract == null:
         bucket = await fetch_pmc_open_data(pmc_id)
         if bucket is SERVED: (same parse and holdback as step 2, source pmc_open_data;

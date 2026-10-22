@@ -123,7 +123,7 @@ abstract class AppDatabase : RoomDatabase() {
         const val DATABASE_NAME = "medical_factchecker.db"
 
         /** The schema version; [ALL_MIGRATIONS] must reach it. */
-        const val DATABASE_VERSION = 9
+        const val DATABASE_VERSION = 10
 
         /**
          * Migration from version 1 to 2.
@@ -291,6 +291,23 @@ abstract class AppDatabase : RoomDatabase() {
         }
 
         /**
+         * Migration from version 9 to 10.
+         *
+         * Adds what a fact check needs to read a paper's full text: whether the
+         * stored markdown is an abstract-only deposit (existing rows read as
+         * the article, as before), the text extracted from a PDF (none for
+         * existing rows: their PDFs were never read), and whether the last
+         * citation extraction read the full text (unknown for existing rows).
+         */
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(database: SupportSQLiteDatabase) {
+                database.execSQL("ALTER TABLE documents ADD COLUMN full_text_abstract_only INTEGER NOT NULL DEFAULT 0")
+                database.execSQL("ALTER TABLE documents ADD COLUMN full_text_pdf_text TEXT")
+                database.execSQL("ALTER TABLE documents ADD COLUMN citations_read_full_text INTEGER")
+            }
+        }
+
+        /**
          * Every migration, in order, as the database is built with them.
          *
          * One list, so a migration added here is registered and one left out is
@@ -306,7 +323,8 @@ abstract class AppDatabase : RoomDatabase() {
             MIGRATION_5_6,
             MIGRATION_6_7,
             MIGRATION_7_8,
-            MIGRATION_8_9
+            MIGRATION_8_9,
+            MIGRATION_9_10
         )
     }
 }

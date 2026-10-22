@@ -66,6 +66,7 @@ class FactCheckViewModelSearchFailureTest {
             every { searchShortfalls } returns shortfalls
             every { searchFailureMessage } returns failureMessage
             every { searchRecordDamaged } returns recordDamaged
+            every { smartSearchNotice } returns MutableStateFlow(null)
         }
         val settingsRepository = mockk<SettingsRepository>(relaxed = true) {
             every { configurationVersion } returns MutableStateFlow(0)

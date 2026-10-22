@@ -131,6 +131,9 @@ class JATSXMLParser(
     private var inBack = false
     private val sectionStack = mutableListOf<SectionBuilder>()
 
+    /** How many paragraphs with text the article's `<body>` gave the rendering. */
+    private var bodyParagraphCount = 0
+
     // Figure/Table state
     private var inFigure = false
     private var inTableWrap = false
@@ -199,6 +202,21 @@ class JATSXMLParser(
     }
 
     // MARK: - Public API
+
+    /**
+     * Whether the parse rendered any of the article's body: a paragraph with
+     * text inside its `<body>`.
+     *
+     * Not the same question as whether it produced content: a body-less deposit
+     * has a title and an abstract, renders, and reads like an article. Europe
+     * PMC serves those for records deposited abstract-only, and the chain holds
+     * one back so that a PDF of the article can still win (the contract's
+     * "Abstract Holdback"). Counted by paragraph, as Swift's `producedBody` is,
+     * so back matter or a body of exhibits alone does not count. Read after
+     * [parseToMarkdown] or [parseToHTML].
+     */
+    val producedBody: Boolean
+        get() = bodyParagraphCount > 0
 
     /**
      * Parse the XML and return markdown-formatted content.
@@ -509,6 +527,7 @@ class JATSXMLParser(
                         currentAbstractText.add(normalizedText)
                     }
                     (inBody || inBack) && sectionStack.isNotEmpty() -> {
+                        if (inBody && normalizedText.isNotEmpty()) bodyParagraphCount += 1
                         sectionStack.last().paragraphs.add(normalizedText)
                     }
                     inFigure -> {

@@ -360,7 +360,8 @@ class FullTextViewModel @Inject constructor(
             chainResult,
             downloadPdf = { url -> fullTextService.downloadPdf(url, doc.id, doc.title) },
             askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
-            askCore = { doi -> fullTextService.askCore(doi) }
+            askCore = { doi -> fullTextService.askCore(doi) },
+            readPdfText = { path -> fullTextService.readPdfText(path) }
         )
         if (result !is FullTextResult.NotEstablished && result !is FullTextResult.OpenAccessNotEstablished) {
             documentDao.update(recorded)
@@ -458,7 +459,7 @@ class FullTextViewModel @Inject constructor(
      */
     private suspend fun forgettingPdf(doc: DocumentEntity, path: String): DocumentEntity {
         if (doc.pdfPath != path) return doc
-        val forgotten = doc.copy(pdfPath = null, fullTextSource = null, fullTextFetchedAt = null)
+        val forgotten = doc.copy(pdfPath = null, pdfExtractedText = null, fullTextSource = null, fullTextFetchedAt = null)
         documentDao.update(forgotten)
         _document.value = forgotten
         return forgotten
@@ -513,8 +514,10 @@ class FullTextViewModel @Inject constructor(
                     doc.copy(
                         fullTextMarkdown = null,
                         fullTextHTML = null,
+                        fullTextAbstractOnly = false,
                         fullTextSource = null,
                         pdfPath = null,
+                        pdfExtractedText = null,
                         fullTextUnavailable = false,
                         fullTextFetchedAt = null,
                         fullTextOpenAccessShortfallJson = null,

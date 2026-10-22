@@ -82,6 +82,7 @@ class FactCheckViewModelFullTextTest {
             every { searchShortfalls } returns MutableStateFlow<List<RetrievalShortfall>>(emptyList())
             every { searchFailureMessage } returns MutableStateFlow<String?>(null)
             every { searchRecordDamaged } returns MutableStateFlow(false)
+            every { smartSearchNotice } returns MutableStateFlow(null)
         }
         val settingsRepository = mockk<SettingsRepository>(relaxed = true) {
             every { configurationVersion } returns MutableStateFlow(0)
