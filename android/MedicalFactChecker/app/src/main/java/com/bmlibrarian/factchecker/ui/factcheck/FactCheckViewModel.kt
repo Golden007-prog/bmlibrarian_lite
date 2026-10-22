@@ -689,6 +689,12 @@ class FactCheckViewModel @Inject constructor(
                 documentRepository.updateDocument(current.recordingUpload(content))
             } catch (e: FullTextUploadException) {
                 _uiState.update { it.copy(errorMessage = e.message) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A provider's own failure (a revoked grant, a bad URI): told, never a crash
+                Log.e(TAG, "Upload for ${document.id} failed", e)
+                _uiState.update { it.copy(errorMessage = "The file could not be used as this paper's full text.") }
             } finally {
                 _uiState.update { it.copy(uploadingFullTextDocumentId = null) }
             }

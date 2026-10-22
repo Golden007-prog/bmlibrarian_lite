@@ -8,45 +8,40 @@ its slice has landed; add a new section when handing off new work.
 
 ## In flight
 
-**Parity: taking a fact check further** (iOS/macOS done in PR #611, branch
-`feat/fact-check-more-evidence-and-fulltext-retry`; the rules per feature are
-in `ROADMAP.md`). Android and the Python desktop are owed all five. Starting
-points, from a survey of the code on 2026-10-21 (Android paths under
-`android/MedicalFactChecker/app/src/main/java/com/bmlibrarian/factchecker/`):
-- **Android, in this order:**
-  - *Find More Evidence / New Question*: `ui/factcheck/components/ClaimInput.kt`
-    (the submit button), `FactCheckViewModel.addMoreResults()` and the
-    unused `startNewQuestion()`.
-  - *Repeated smart search*: `FactCheckWorkflow.kt` `executeSmartSearch`,
-    `requestAlternativeQueries` (passes only `initialQuery`), the prompt in
-    `LLMService.generateAlternativeQueries`, `SessionEntity.smartSearchEnabled`
-    / `canGetMoreEvidence`, `SessionRepository.updateSmartSearchState`.
-  - *Automatic full text* (missing entirely): a step after scoring in
-    `FactCheckWorkflow`, the setting in `SettingsRepository`/`WorkflowConfig`;
-    `CitationInput.kt` reads `abstractText ?: fullTextMarkdown`, abstract
-    first, which must change for full text to be read.
-  - *Retry*: reuse `extractCitations`, `analyzeTransparency`,
-    `generateReport`; add a per-document "last extraction read the full
-    text" column (Swift's `Document.citationsReadFullText`). Comparing
-    `CitationEntity.created_at` with `DocumentEntity.fullTextFetchedAt` is
-    only Swift's fallback for records written before that flag: it misses a
-    text fetched before the citations and re-reads after a manual re-fetch.
-  - *Upload*: no file picker exists; `Constants.FULLTEXT_SOURCE_UPLOADED`
-    is the source label.
-- **Python desktop:** citations are abstract-only (`agents/citation_agent.py`)
-  and the `citations` table (`storage.py`) has no timestamp; full text is
-  fetched only for transparency (`study_transparency_analyzer`) and the
-  Document Interrogation tab. Settle the design with the maintainer first
-  (`ROADMAP.md`); then the nearest existing pieces are
-  `research_questions_tab.py` *Re-run Search* / `IncrementalSearchWorker`,
-  `TransparencyReanalysisWorker`, `pdf_utils.save_fulltext_markdown`.
-- **Verify:** mirror the Swift tests (`WorkflowCancelTests`
-  `testAFetchMoreAfterSmartSearchRanTriesAgain` and its retry tests,
-  `FullTextAutoFetchTests`, `FullTextUploadTests`, `ReportRetryOfferTests`,
-  BioMedLit `AlternativeQueryPromptTests`).
-- **Apple follow-ups from the review:** issue #612 (LLM and search test
-  seams; the rules no test pins yet are listed there) and issue #613 (upload
-  edge cases).
+**Parity: taking a fact check further.** iOS/macOS landed in PR #611;
+**Android is done on branch `feat/android-fact-check-more-evidence-and-fulltext`**
+(PR open, see below). **The Python desktop is owed all five**, and is a design
+question first (`ROADMAP.md`): citations are abstract-only
+(`agents/citation_agent.py`), the `citations` table (`storage.py`) has no
+timestamp, and full text is fetched only for transparency
+(`study_transparency_analyzer`) and the Document Interrogation tab. Settle the
+design with the maintainer; the nearest existing pieces are
+`research_questions_tab.py` *Re-run Search* / `IncrementalSearchWorker`,
+`TransparencyReanalysisWorker`, `pdf_utils.save_fulltext_markdown`. Mirror the
+Swift tests (`WorkflowCancelTests` retry tests, `FullTextAutoFetchTests`,
+`FullTextUploadTests`, `ReportRetryOfferTests`, BioMedLit
+`AlternativeQueryPromptTests`) or Kotlin's (`FactCheckWorkflowFullTextTest`,
+`FullTextAutoFetchTest`, `FullTextUploadTest`, `AbstractHoldbackTest`).
+Apple follow-ups: #612 (test seams), #613 (upload edge cases).
+
+**What the Android branch binds** (Room **10**):
+- **Abstract holdback** (#384 part 1): a JATS deposit whose `<body>` renders
+  no paragraph (`JATSXMLParser.producedBody`, counted on what Android renders,
+  so unsectioned `<p>` does not count) is held, the PMC bucket is not asked,
+  and it is returned only when nothing better arrives, carrying the walk's
+  shortfall. A PDF without text gives way to it; one with text wins. Stored as
+  `full_text_abstract_only`.
+- **PDF text** is read with iText (`PdfText.kt`) at every recording and stored
+  as `full_text_pdf_text`, written and cleared with `pdf_path`.
+  **`DocumentEntity.analysisFullText` is the one accessor** (markdown unless
+  abstract-only, else PDF text). Transparency still reads none (#384).
+- `citations_read_full_text` is written only by
+  `DocumentDao.updateCitationsReadFullText`; `DocumentDao.update` keeps it, as
+  it keeps transparency. Citations are replaced in one transaction
+  (`CitationDao.replaceForDocument`), only when the text yields passages.
+- Divergences from Swift, lodged: #615 (link-only PDFs re-fetched only on a
+  retry; textless Elsevier PDF; no transparency redo), #614 (no Regenerate
+  Report offer).
 
 **Owed by the maintainer** (stages C1 and C2 and the desktop browser rescue
 have landed):
@@ -69,49 +64,30 @@ have landed):
   quit; also download a supplement there and see *Keep this PDF* offered.
   Offscreen smoke runs passed apart from #530's cold-start segfault.
 
-**Retraction checking, desktop: all three PRs merged** (plan
-`docs/superpowers/plans/2026-10-18-retraction-checking-desktop.md`, spec
+**Retraction checking, desktop: done** (PRs #594, #597, #605; spec
 `docs/superpowers/specs/2026-10-18-retraction-checking-design.md`, doc
-`doc/developer/retraction_checking.md`; all 14 tasks done subagent-driven).
-- **#594 merged**: bmlib git dependency (`f767215`; a git pin blocks a PyPI
-  upload), contract copy `doc/cross_platform/retraction_parity/`, publication
-  types stored, the document upsert never blanks a field. Lodged #590–#593.
-- **#597 merged**: export copy, Crossref lookups, checker and
-  `retraction_checks` table, screening, the review choke point, audit, report,
-  MCP, badges/banner, `bmll retractions-update`. Lodged #595, #599–#602.
-- **#605 merged**: saved
-  work (reopened question, saved report file, *Check again*; snapshot rows
-  keep `run_status`/`run_deciding` as facts of the run, set once; a `None`
-  `run_status` stays `None`, "not recorded"), the Research Questions passes
-  screened, MCP's `fact_check_claim` refreshes the export. Lodged #603, #604.
-  Review round: a failed run's label retraction stays the run's status; a
-  report file's papers carry the PubMed label their rows were decided by;
-  an unread store, and a *Check again* not saved, are said on the line; a
-  file screened without a snapshot reads "not recorded"; *Check again* no
-  longer bumps the checkpoint's `updated_at`. Lodged #607.
-- **Next:** the iOS and Android plans (they consume bmlib's FFI; pin and CI
-  are #588), against the same contract.
+`doc/developer/retraction_checking.md`; contract
+`doc/cross_platform/retraction_parity/`). bmlib is a git dependency
+(`f767215`; a git pin blocks a PyPI upload). Snapshot rows keep
+`run_status`/`run_deciding` as facts of the run, set once; a `None`
+`run_status` stays "not recorded". Open: #590–#593, #595, #599–#604, #607.
+**Next:** the iOS and Android plans (they consume bmlib's FFI; pin and CI are
+#588), against the same contract.
 
 ## Recently landed (context)
 
-- **The FFI pin names bmlib `main`** (#583): `f767215`, after bmlib#490
-  (path-independent builds via `with-remapped-paths.sh`, Gradle's cargo-ndk
-  too) and bmlib#492. `android-tests.yml` builds bmlib at the pin and fails if
-  `BmlibJatsFfiTest` skips. **The committed xcframework is
-  `bmlib-xcframework.yml`'s own build**, rebuilt and compared on every PR
-  with the committed xcframework and both bindings (identity needs the same
-  Apple linker); re-pin from its artifact as its header says. Lodged: #587 (Europe PMC's associated-data `<sec>`).
-- **The bmlib port set** (PRs #564–#570, #572; Phases 0–2 of the plan).
-  **`doc/cross_platform/bmlib_sync/ledger.json` records every bmlib change
-  per platform**, pinned to bmlib 0.11.0. A sync is: bump `bmlib_commit`,
-  triage every id `scripts/check_bmlib_ledger.py --bmlib ~/src/bmlib` lists
-  (the weekly `bmlib drift` workflow fails until then). New contracts:
-  `pmid_canonical.json`, `score_values.json` (an unreadable score is a parse
-  failure, never 3), `europepmc_free_pdf.json`; desktop `pubmed/record_ids.py`
-  and `quality/json_fields.py`; converter **6**, analyser **2.7**. **WP-2:
-  Phase 4 consumes bmlib's Rust through UniFFI**; no production caller yet;
-  the pin names bmlib `main` since #583 (above). Lodged: #573–#581; **#585** (bmlib#485, a blank
-  id as a full-text cache name, on bmlib's `main` after 0.11.0).
+- **bmlib: the FFI pin and the port set** (#583; PRs #564–#570, #572). The
+  pin names bmlib `main` (`f767215`); `android-tests.yml` builds bmlib there
+  and fails if `BmlibJatsFfiTest` skips; **the committed xcframework is
+  `bmlib-xcframework.yml`'s own build** (re-pin from its artifact as its
+  header says). **`doc/cross_platform/bmlib_sync/ledger.json` records every
+  bmlib change per platform**: a sync bumps `bmlib_commit` and triages every
+  id `scripts/check_bmlib_ledger.py --bmlib ~/src/bmlib` lists (the weekly
+  `bmlib drift` workflow fails until then). Contracts `pmid_canonical.json`,
+  `score_values.json` (an unreadable score is a parse failure, never 3),
+  `europepmc_free_pdf.json`; converter **6**, analyser **2.7**. **Phase 4
+  consumes bmlib's Rust through UniFFI** (no production caller yet). Open:
+  #573–#581, #585, #587.
 - **A download is checked before it is cached** (#560, #561; PR #562); **Android's
   `downloadPdf` never answers from the cache.** Lodged: #563.
 - **Wrong-article PDFs** (#532, #541, #546; PRs #542, #548, #559; contract
@@ -121,43 +97,24 @@ have landed):
   (`bmll keep-pdf`). Open: #543, #545, #547, #555–#558.
 - **Bot-walled PDFs: the desktop browser rescue** (#480; PRs #521, #529,
   #536; spec `docs/superpowers/specs/2026-10-12-browser-rescue-design.md`, doc
-  `doc/developer/browser_rescue.md`): SQLite queue, hidden QtWebEngine pass,
-  review-queue window. Live: PMC 12/12, ScienceDirect `needs_person`.
-- **Stage 3's rules that bind:** one visit at a time, hidden or shown, all in
-  the service; while the window has a visit or a walk, the hidden pass takes
-  no entry. A person's visit (`judge_pages=False`) is judged only by its
-  download: no PDF or an unreadable one is discarded with the page left open;
-  one without the title is held at `<pdf>.held` until kept or replaced. Every
-  visit re-reads its entry and skips one settled meanwhile; a shown page's
-  `createWindow` returns the page; the window never imports QtWebEngine at
-  runtime. The tab waits only for a watched, pending, due, unvisited entry,
-  never past `RESCUE_READER_WAIT_LIMIT_MS`; only the current discovery's
-  signals count. A queue the tab cannot use still names the robot check.
-- **Stage 2's rules that bind:** a challenged copy is never a paywall (D1).
-  A visit that learnt nothing (no answer, a network error, 408/429/5xx with
-  no marker) is `transport`: the entry stays pending, retried no sooner than
-  15 min, `needs_person` after 3; a marker-less 401/403 waits for a person.
-  A rescued PDF lands at `generate_pdf_path({"doi": doi})`. QtWebEngine is
-  prepared before any `QApplication` (`gui/web_engine.py`) and is optional at
-  start-up; pages go before the profile. Engine tests run only in
-  `tests/browser_rescue_harness.py`'s subprocess and fail rather than skip.
-  Detection (`challenge_detection.json`): header names only, never values;
-  change a needle only against live pages and the survey.
+  `doc/developer/browser_rescue.md`, which holds stages 2 and 3's binding
+  rules): SQLite queue, hidden QtWebEngine pass, review-queue window. Live:
+  PMC 12/12, ScienceDirect `needs_person`. **One visit at a time, all in the
+  service**; a challenged copy is never a paywall; a visit that learnt nothing
+  is `transport` (retried, `needs_person` after 3); QtWebEngine is prepared
+  before any `QApplication`, and engine tests run only in
+  `tests/browser_rescue_harness.py`'s subprocess. Detection
+  (`challenge_detection.json`): header names only; change a needle only
+  against live pages.
 - **Settings dialog lifecycle** (PR #518): a released dialog's handlers do
-  nothing (**a queued signal still arrives after a disconnect**); **the suite
-  collects garbage on the main thread only** (#517). Lodged: #519. **PySide6 capped
-  `<6.12`** (#516): **check master's CI before a slice**.
-- **Machine channels, stage C2: Elsevier's article API** (all three; PR
-  #507). Contract "Elsevier's Article API" + `elsevier_article.json`.
-  **A first-page PDF is never served** (`X-ELS-Status: WARNING` on a 200 is an
-  absence). A 403 `AUTHENTICATION_ERROR` is "not available from this
-  network" (scoped to key + token); a 401 refuses that key. **Never a
-  redirect, never a link**; **credentials that cannot be sent are never
-  sent**; the environment's token goes only with its key. Lodged: #506,
-  #508–#513.
-- **Stage C1: CORE's text** (all three; PR #501). **A hit counts only if its
-  own DOI is this article's**; **no key, nothing recorded**; a configured
-  channel not asked is unsettled.
+  nothing (**a queued signal still arrives after a disconnect**); GC on the
+  main thread only (#517). **PySide6 capped `<6.12`** (#516).
+- **Stage C2: Elsevier's article API** (all three; PR #507; contract
+  `elsevier_article.json`). **A first-page PDF is never served**; a 403
+  `AUTHENTICATION_ERROR` is "not available from this network", a 401 refuses
+  the key; **never a redirect, never a link**; credentials that cannot be sent
+  are never sent. Open: #506, #508–#513. **Stage C1: CORE's text** (PR #501):
+  a hit counts only if its own DOI is this article's; no key, nothing recorded.
 - **Stage B: every Unpaywall PDF, then OpenAlex's** (all three; PR #491;
   "Tried sources (#480)"). **The first copy served ends the walk; one not
   saved is a caching note, never a shortfall.** Stored: v1 for one
