@@ -78,7 +78,8 @@ class FactCheckViewModelSearchFailureTest {
             documentRepository = mockk(relaxed = true),
             usageRepository = mockk(relaxed = true),
             sessionRepository = mockk(relaxed = true),
-            fullTextService = mockk(relaxed = true)
+            fullTextService = mockk(relaxed = true),
+            fullTextUpload = mockk(relaxed = true)
         )
     }
 

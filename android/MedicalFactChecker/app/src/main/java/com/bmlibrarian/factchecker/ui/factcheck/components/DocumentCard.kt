@@ -533,7 +533,8 @@ private fun KeyPassageBox(
  *   only a link (#471)
  * - Unavailable message with fallback to publisher when retrieval failed
  * - Get Full Text button when not yet attempted
- * - Upload Full Text button in all states where full text is not available
+ * - Upload Full Text button in all states where there is no full text the
+ *   analysis can read: a scanned PDF and an abstract-only deposit included
  *
  * @param document The document to display full-text actions for
  * @param isLoading Whether full text is currently being fetched
@@ -596,6 +597,15 @@ private fun FullTextSection(
                             )
                         }
                     }
+                }
+
+                // A scanned PDF, or an abstract-only deposit, gives the analysis nothing to read
+                if (document.analysisFullText == null) {
+                    UploadFullTextButton(
+                        isUploading = isUploading,
+                        isLoading = isLoading,
+                        onUpload = { onUploadFullText?.invoke(document) }
+                    )
                 }
             }
 

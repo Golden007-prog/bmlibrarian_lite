@@ -629,6 +629,16 @@ object Constants {
      */
     const val MAX_CITATION_FULL_TEXT_CHARACTERS = 40_000
 
+    /**
+     * Folder, in the app's files beside its PDF cache, holding the PDFs the
+     * reader uploaded: apart from the cache, so clearing it never deletes a copy
+     * no source could supply.
+     */
+    const val UPLOADED_FULLTEXT_DIR = "uploaded_fulltexts"
+
+    /** The largest file a full-text upload reads, as the desktop's MAX_PDF_SIZE. */
+    const val MAX_UPLOAD_BYTES = 100L * 1024 * 1024
+
     /** How many failed papers a full-text notice names before it only counts them. */
     const val MAX_FAILED_TITLES_TO_NAME = 3
 

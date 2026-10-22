@@ -20,10 +20,14 @@ package com.bmlibrarian.factchecker.ui.factcheck
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
 import android.util.Log
 import com.bmlibrarian.factchecker.data.local.entity.CitationEntity
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUpload
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUploadException
+import com.bmlibrarian.factchecker.data.remote.fulltext.recordingUpload
 import com.bmlibrarian.factchecker.data.remote.fulltext.recordingFullTextFetch
 import com.bmlibrarian.factchecker.data.repository.DocumentRepository
 import com.bmlibrarian.factchecker.data.repository.SessionRepository
@@ -103,6 +107,9 @@ data class FactCheckUiState(
 
     /** ID of document currently loading full text, or null if none. */
     val loadingFullTextDocumentId: String? = null,
+
+    /** ID of the document whose full text is being uploaded, or null if none. */
+    val uploadingFullTextDocumentId: String? = null,
 
     /** What the session's searches failed to retrieve (#252); empty when they were complete. */
     val searchShortfalls: List<RetrievalShortfall> = emptyList(),
@@ -215,7 +222,8 @@ class FactCheckViewModel @Inject constructor(
     private val documentRepository: DocumentRepository,
     private val usageRepository: UsageRepository,
     private val sessionRepository: SessionRepository,
-    private val fullTextService: FullTextService
+    private val fullTextService: FullTextService,
+    private val fullTextUpload: FullTextUpload
 ) : ViewModel() {
 
     companion object {
@@ -660,6 +668,32 @@ class FactCheckViewModel @Inject constructor(
     }
 
     // ==================== Full Text ====================
+
+    /**
+     * Use a file the reader chose as a document's full text.
+     *
+     * Offered during a run too: the automatic fetch leaves a paper the reader
+     * uploaded for alone, and the next extraction, or a retry, reads it whatever
+     * the full-text setting or score.
+     *
+     * @param document The document
+     * @param uri The file the reader chose
+     */
+    fun uploadFullText(document: DocumentEntity, uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(uploadingFullTextDocumentId = document.id) }
+            try {
+                val content = fullTextUpload.read(uri, document.id)
+                // Read again, so a score or fetch stored meanwhile is kept
+                val current = documentRepository.getDocument(document.id) ?: document
+                documentRepository.updateDocument(current.recordingUpload(content))
+            } catch (e: FullTextUploadException) {
+                _uiState.update { it.copy(errorMessage = e.message) }
+            } finally {
+                _uiState.update { it.copy(uploadingFullTextDocumentId = null) }
+            }
+        }
+    }
 
     /**
      * Fetch full text for a document.

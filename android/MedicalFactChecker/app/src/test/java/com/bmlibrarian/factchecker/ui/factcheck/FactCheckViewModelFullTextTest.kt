@@ -102,7 +102,8 @@ class FactCheckViewModelFullTextTest {
             documentRepository = documentRepository,
             usageRepository = mockk(relaxed = true),
             sessionRepository = mockk(relaxed = true),
-            fullTextService = fullTextService
+            fullTextService = fullTextService,
+            fullTextUpload = mockk(relaxed = true)
         )
     }
 

@@ -1,0 +1,156 @@
+/*
+ * BMLibrarian Lite - Biomedical Literature Research Tool
+ * Copyright (C) 2024-2026 Dr Horst Herb
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+package com.bmlibrarian.factchecker.data.remote.fulltext
+
+import android.content.ContentResolver
+import android.content.Context
+import android.net.Uri
+import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUpload.Kind
+import com.bmlibrarian.factchecker.domain.model.OpenAccessShortfall
+import com.bmlibrarian.factchecker.domain.model.OpenAccessSource
+import com.bmlibrarian.factchecker.domain.model.RequestFailure
+import com.bmlibrarian.factchecker.domain.model.RequestFailureKind
+import com.bmlibrarian.factchecker.util.Constants
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import java.io.ByteArrayInputStream
+import java.io.File
+
+/** A full text the reader supplies by hand (iOS's `FullTextUploadTests`). */
+class FullTextUploadTest {
+
+    @get:Rule
+    val folder = TemporaryFolder()
+
+    // ==================== What a file is ====================
+
+    @Test
+    fun `a file is read by its type, else by its name`() {
+        assertEquals(Kind.PDF, FullTextUpload.kindOf("application/pdf", null))
+        assertEquals(Kind.HTML, FullTextUpload.kindOf("text/html", "page.txt"))
+        assertEquals(Kind.TEXT, FullTextUpload.kindOf("application/octet-stream", "notes.md"))
+        assertEquals(Kind.PDF, FullTextUpload.kindOf(null, "Paper.PDF"))
+        assertEquals(Kind.TEXT, FullTextUpload.kindOf("text/csv", null))
+        assertNull(FullTextUpload.kindOf("application/msword", "paper.docx"))
+    }
+
+    @Test
+    fun `an HTML page is kept as its text, never its markup`() {
+        val text = FullTextUpload.htmlToText(
+            "<html><head><title>T</title><script>alert(1)</script></head><body>" +
+                "<h1>Methods</h1><p>We randomised 40&nbsp;patients &amp; 2 sites.</p><p>Caf&#233;</p></body></html>"
+        )
+
+        assertEquals("Methods\nWe randomised 40 patients & 2 sites.\nCafé", text)
+    }
+
+    // ==================== What the document records ====================
+
+    private val fetched = DocumentEntity(
+        id = "d", sessionId = "s", title = "A trial",
+        fullTextMarkdown = "Abstract only", fullTextAbstractOnly = true, fullTextUnavailable = true,
+        fullTextOpenAccessShortfallJson =
+            OpenAccessShortfall(OpenAccessSource.UNPAYWALL, RequestFailure(RequestFailureKind.TIMEOUT)).toJson()
+    )
+
+    @Test
+    fun `an uploaded PDF is recorded with its text, as uploaded, and settles the paper`() {
+        val recorded = fetched.recordingUpload(FullTextUploadContent.Pdf("/files/uploaded-d.pdf", "PDF prose"))
+
+        assertEquals(Constants.FULLTEXT_SOURCE_UPLOADED, recorded.fullTextSource)
+        assertTrue(recorded.holdsUploadedFullText)
+        assertEquals("/files/uploaded-d.pdf", recorded.pdfPath)
+        assertEquals("PDF prose", recorded.analysisFullText)
+        assertFalse(recorded.fullTextUnavailable)
+        assertFalse(recorded.fullTextAbstractOnly)
+        assertNull(recorded.fullTextOpenAccessShortfallJson)
+        assertNull(recorded.fullTextMarkdown)
+    }
+
+    @Test
+    fun `an uploaded text replaces a held abstract`() {
+        val recorded = fetched.recordingUpload(FullTextUploadContent.Text("The body."))
+
+        assertEquals("The body.", recorded.analysisFullText)
+        assertNull(recorded.pdfPath)
+    }
+
+    // ==================== Reading the file ====================
+
+    private fun upload(type: String?, bytes: ByteArray): Pair<FullTextUpload, Uri> {
+        val uri = mockk<Uri>()
+        val resolver = mockk<ContentResolver> {
+            every { getType(uri) } returns type
+            every { query(uri, any(), any(), any(), any()) } returns null
+            every { openInputStream(uri) } answers { ByteArrayInputStream(bytes) }
+        }
+        val context = mockk<Context> {
+            every { contentResolver } returns resolver
+            every { filesDir } returns folder.root
+        }
+        return FullTextUpload(context) to uri
+    }
+
+    @Test
+    fun `an uploaded PDF is kept in its own folder in the app's files`() = runTest {
+        val (upload, uri) = upload("application/pdf", "%PDF-1.4 not really".toByteArray())
+
+        val content = upload.read(uri, "doc/1") as FullTextUploadContent.Pdf
+
+        assertEquals(File(File(folder.root, Constants.UPLOADED_FULLTEXT_DIR), "uploaded-doc_1.pdf").path, content.path)
+        assertEquals("%PDF-1.4 not really", File(content.path).readText())
+        assertNull("no text iText can read", content.text)
+    }
+
+    @Test
+    fun `a file larger than an upload may be is refused, and an earlier upload is kept`() = runTest {
+        val (first, uri) = upload("application/pdf", "%PDF earlier".toByteArray())
+        val stored = (first.read(uri, "d") as FullTextUploadContent.Pdf).path
+        val (second, uri2) = upload("application/pdf", ByteArray(2_048))
+
+        val refused = runCatching { second.read(uri2, "d", maxBytes = 1_024) }.exceptionOrNull()
+
+        assertEquals(FullTextUpload.TOO_LARGE_MESSAGE, (refused as FullTextUploadException).message)
+        assertEquals("%PDF earlier", File(stored).readText())
+        assertEquals("no part file is left", listOf("uploaded-d.pdf"), File(folder.root, Constants.UPLOADED_FULLTEXT_DIR).list()?.toList())
+    }
+
+    @Test
+    fun `a text file is read, and one with no text or of a kind not supported is refused`() = runTest {
+        val (text, uri) = upload("text/markdown", "# Methods\n\nWe randomised.".toByteArray())
+        assertEquals(FullTextUploadContent.Text("# Methods\n\nWe randomised."), text.read(uri, "d"))
+
+        val (blank, blankUri) = upload("text/plain", "  \n ".toByteArray())
+        assertEquals(FullTextUpload.NO_TEXT_MESSAGE, runCatching { blank.read(blankUri, "d") }.exceptionOrNull()?.message)
+
+        val (image, imageUri) = upload("image/png", ByteArray(4))
+        assertEquals(FullTextUpload.UNSUPPORTED_MESSAGE, runCatching { image.read(imageUri, "d") }.exceptionOrNull()?.message)
+        assertThrows(FullTextUploadException::class.java) { kotlinx.coroutines.runBlocking { image.read(imageUri, "d") } }
+    }
+}

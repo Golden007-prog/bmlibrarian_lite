@@ -18,6 +18,8 @@
 
 package com.bmlibrarian.factchecker.ui.factcheck
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
@@ -69,6 +71,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUpload
 import com.bmlibrarian.factchecker.util.Constants
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowState
 import com.bmlibrarian.factchecker.ui.factcheck.components.ClaimInput
@@ -102,6 +106,14 @@ fun FactCheckScreen(
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
     val context = LocalContext.current
+
+    // The paper a file is being chosen for, and the picker that chooses it
+    var uploadTarget by remember { mutableStateOf<DocumentEntity?>(null) }
+    val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val target = uploadTarget
+        uploadTarget = null
+        if (uri != null && target != null) viewModel.uploadFullText(target, uri)
+    }
 
     // Restore session if ID provided (from History navigation)
     LaunchedEffect(sessionIdToRestore) {
@@ -293,6 +305,11 @@ fun FactCheckScreen(
                         document = document,
                         citations = uiState.getCitationsForDocument(document.id),
                         isLoadingFullText = uiState.loadingFullTextDocumentId == document.id,
+                        isUploadingFullText = uiState.uploadingFullTextDocumentId == document.id,
+                        onUploadFullText = { doc ->
+                            uploadTarget = doc
+                            uploadPicker.launch(FullTextUpload.PICKER_TYPES)
+                        },
                         onGetFullText = { doc ->
                             viewModel.fetchFullText(doc) { success ->
                                 // Always navigate to full-text viewer - it handles
