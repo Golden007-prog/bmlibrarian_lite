@@ -55,6 +55,8 @@ import io.mockk.coVerifyOrder
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -217,7 +219,7 @@ class FactCheckWorkflowSearchFailureTest {
     fun `an alternative search that failed is recorded as its own, and the report says so`() = runTest {
         holdSession(SearchProvider.PUBMED)
         coEvery { documentRepository.getDocumentCount(SESSION_ID) } returns 0
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.success(listOf(ALTERNATIVE_QUERY))
         // The claim's own query answers; the alternative query is rate limited
         pubMedFailsWith(429)
@@ -251,7 +253,7 @@ class FactCheckWorkflowSearchFailureTest {
     fun `more evidence whose alternative queries failed and found nothing keeps the report and smart search`() = runTest {
         holdSession(SearchProvider.PUBMED)
         stored = stored.copy(workflowStep = WorkflowStep.COMPLETED)
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.success(listOf(ALTERNATIVE_QUERY))
         pubMedFailsWith(429)
         coEvery { reportRepository.getReportBySession(SESSION_ID) } returns mockk(relaxed = true) {
@@ -279,7 +281,7 @@ class FactCheckWorkflowSearchFailureTest {
     fun `more evidence whose alternative queries could not be generated keeps the report and says so`() = runTest {
         holdSession(SearchProvider.PUBMED)
         stored = stored.copy(workflowStep = WorkflowStep.COMPLETED)
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.failure(IllegalStateException("the model is unreachable"))
         coEvery { reportRepository.getReportBySession(SESSION_ID) } returns mockk(relaxed = true) {
             coEvery { id } returns "report-252"
@@ -298,7 +300,7 @@ class FactCheckWorkflowSearchFailureTest {
         coVerify(exactly = 0) { sessionRepository.updateSmartSearchState(any(), true, any(), any()) }
         coVerify(exactly = 0) { reportRepository.createReport(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
         // A request that failed is not asked again here, and costs nothing
-        coVerify(exactly = 1) { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) {
             usageRepository.recordUsage(any(), any(), any(), operation = "smart_search_query_generation", any(), any(), any())
         }
@@ -310,7 +312,7 @@ class FactCheckWorkflowSearchFailureTest {
         coEvery { documentRepository.getDocumentCount(SESSION_ID) } returns 0
         pubMedFailsWith(429)
         pubMedFinds("1") { it == "aspirin" }
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.failure(IllegalStateException("the model is unreachable"))
 
         workflow.resumeSession(SESSION_ID, smartSearchConfig())
@@ -331,14 +333,14 @@ class FactCheckWorkflowSearchFailureTest {
         pubMedFailsWith(429)
         pubMedFinds("1") { it == "aspirin" }
         pubMedFinds("2") { it.contains("acetylsalicylic") }
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returnsMany
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returnsMany
             List(Constants.MAX_QUERY_RETRIES) { Result.success(emptyList<StructuredQuery>()) } +
             Result.success(listOf(ALTERNATIVE_QUERY))
 
         workflow.resumeSession(SESSION_ID, smartSearchConfig())
 
         coVerify(exactly = Constants.MAX_QUERY_RETRIES + 1) {
-            llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any())
+            llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any())
         }
         coVerify { documentRepository.saveDocuments(match { docs -> docs.map { it.pmid } == listOf("2") }) }
         assertEquals(null, workflow.searchFailureMessage.value)
@@ -350,13 +352,13 @@ class FactCheckWorkflowSearchFailureTest {
         coEvery { documentRepository.getDocumentCount(SESSION_ID) } returns 0
         pubMedFailsWith(429)
         pubMedFinds("1") { it == "aspirin" }
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.success(emptyList())
 
         workflow.resumeSession(SESSION_ID, smartSearchConfig())
 
         coVerify(exactly = Constants.MAX_QUERY_RETRIES + 1) {
-            llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any())
+            llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any())
         }
         // Marked as tried, so no later batch asks and pays again
         coVerify { sessionRepository.updateSmartSearchState(SESSION_ID, true, null, null) }
@@ -368,7 +370,7 @@ class FactCheckWorkflowSearchFailureTest {
     fun `more evidence whose alternative-query answers never hold a usable query keeps the report and says why`() = runTest {
         holdSession(SearchProvider.PUBMED)
         stored = stored.copy(workflowStep = WorkflowStep.COMPLETED)
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.success(emptyList())
         coEvery { reportRepository.getReportBySession(SESSION_ID) } returns mockk(relaxed = true) {
             coEvery { id } returns "report-252"
@@ -390,7 +392,7 @@ class FactCheckWorkflowSearchFailureTest {
         pubMedFailsWith(429)
         pubMedFinds("1") { it == "aspirin" }
         pubMedFinds("2") { it.contains("salicylate") }
-        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
             Result.success(listOf(ALTERNATIVE_QUERY, SECOND_ALTERNATIVE_QUERY))
 
         workflow.resumeSession(SESSION_ID, smartSearchConfig())
@@ -603,6 +605,90 @@ class FactCheckWorkflowSearchFailureTest {
         coVerify(exactly = 0) { pubMedApi.search(any(), any(), any(), any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { sessionRepository.setError(any(), any()) }
     }
+
+    // ==================== Repeated smart search ====================
+
+    @Test
+    fun `a request for more after smart search ran runs a fresh round told of the queries already run`() = runTest {
+        holdSmartSearchedSession(tried = listOf(ALTERNATIVE_QUERY))
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(listOf(SECOND_ALTERNATIVE_QUERY))
+        pubMedFinds("2") { it.contains("salicylate") }
+        workflow.restoreForViewing(stored)
+
+        workflow.fetchMoreEvidence()
+
+        coVerify {
+            llmService.generateAlternativeQueries(
+                any(), any(), any(), any(), any(), any(), any(), triedQueries = listOf("acetylsalicylic acid")
+            )
+        }
+        coVerify { documentRepository.saveDocuments(match { docs -> docs.map { it.pmid } == listOf("2") }) }
+        coVerify {
+            sessionRepository.updateSmartSearchState(SESSION_ID, true, triedJson(ALTERNATIVE_QUERY, SECOND_ALTERNATIVE_QUERY), any())
+        }
+        coVerify { reportRepository.createReport(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        assertEquals(null, workflow.smartSearchNotice.value)
+    }
+
+    @Test
+    fun `a round that finds nothing new keeps the report and says so`() = runTest {
+        holdSmartSearchedSession(tried = listOf(ALTERNATIVE_QUERY))
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(listOf(SECOND_ALTERNATIVE_QUERY))
+        coEvery { pubMedApi.search(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Response.success(ESearchResponse(ESearchResult(count = "0", idList = emptyList())))
+        workflow.restoreForViewing(stored)
+
+        workflow.fetchMoreEvidence()
+
+        assertEquals(WorkflowState.Completed(reportId = "report-252"), workflow.state.value)
+        assertEquals(FactCheckWorkflow.NO_NEW_EVIDENCE_NOTICE, workflow.smartSearchNotice.value)
+        assertEquals(null, workflow.searchFailureMessage.value)
+        // A query that ran and found nothing has run: the next round is told of it
+        coVerify {
+            sessionRepository.updateSmartSearchState(SESSION_ID, true, triedJson(ALTERNATIVE_QUERY, SECOND_ALTERNATIVE_QUERY), any())
+        }
+        coVerify(exactly = 0) { reportRepository.createReport(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `an alternative query a source could not answer is not recorded as run`() = runTest {
+        holdSmartSearchedSession(tried = emptyList())
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(listOf(ALTERNATIVE_QUERY, SECOND_ALTERNATIVE_QUERY))
+        pubMedFailsWith(429)
+        pubMedFinds("2") { it.contains("salicylate") }
+        workflow.restoreForViewing(stored)
+
+        workflow.fetchMoreEvidence()
+
+        coVerify { sessionRepository.updateSmartSearchState(SESSION_ID, true, triedJson(SECOND_ALTERNATIVE_QUERY), any()) }
+        coVerify(exactly = 0) {
+            sessionRepository.updateSmartSearchState(any(), any(), match { it?.contains("acetylsalicylic") == true }, any())
+        }
+    }
+
+    /**
+     * Hold a completed session with a report, whose original query is exhausted
+     * and whose smart search has run these queries.
+     */
+    private fun holdSmartSearchedSession(tried: List<StructuredQuery>) {
+        holdSession(SearchProvider.PUBMED)
+        stored = stored.copy(
+            workflowStep = WorkflowStep.COMPLETED,
+            smartSearchEnabled = true,
+            alternativeQueriesJson = if (tried.isEmpty()) null else triedJson(*tried.toTypedArray())
+        )
+        coEvery { documentRepository.getDocumentCount(SESSION_ID) } returns 1
+        coEvery { reportRepository.getReportBySession(SESSION_ID) } returns mockk(relaxed = true) {
+            coEvery { id } returns "report-252"
+        }
+    }
+
+    /** The stored record of these alternative queries having run. */
+    private fun triedJson(vararg queries: StructuredQuery): String =
+        Json.encodeToString(ListSerializer(StructuredQuery.serializer()), queries.toList())
 
     // ==================== Helpers ====================
 

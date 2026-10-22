@@ -109,8 +109,37 @@ data class FactCheckUiState(
     val searchFailureMessage: String? = null,
 
     /** Whether the session's record of what its searches missed is damaged (#252). */
-    val searchRecordDamaged: Boolean = false
+    val searchRecordDamaged: Boolean = false,
+
+    /** The claim the current session searched; null before a search, and after New Question. */
+    val searchedClaim: String? = null,
+
+    /** Why a request for more evidence added nothing new, while the report stands; null when none. */
+    val smartSearchNotice: String? = null
 ) {
+    /**
+     * Whether the claim on screen is the one the current session searched, so
+     * the submit button finds more evidence for it instead of starting over.
+     *
+     * An edited claim is a new question.
+     */
+    val isFollowUp: Boolean
+        get() = searchedClaim != null && documents.isNotEmpty() && claimText.trim() == searchedClaim
+
+    /**
+     * Whether the submit button may be pressed, beyond a non-blank claim and an idle, configured app.
+     *
+     * A follow-up paused for the user's decision is answered by that decision's
+     * buttons. Otherwise there is always more to try: smart search can run a
+     * fresh round.
+     */
+    val canSubmit: Boolean
+        get() = !(isFollowUp && workflowState is WorkflowState.AwaitingUserDecision)
+
+    /** The submit button's text. */
+    val submitLabel: String
+        get() = if (isFollowUp) "Find More Evidence" else "Check Claim"
+
     /**
      * The persistent warning an incomplete search shows.
      *
@@ -253,6 +282,11 @@ class FactCheckViewModel @Inject constructor(
                 _uiState.update { it.copy(searchRecordDamaged = damaged) }
             }
         }
+        viewModelScope.launch {
+            workflow.smartSearchNotice.collect { notice ->
+                _uiState.update { it.copy(smartSearchNotice = notice) }
+            }
+        }
     }
 
     /**
@@ -324,6 +358,13 @@ class FactCheckViewModel @Inject constructor(
     }
 
     /**
+     * Find more evidence for the claim already searched, or start a new fact-check.
+     */
+    fun submit() {
+        if (_uiState.value.isFollowUp) addMoreResults() else startFactCheck()
+    }
+
+    /**
      * Start the fact-check process.
      *
      * Creates a new session and runs the workflow with current settings.
@@ -335,7 +376,9 @@ class FactCheckViewModel @Inject constructor(
         if (claim.isEmpty()) return
 
         // Clear previous query and documents when starting a new fact check
-        _uiState.update { it.copy(generatedQuery = null, documents = emptyList(), citationsByDocument = emptyMap()) }
+        _uiState.update {
+            it.copy(generatedQuery = null, documents = emptyList(), citationsByDocument = emptyMap(), searchedClaim = claim)
+        }
 
         viewModelScope.launch {
             try {
@@ -502,6 +545,7 @@ class FactCheckViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         claimText = session.claimText,
+                        searchedClaim = session.claimText.trim(),
                         generatedQuery = session.pubmedQuery,
                         isResumedSession = true,
                         canFetchMoreDocuments = session.hasMoreDocuments,
@@ -524,16 +568,17 @@ class FactCheckViewModel @Inject constructor(
     }
 
     /**
-     * Add more results to the restored session.
+     * Add more results to the current or restored session.
      *
-     * Fetches additional documents from the search, scores them,
-     * and regenerates the report with all evidence.
+     * Fetches additional documents from the search (or, once it is exhausted,
+     * a fresh round of alternative queries), scores them, and regenerates the
+     * report with all evidence, under the current settings.
      */
     fun addMoreResults() {
         viewModelScope.launch {
             try {
                 _uiState.update { it.copy(isRunning = true) }
-                workflow.fetchMoreEvidence()
+                workflow.fetchMoreEvidence(buildWorkflowConfig())
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -39,13 +40,17 @@ import com.bmlibrarian.factchecker.util.Constants
 /**
  * Input component for the medical claim.
  *
- * Provides a multi-line text input for entering medical claims
- * and a submit button to start the fact-checking process.
+ * Provides a multi-line text input for entering medical claims, a submit
+ * button that checks a claim or, after a search, finds more evidence for it,
+ * and a button that clears the claim for a new question.
  *
  * @param claimText Current text in the input field
  * @param onClaimTextChange Callback when text changes
  * @param onSubmit Callback when submit button is pressed
  * @param isEnabled Whether the input is enabled for interaction
+ * @param submitLabel The submit button's text
+ * @param canSubmit Whether the submit button may be pressed, beyond [isEnabled] and a non-blank claim
+ * @param onNewQuestion Callback when the user clears the claim for a new one; null hides the button
  * @param modifier Modifier for the component
  */
 @Composable
@@ -54,6 +59,9 @@ fun ClaimInput(
     onClaimTextChange: (String) -> Unit,
     onSubmit: () -> Unit,
     isEnabled: Boolean,
+    submitLabel: String = "Check Claim",
+    canSubmit: Boolean = true,
+    onNewQuestion: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     Column(modifier = modifier) {
@@ -72,7 +80,7 @@ fun ClaimInput(
 
         Button(
             onClick = onSubmit,
-            enabled = isEnabled && claimText.isNotBlank(),
+            enabled = isEnabled && canSubmit && claimText.isNotBlank(),
             modifier = Modifier.align(Alignment.End)
         ) {
             Icon(
@@ -81,7 +89,18 @@ fun ClaimInput(
                 modifier = Modifier.size(Constants.UI_ICON_SIZE.dp)
             )
             Spacer(modifier = Modifier.width(Constants.UI_ELEMENT_SPACING.dp))
-            Text("Check Claim")
+            Text(submitLabel)
+        }
+
+        if (onNewQuestion != null) {
+            Spacer(modifier = Modifier.height(Constants.UI_ICON_TEXT_SPACING.dp))
+            OutlinedButton(
+                onClick = onNewQuestion,
+                enabled = isEnabled,
+                modifier = Modifier.align(Alignment.End)
+            ) {
+                Text("New Question")
+            }
         }
     }
 }

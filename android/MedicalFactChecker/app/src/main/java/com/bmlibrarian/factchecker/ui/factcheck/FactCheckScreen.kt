@@ -162,8 +162,11 @@ fun FactCheckScreen(
                 ClaimInput(
                     claimText = uiState.claimText,
                     onClaimTextChange = viewModel::updateClaimText,
-                    onSubmit = viewModel::startFactCheck,
+                    onSubmit = viewModel::submit,
                     isEnabled = !uiState.isRunning && !uiState.showConfigWarning,
+                    submitLabel = uiState.submitLabel,
+                    canSubmit = uiState.canSubmit,
+                    onNewQuestion = if (uiState.searchedClaim != null) viewModel::startNewQuestion else null,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -181,6 +184,13 @@ fun FactCheckScreen(
             uiState.incompleteSearchWarning?.let { warning ->
                 item(key = "incomplete_search") {
                     IncompleteSearchCard(text = warning)
+                }
+            }
+
+            // Why a request for more evidence added nothing new, while the report stands
+            uiState.smartSearchNotice?.let { notice ->
+                item(key = "smart_search_notice") {
+                    IncompleteSearchCard(text = notice)
                 }
             }
 

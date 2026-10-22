@@ -57,6 +57,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.coroutineContext
@@ -126,6 +129,10 @@ class FactCheckWorkflow @Inject constructor(
         private const val SMART_SEARCH_UNUSABLE_MESSAGE =
             "Alternative searches could not be run: the language model's answers held no search query " +
                 "that could be used. Another model, chosen in Settings, may do better."
+
+        /** Shown when a request for more evidence ran alternative queries that found no new documents. */
+        const val NO_NEW_EVIDENCE_NOTICE =
+            "The alternative searches found no documents beyond those already found. The report is unchanged."
     }
 
     // ==================== Observable State ====================
@@ -163,6 +170,14 @@ class FactCheckWorkflow @Inject constructor(
      */
     private val _searchRecordDamaged = MutableStateFlow(false)
     val searchRecordDamaged: StateFlow<Boolean> = _searchRecordDamaged.asStateFlow()
+
+    /**
+     * Why a request for more evidence added nothing, while the report it had
+     * stands ([NO_NEW_EVIDENCE_NOTICE]); null otherwise. Kept until the next
+     * request for more evidence.
+     */
+    private val _smartSearchNotice = MutableStateFlow<String?>(null)
+    val smartSearchNotice: StateFlow<String?> = _smartSearchNotice.asStateFlow()
 
     // ==================== Current Session ====================
 
@@ -340,17 +355,31 @@ class FactCheckWorkflow @Inject constructor(
      * Fetch additional evidence after initial report generation.
      *
      * Allows users to gather more evidence when initial report is incomplete.
+     * Can be called repeatedly: once the original query is exhausted, each call
+     * runs a fresh round of alternative queries, told of the earlier ones. A
+     * round that finds nothing new keeps the report and says so
+     * ([smartSearchNotice]); a session without a report goes on to make one.
+     *
      * A search for more that failures leave with nothing, or that cannot be sent
      * because the saved NCBI credentials cannot be read, keeps the session's
      * report as it was and shows why (#252). Smart search stays available to try
      * again when the model could not be asked or its queries failed; it is marked
      * as tried when every answer held no usable query.
+     *
+     * @param settings The current settings, whose thresholds and budgets this
+     *   request runs under; the session keeps its own search provider and
+     *   preprint choice, which its paging belongs to. Null keeps the
+     *   configuration the session was started or restored with.
      */
-    suspend fun fetchMoreEvidence() {
+    suspend fun fetchMoreEvidence(settings: WorkflowConfig? = null) {
         val session = currentSession
             ?: throw IllegalStateException("No active session")
+        settings?.let {
+            currentConfig = it.copy(searchProvider = session.searchProvider, includePreprints = session.includePreprints)
+        }
         val config = currentConfig ?: WorkflowConfig.default()
         _searchFailureMessage.value = null
+        _smartSearchNotice.value = null
 
         _state.value = WorkflowState.FetchingMoreEvidence()
         sessionRepository.updateWorkflowStep(session.id, WorkflowStep.FETCHING_MORE_EVIDENCE)
@@ -393,8 +422,9 @@ class FactCheckWorkflow @Inject constructor(
 
                     extractCitations(docsNeedingCitations, freshSession.claimText, session.id, config)
                 }
-            } else if (!freshSession.smartSearchEnabled && config.smartSearchEnabled) {
-                // Pagination exhausted but smart search not tried — try alternative queries
+            } else if (config.smartSearchEnabled) {
+                // The original query is exhausted: try alternative queries, a fresh
+                // round told of the earlier ones when smart search has run
                 updateProgress("Trying alternative search strategies...", WorkflowProgress.PROGRESS_SEARCHING_START)
                 val smartSearch = when (val outcome = executeSmartSearch(freshSession, config)) {
                     SmartSearchOutcome.Unavailable -> {
@@ -408,16 +438,31 @@ class FactCheckWorkflow @Inject constructor(
                     is SmartSearchOutcome.Ran -> outcome
                 }
                 if (smartSearch.newDocuments == 0 && smartSearch.unrecordedShortfalls.isNotEmpty()) {
-                    // Nothing new, and something failed: let the user try smart search again
+                    // Nothing new, and something failed: smart search is as tried as
+                    // it was before this round, so the user can try it again; the
+                    // queries that did run stay recorded
+                    val afterRound = sessionRepository.getSession(session.id) ?: freshSession
                     sessionRepository.updateSmartSearchState(
                         sessionId = session.id,
-                        enabled = false,
-                        queriesJson = null,
-                        fetchedPmids = null
+                        enabled = freshSession.smartSearchEnabled,
+                        queriesJson = afterRound.alternativeQueriesJson,
+                        fetchedPmids = afterRound.fetchedPmids
                     )
                     throw SearchFailedException(smartSearch.unrecordedShortfalls)
                 }
                 recordShortfalls(session.id, smartSearch.unrecordedShortfalls)
+
+                if (smartSearch.newDocuments == 0) {
+                    reportRepository.getReportBySession(session.id)?.let { report ->
+                        // Nothing new to cite, so the report stands as it is. A
+                        // session without one goes on to make it
+                        _smartSearchNotice.value = NO_NEW_EVIDENCE_NOTICE
+                        sessionRepository.updateWorkflowStep(session.id, WorkflowStep.COMPLETED)
+                        _state.value = WorkflowState.Completed(reportId = report.id)
+                        updateProgress("Complete", WorkflowProgress.PROGRESS_COMPLETE)
+                        return
+                    }
+                }
 
                 // Extract citations from any new relevant documents found by smart search
                 val allRelevantDocs = documentRepository.getDocumentsBySessionSync(session.id)
@@ -1487,18 +1532,22 @@ class FactCheckWorkflow @Inject constructor(
         val relevantCount = documentRepository.getRelevantCount(session.id, config.relevanceThreshold)
         val updatedSession = sessionRepository.getSession(session.id) ?: session
 
-        val alternatives = requestAlternativeQueries(updatedSession, config, relevantCount).getOrElse { error ->
+        val triedQueries = triedAlternativeQueries(updatedSession).map { query ->
+            query.concepts.joinToString(" AND ") { it.name }
+        }
+        val alternatives = requestAlternativeQueries(updatedSession, config, relevantCount, triedQueries).getOrElse { error ->
             // Not marked as tried, so smart search can be tried again
             Log.e(TAG, "Smart search could not ask for alternative queries (${error.javaClass.simpleName})")
             return SmartSearchOutcome.Unavailable
         }
         if (alternatives.isEmpty()) {
-            // Marked as tried, so no later batch asks and pays again
+            // Marked as tried, so the workflow does not ask and pay again on its
+            // own (a request for more evidence still runs a fresh round)
             sessionRepository.updateSmartSearchState(
                 sessionId = session.id,
                 enabled = true,
-                queriesJson = null,
-                fetchedPmids = null
+                queriesJson = updatedSession.alternativeQueriesJson,
+                fetchedPmids = updatedSession.fetchedPmids
             )
             return SmartSearchOutcome.Unusable
         }
@@ -1507,18 +1556,14 @@ class FactCheckWorkflow @Inject constructor(
         val existingDocs = documentRepository.getDocumentsBySessionSync(session.id)
         val fetchedPmids = existingDocs.mapNotNull { it.pmid }.toMutableSet()
 
-        // Store alternatives and mark smart search as enabled
-        val alternativesJson = try {
-            kotlinx.serialization.json.Json.encodeToString(
-                kotlinx.serialization.builtins.ListSerializer(StructuredQuery.serializer()),
-                alternatives
-            )
-        } catch (e: Exception) { null }
+        // Each query is added once it has run, after the earlier rounds', so the next round is told of them all
+        val tried = triedAlternativeQueries(updatedSession).toMutableList()
+        var triedJson = updatedSession.alternativeQueriesJson
 
         sessionRepository.updateSmartSearchState(
             sessionId = session.id,
             enabled = true,
-            queriesJson = alternativesJson,
+            queriesJson = triedJson,
             fetchedPmids = fetchedPmids.joinToString(",")
         )
 
@@ -1550,6 +1595,7 @@ class FactCheckWorkflow @Inject constructor(
                     earlierLosses = unrecordedShortfalls.toList()
                 )
             } catch (e: SearchFailedException) {
+                // A query a source could not answer has not run: a later round may ask it again
                 Log.w(TAG, "Smart search ${index + 1}/${alternatives.size} failed: ${e.message}")
                 if (newDocumentCount > 0) {
                     recordShortfalls(session.id, e.shortfalls)
@@ -1559,18 +1605,20 @@ class FactCheckWorkflow @Inject constructor(
                 continue
             }
 
+            tried += altQuery
+            triedJson = encodeTriedAlternativeQueries(tried) ?: triedJson
+            newDocs.mapNotNull { it.pmid }.forEach { fetchedPmids.add(it) }
+            sessionRepository.updateSmartSearchState(
+                sessionId = session.id,
+                enabled = true,
+                queriesJson = triedJson,
+                fetchedPmids = fetchedPmids.joinToString(",")
+            )
+
             if (newDocs.isNotEmpty()) {
                 // Recorded with these documents
                 unrecordedShortfalls.clear()
                 newDocumentCount += newDocs.size
-                // Update fetched PMIDs
-                newDocs.mapNotNull { it.pmid }.forEach { fetchedPmids.add(it) }
-                sessionRepository.updateSmartSearchState(
-                    sessionId = session.id,
-                    enabled = true,
-                    queriesJson = alternativesJson,
-                    fetchedPmids = fetchedPmids.joinToString(",")
-                )
 
                 // Score new documents
                 updateProgress(
@@ -1600,13 +1648,16 @@ class FactCheckWorkflow @Inject constructor(
      * @param session The current session
      * @param config Workflow configuration
      * @param relevantCount How many relevant documents the session holds
+     * @param triedQueries The alternative queries earlier rounds ran, each as its
+     *   concept names joined by " AND "
      * @return The queries; an empty list when every answer, retries included, held
      *   none; or a failure when the model could not be asked
      */
     private suspend fun requestAlternativeQueries(
         session: SessionEntity,
         config: WorkflowConfig,
-        relevantCount: Int
+        relevantCount: Int,
+        triedQueries: List<String>
     ): Result<List<StructuredQuery>> {
         val attempts = Constants.MAX_QUERY_RETRIES + 1
         repeat(attempts) { attempt ->
@@ -1618,7 +1669,8 @@ class FactCheckWorkflow @Inject constructor(
                 claim = session.claimText,
                 initialQuery = session.pubmedQuery,
                 totalResults = session.pubmedTotalResults + session.epmcTotalResults,
-                relevantCount = relevantCount
+                relevantCount = relevantCount,
+                triedQueries = triedQueries
             )
             val queries = answer.getOrElse { return Result.failure(it) }
             recordUsage(
@@ -1630,6 +1682,39 @@ class FactCheckWorkflow @Inject constructor(
             Log.w(TAG, "Smart search's answer ${attempt + 1} of $attempts held no usable query")
         }
         return Result.success(emptyList())
+    }
+
+    /**
+     * The alternative queries earlier smart search rounds ran.
+     *
+     * @param session The session
+     * @return The queries; empty before the first round, or when the stored record
+     *   cannot be read (logged; the next query run replaces it)
+     */
+    private fun triedAlternativeQueries(session: SessionEntity): List<StructuredQuery> {
+        val json = session.alternativeQueriesJson ?: return emptyList()
+        return try {
+            Json.decodeFromString(ListSerializer(StructuredQuery.serializer()), json)
+        } catch (e: SerializationException) {
+            Log.e(TAG, "Unreadable record of the alternative queries already run: ${e.message}")
+            emptyList()
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Unreadable record of the alternative queries already run: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Encode the alternative queries run so far, for the next round's prompt.
+     *
+     * @param tried Every query run, earlier rounds' first
+     * @return The JSON to store, or null when it could not be encoded (logged)
+     */
+    private fun encodeTriedAlternativeQueries(tried: List<StructuredQuery>): String? = try {
+        Json.encodeToString(ListSerializer(StructuredQuery.serializer()), tried)
+    } catch (e: SerializationException) {
+        Log.e(TAG, "Could not record the alternative queries already run: ${e.message}")
+        null
     }
 
     /**

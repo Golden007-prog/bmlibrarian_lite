@@ -27,6 +27,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -731,6 +732,28 @@ class LLMServiceTest {
 
         assertTrue("got $result", result.exceptionOrNull() is LLMError.AuthenticationError)
     }
+
+    @Test
+    fun `the first smart search round's prompt names no earlier queries`() {
+        val text = alternativeQueriesPrompt(tried = emptyList())
+
+        assertFalse(text.contains("already run"))
+        assertTrue("the first round's prompt is unchanged", text.contains("Relevant documents: 1\n\nGenerate 2-3"))
+    }
+
+    @Test
+    fun `a later smart search round's prompt lists the queries already run`() {
+        val text = alternativeQueriesPrompt(tried = listOf("aspirin AND ischaemic stroke", "salicylate AND cerebrovascular"))
+
+        assertTrue(text.contains("already run"))
+        assertTrue(text.contains("- aspirin AND ischaemic stroke\n- salicylate AND cerebrovascular\n\nGenerate 2-3"))
+    }
+
+    /** The alternative-query prompt for a claim, with the queries already run. */
+    private fun alternativeQueriesPrompt(tried: List<String>): String = LLMService.alternativeQueriesPrompt(
+        claim = "Aspirin prevents stroke", initialQuery = "aspirin AND stroke",
+        totalResults = 4, relevantCount = 1, triedQueries = tried
+    )
 
     /** Ask the service for alternative queries, over the OpenAI-compatible API. */
     private suspend fun generateAlternativeQueries(): Result<List<StructuredQuery>> =
