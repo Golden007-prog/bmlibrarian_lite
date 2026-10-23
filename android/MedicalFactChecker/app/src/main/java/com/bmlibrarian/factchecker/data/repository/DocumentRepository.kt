@@ -367,4 +367,24 @@ class DocumentRepository @Inject constructor(
     suspend fun deleteCitationsByDocument(documentId: String) {
         citationDao.deleteByDocumentId(documentId)
     }
+
+    /**
+     * Replace a document's citations with new ones, in one transaction.
+     *
+     * @param documentId Document ID
+     * @param citations Its new citations
+     */
+    suspend fun replaceCitations(documentId: String, citations: List<CitationEntity>) {
+        citationDao.replaceForDocument(documentId, citations)
+    }
+
+    /**
+     * Record whether a document's last successful citation extraction read its full text.
+     *
+     * @param documentId Document ID
+     * @param readFullText Whether the full text was in the prompt
+     */
+    suspend fun updateCitationsReadFullText(documentId: String, readFullText: Boolean) {
+        documentDao.updateCitationsReadFullText(documentId, readFullText)
+    }
 }

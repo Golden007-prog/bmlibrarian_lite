@@ -19,6 +19,7 @@
 package com.bmlibrarian.factchecker.ui.factcheck
 
 import com.bmlibrarian.factchecker.data.repository.SettingsRepository
+import com.bmlibrarian.factchecker.domain.model.AppSettings
 import com.bmlibrarian.factchecker.domain.model.RequestFailure
 import com.bmlibrarian.factchecker.domain.model.RequestFailureKind
 import com.bmlibrarian.factchecker.domain.model.RetrievalShortfall
@@ -66,9 +67,13 @@ class FactCheckViewModelSearchFailureTest {
             every { searchShortfalls } returns shortfalls
             every { searchFailureMessage } returns failureMessage
             every { searchRecordDamaged } returns recordDamaged
+            every { smartSearchNotice } returns MutableStateFlow(null)
+            every { fullTextNotice } returns MutableStateFlow(null)
         }
         val settingsRepository = mockk<SettingsRepository>(relaxed = true) {
             every { configurationVersion } returns MutableStateFlow(0)
+            // Collected at start-up, as configurationVersion is
+            every { settings } returns MutableStateFlow(AppSettings())
         }
         viewModel = FactCheckViewModel(
             workflow = workflow,
@@ -76,7 +81,8 @@ class FactCheckViewModelSearchFailureTest {
             documentRepository = mockk(relaxed = true),
             usageRepository = mockk(relaxed = true),
             sessionRepository = mockk(relaxed = true),
-            fullTextService = mockk(relaxed = true)
+            fullTextService = mockk(relaxed = true),
+            fullTextUpload = mockk(relaxed = true)
         )
     }
 

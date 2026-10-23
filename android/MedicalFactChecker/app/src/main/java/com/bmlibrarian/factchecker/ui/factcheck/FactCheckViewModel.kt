@@ -20,10 +20,15 @@ package com.bmlibrarian.factchecker.ui.factcheck
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import android.net.Uri
 import android.util.Log
 import com.bmlibrarian.factchecker.data.local.entity.CitationEntity
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUpload
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUploadContent
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUploadException
+import com.bmlibrarian.factchecker.data.remote.fulltext.recordingUpload
 import com.bmlibrarian.factchecker.data.remote.fulltext.recordingFullTextFetch
 import com.bmlibrarian.factchecker.data.repository.DocumentRepository
 import com.bmlibrarian.factchecker.data.repository.SessionRepository
@@ -33,7 +38,9 @@ import com.bmlibrarian.factchecker.domain.model.DocumentSortOrder
 import com.bmlibrarian.factchecker.domain.model.RetrievalShortfall
 import com.bmlibrarian.factchecker.domain.model.SearchFailureReporting
 import com.bmlibrarian.factchecker.domain.model.UnpaywallContact
+import com.bmlibrarian.factchecker.domain.model.WorkflowStep
 import com.bmlibrarian.factchecker.domain.workflow.FactCheckWorkflow
+import com.bmlibrarian.factchecker.domain.workflow.FullTextAutoFetch
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowConfig
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowProgress
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowState
@@ -102,6 +109,9 @@ data class FactCheckUiState(
     /** ID of document currently loading full text, or null if none. */
     val loadingFullTextDocumentId: String? = null,
 
+    /** ID of the document whose full text is being uploaded, or null if none. */
+    val uploadingFullTextDocumentId: String? = null,
+
     /** What the session's searches failed to retrieve (#252); empty when they were complete. */
     val searchShortfalls: List<RetrievalShortfall> = emptyList(),
 
@@ -109,8 +119,53 @@ data class FactCheckUiState(
     val searchFailureMessage: String? = null,
 
     /** Whether the session's record of what its searches missed is damaged (#252). */
-    val searchRecordDamaged: Boolean = false
+    val searchRecordDamaged: Boolean = false,
+
+    /** The claim the current session searched; null before a search, and after New Question. */
+    val searchedClaim: String? = null,
+
+    /** Why a request for more evidence added nothing new, while the report stands; null when none. */
+    val smartSearchNotice: String? = null,
+
+    /** What the full-text step could not do; null when nothing went wrong. */
+    val fullTextNotice: String? = null,
+
+    /** Whether the session has completed, so it holds a report. */
+    val sessionComplete: Boolean = false,
+
+    /** What a retry of full-text retrieval would do, offered beside its button; null when nothing. */
+    val fullTextRetryNotice: String? = null,
+
+    /**
+     * What an action the reader took (an upload, a retry, a request for more
+     * evidence) could not do, or what they should know of its outcome; kept,
+     * unlike [errorMessage], until dismissed or the next such action.
+     */
+    val actionMessage: String? = null
 ) {
+    /**
+     * Whether the claim on screen is the one the current session searched, so
+     * the submit button finds more evidence for it instead of starting over.
+     *
+     * An edited claim is a new question.
+     */
+    val isFollowUp: Boolean
+        get() = searchedClaim != null && documents.isNotEmpty() && claimText.trim() == searchedClaim
+
+    /**
+     * Whether the submit button may be pressed, beyond a non-blank claim and an idle, configured app.
+     *
+     * A follow-up paused for the user's decision is answered by that decision's
+     * buttons. Otherwise there is always more to try: smart search can run a
+     * fresh round.
+     */
+    val canSubmit: Boolean
+        get() = !(isFollowUp && workflowState is WorkflowState.AwaitingUserDecision)
+
+    /** The submit button's text. */
+    val submitLabel: String
+        get() = if (isFollowUp) "Find More Evidence" else "Check Claim"
+
     /**
      * The persistent warning an incomplete search shows.
      *
@@ -175,7 +230,8 @@ class FactCheckViewModel @Inject constructor(
     private val documentRepository: DocumentRepository,
     private val usageRepository: UsageRepository,
     private val sessionRepository: SessionRepository,
-    private val fullTextService: FullTextService
+    private val fullTextService: FullTextService,
+    private val fullTextUpload: FullTextUpload
 ) : ViewModel() {
 
     companion object {
@@ -204,9 +260,15 @@ class FactCheckViewModel @Inject constructor(
         viewModelScope.launch {
             workflow.state.collect { state ->
                 _uiState.update {
-                    it.copy(
+                    withRetryNotice(it.copy(
                         workflowState = state,
                         isRunning = state.isProcessing(),
+                        // A restored session is idle; its completeness was read from it
+                        sessionComplete = when (state) {
+                            is WorkflowState.Completed -> true
+                            is WorkflowState.Idle -> it.sessionComplete
+                            else -> false
+                        },
                         errorMessage = when (state) {
                             is WorkflowState.Failed -> state.error
                             is WorkflowState.BudgetExceeded -> state.message
@@ -217,7 +279,7 @@ class FactCheckViewModel @Inject constructor(
                             is WorkflowState.Searching -> state.query
                             else -> it.generatedQuery // Keep existing query
                         }
-                    )
+                    ))
                 }
             }
         }
@@ -251,6 +313,16 @@ class FactCheckViewModel @Inject constructor(
         viewModelScope.launch {
             workflow.searchRecordDamaged.collect { damaged ->
                 _uiState.update { it.copy(searchRecordDamaged = damaged) }
+            }
+        }
+        viewModelScope.launch {
+            workflow.smartSearchNotice.collect { notice ->
+                _uiState.update { it.copy(smartSearchNotice = notice) }
+            }
+        }
+        viewModelScope.launch {
+            workflow.fullTextNotice.collect { notice ->
+                _uiState.update { it.copy(fullTextNotice = notice) }
             }
         }
     }
@@ -293,6 +365,10 @@ class FactCheckViewModel @Inject constructor(
                 }
             }
         }
+        // The retry's offer depends on the full-text setting and score
+        viewModelScope.launch {
+            settingsRepository.settings.collect { _ -> _uiState.update(::withRetryNotice) }
+        }
     }
 
     /**
@@ -324,6 +400,13 @@ class FactCheckViewModel @Inject constructor(
     }
 
     /**
+     * Find more evidence for the claim already searched, or start a new fact-check.
+     */
+    fun submit() {
+        if (_uiState.value.isFollowUp) addMoreResults() else startFactCheck()
+    }
+
+    /**
      * Start the fact-check process.
      *
      * Creates a new session and runs the workflow with current settings.
@@ -335,7 +418,9 @@ class FactCheckViewModel @Inject constructor(
         if (claim.isEmpty()) return
 
         // Clear previous query and documents when starting a new fact check
-        _uiState.update { it.copy(generatedQuery = null, documents = emptyList(), citationsByDocument = emptyMap()) }
+        _uiState.update {
+            it.copy(generatedQuery = null, documents = emptyList(), citationsByDocument = emptyMap(), searchedClaim = claim)
+        }
 
         viewModelScope.launch {
             try {
@@ -432,7 +517,7 @@ class FactCheckViewModel @Inject constructor(
         viewModelScope.launch {
             documentRepository.getDocumentsBySession(sessionId)
                 .collect { docs ->
-                    _uiState.update { it.copy(documents = docs) }
+                    _uiState.update { withRetryNotice(it.copy(documents = docs)) }
                 }
         }
 
@@ -442,7 +527,7 @@ class FactCheckViewModel @Inject constructor(
                 .collect { citations ->
                     // Group citations by document ID
                     val citationsMap = citations.groupBy { it.documentId }
-                    _uiState.update { it.copy(citationsByDocument = citationsMap) }
+                    _uiState.update { withRetryNotice(it.copy(citationsByDocument = citationsMap)) }
                 }
         }
     }
@@ -463,7 +548,9 @@ class FactCheckViewModel @Inject constructor(
             relevanceThreshold = settingsRepository.getRelevanceThreshold(),
             targetRelevantDocuments = settingsRepository.getTargetRelevantDocuments(),
             maxRunBudgetUsd = settingsRepository.getMaxRunBudgetUsd().toDouble(),
-            monthlyBudgetUsd = settingsRepository.getMonthlyBudgetUsd().toDouble()
+            monthlyBudgetUsd = settingsRepository.getMonthlyBudgetUsd().toDouble(),
+            autoFetchFullText = settingsRepository.settings.value.autoFetchFullTextEnabled,
+            fullTextAutoFetchMinScore = settingsRepository.settings.value.fullTextAutoFetchMinScore
         )
     }
 
@@ -502,8 +589,10 @@ class FactCheckViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(
                         claimText = session.claimText,
+                        searchedClaim = session.claimText.trim(),
                         generatedQuery = session.pubmedQuery,
                         isResumedSession = true,
+                        sessionComplete = session.workflowStep == WorkflowStep.COMPLETED,
                         canFetchMoreDocuments = session.hasMoreDocuments,
                         workflowState = WorkflowState.Idle,
                         isRunning = false,
@@ -524,29 +613,91 @@ class FactCheckViewModel @Inject constructor(
     }
 
     /**
-     * Add more results to the restored session.
+     * Add more results to the current or restored session.
      *
-     * Fetches additional documents from the search, scores them,
-     * and regenerates the report with all evidence.
+     * Fetches additional documents from the search (or, once it is exhausted,
+     * a fresh round of alternative queries), scores them, and regenerates the
+     * report with all evidence, under the current settings.
      */
     fun addMoreResults() {
+        if (!startingAction()) return
         viewModelScope.launch {
             try {
-                _uiState.update { it.copy(isRunning = true) }
-                workflow.fetchMoreEvidence()
+                workflow.fetchMoreEvidence(buildWorkflowConfig())
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        errorMessage = e.message ?: "Failed to fetch more documents",
-                        isRunning = false
-                    )
-                }
+                Log.e(TAG, "Fetching more evidence failed", e)
+                _uiState.update { it.copy(actionMessage = e.message ?: "Failed to fetch more documents") }
+            } finally {
+                endingAction()
             }
         }
     }
 
     /**
-     * Clear restored session state and start a new question.
+     * Fetch full text again for the papers that have none, and redo the analysis
+     * with any that arrive, under the current settings.
+     */
+    fun retryFullText() {
+        if (!startingAction()) return
+        viewModelScope.launch {
+            try {
+                workflow.retryFullTextRetrieval(buildWorkflowConfig())
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Retrying full text failed", e)
+                _uiState.update { it.copy(actionMessage = e.message ?: "Failed to retry full text") }
+            } finally {
+                endingAction()
+            }
+        }
+    }
+
+    /**
+     * Mark a run started from the screen as running, at once: a second tap
+     * before the workflow says it is busy would start a second run, paying twice
+     * and saving its citations twice.
+     *
+     * @return False when something already runs, so nothing is started
+     */
+    private fun startingAction(): Boolean {
+        var started = false
+        _uiState.update {
+            started = !it.isRunning
+            if (started) it.copy(isRunning = true, fullTextRetryNotice = null, actionMessage = null) else it
+        }
+        return started
+    }
+
+    /**
+     * End a run started from the screen: running only while the workflow is,
+     * since a run that found nothing to do may never have changed its state.
+     */
+    private fun endingAction() {
+        _uiState.update { withRetryNotice(it.copy(isRunning = workflow.state.value.isProcessing())) }
+    }
+
+    /** Stop showing [FactCheckUiState.actionMessage]. */
+    fun dismissActionMessage() {
+        _uiState.update { it.copy(actionMessage = null) }
+    }
+
+    /**
+     * The state with what a retry of full-text retrieval would do, under the
+     * current settings: offered only for a completed session, while nothing runs.
+     */
+    private fun withRetryNotice(state: FactCheckUiState): FactCheckUiState = state.copy(
+        fullTextRetryNotice = if (state.isRunning || !state.sessionComplete) {
+            null
+        } else {
+            FullTextAutoFetch.retryNotice(state.documents, state.citationsByDocument, buildWorkflowConfig())
+        }
+    )
+
+    /**
+     * Clear the session on screen, run or restored, and start a new question.
      *
      * Resets the workflow and UI to allow entering a fresh claim.
      */
@@ -564,6 +715,42 @@ class FactCheckViewModel @Inject constructor(
     }
 
     // ==================== Full Text ====================
+
+    /**
+     * Use a file the reader chose as a document's full text.
+     *
+     * Offered during a run too: the automatic fetch leaves a paper the reader
+     * uploaded for alone, and the next extraction, or a retry, reads it whatever
+     * the full-text setting or score.
+     *
+     * @param document The document
+     * @param uri The file the reader chose
+     */
+    fun uploadFullText(document: DocumentEntity, uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(uploadingFullTextDocumentId = document.id, actionMessage = null) }
+            try {
+                val content = fullTextUpload.read(uri, document.id)
+                // Read again, so a score or fetch stored meanwhile is kept
+                val current = documentRepository.getDocument(document.id) ?: document
+                documentRepository.updateDocument(current.recordingUpload(content))
+                if (content is FullTextUploadContent.Pdf && content.text == null) {
+                    _uiState.update { it.copy(actionMessage = FullTextUpload.PDF_WITHOUT_TEXT_MESSAGE) }
+                }
+            } catch (e: FullTextUploadException) {
+                Log.w(TAG, "Upload for ${document.id} refused: ${e.message}")
+                _uiState.update { it.copy(actionMessage = e.message) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // A provider's own failure (a revoked grant, a bad URI): told, never a crash
+                Log.e(TAG, "Upload for ${document.id} failed", e)
+                _uiState.update { it.copy(actionMessage = "The file could not be used as this paper's full text.") }
+            } finally {
+                _uiState.update { it.copy(uploadingFullTextDocumentId = null) }
+            }
+        }
+    }
 
     /**
      * Fetch full text for a document.
@@ -599,7 +786,8 @@ class FactCheckViewModel @Inject constructor(
                             chainResult,
                             downloadPdf = { url -> fullTextService.downloadPdf(url, document.id, document.title) },
                             askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
-                            askCore = { doi -> fullTextService.askCore(doi) }
+                            askCore = { doi -> fullTextService.askCore(doi) },
+                            readPdfText = { path -> fullTextService.readPdfText(path) }
                         )
 
                         documentRepository.updateDocument(updatedDoc)

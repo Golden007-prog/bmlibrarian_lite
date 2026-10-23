@@ -52,9 +52,9 @@ val DocumentEntity.transparencyResult: TransparencyResult?
  * data-availability statements are looked for only in this text, and a missing
  * COI statement alone rates a study high, so the text must be the article's
  * body and must still carry its back matter. Neither holds yet:
- * - an abstract-only Europe PMC deposit parses and is stored exactly like an
- *   article, with nothing recording that it has no body (#205), and the
- *   cross-platform contract says such a record must be given no text at all;
+ * - the first gap is closed: `fullTextAbstractOnly` marks an abstract-only
+ *   deposit, and [com.bmlibrarian.factchecker.data.local.entity.DocumentEntity.analysisFullText]
+ *   leaves it out; the second remains:
  * - the JATS parser drops `<fn-group>`, `<ack>`, `<notes>` and the article-meta
  *   `<funding-group>` — where COI and funding statements usually sit — so a
  *   parsed article would read as having no statement when it has one.

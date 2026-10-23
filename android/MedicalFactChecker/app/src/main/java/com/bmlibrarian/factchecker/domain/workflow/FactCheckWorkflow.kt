@@ -27,6 +27,9 @@ import com.bmlibrarian.factchecker.data.local.entity.CitationEntity
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.local.entity.ProcessingCheckpointEntity
 import com.bmlibrarian.factchecker.data.local.entity.SessionEntity
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService.FullTextResult
+import com.bmlibrarian.factchecker.data.remote.fulltext.recordingFullTextFetch
 import com.bmlibrarian.factchecker.data.remote.llm.LLMService
 import com.bmlibrarian.factchecker.data.repository.DocumentRepository
 import com.bmlibrarian.factchecker.data.repository.ReportRepository
@@ -45,6 +48,7 @@ import com.bmlibrarian.factchecker.domain.model.SearchFailureReporting
 import com.bmlibrarian.factchecker.domain.model.SearchProvider
 import com.bmlibrarian.factchecker.domain.model.ShortfallQuery
 import com.bmlibrarian.factchecker.domain.model.StructuredQuery
+import com.bmlibrarian.factchecker.domain.model.UnpaywallContact
 import com.bmlibrarian.factchecker.domain.model.Verdict
 import com.bmlibrarian.factchecker.domain.model.WorkflowStep
 import com.bmlibrarian.factchecker.ml.HydeGenerator
@@ -57,6 +61,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 import kotlin.coroutines.coroutineContext
@@ -106,7 +113,8 @@ class FactCheckWorkflow @Inject constructor(
     private val errorPersistenceManager: ErrorPersistenceManager,
     private val embeddingService: EmbeddingService,
     private val hydeGenerator: HydeGenerator,
-    private val transparencyRunner: TransparencyAnalysisRunner
+    private val transparencyRunner: TransparencyAnalysisRunner,
+    private val fullTextService: FullTextService
 ) {
 
     companion object {
@@ -126,6 +134,26 @@ class FactCheckWorkflow @Inject constructor(
         private const val SMART_SEARCH_UNUSABLE_MESSAGE =
             "Alternative searches could not be run: the language model's answers held no search query " +
                 "that could be used. Another model, chosen in Settings, may do better."
+
+        /** Shown when a request for more evidence ran alternative queries that found no new documents. */
+        const val NO_NEW_EVIDENCE_NOTICE =
+            "The alternative searches found no documents beyond those already found. The report is unchanged."
+
+        /**
+         * Shown when a retry of full-text retrieval read no full text: none
+         * arrived, the budget left it out ([fullTextNotice] says so), or its
+         * extraction failed.
+         */
+        const val NO_NEW_FULL_TEXT_NOTICE = "No further full text was read, so the report is unchanged."
+
+        /**
+         * Told when a full-text retry failed while the session had a report.
+         *
+         * @param cause What failed, if known
+         * @return The sentence
+         */
+        fun retryFailedNotice(cause: String?): String =
+            "The full-text retry failed" + (cause?.let { " ($it)" } ?: "") + ", so the report stands as it was."
     }
 
     // ==================== Observable State ====================
@@ -163,6 +191,24 @@ class FactCheckWorkflow @Inject constructor(
      */
     private val _searchRecordDamaged = MutableStateFlow(false)
     val searchRecordDamaged: StateFlow<Boolean> = _searchRecordDamaged.asStateFlow()
+
+    /**
+     * Why a request for more evidence added nothing, while the report it had
+     * stands ([NO_NEW_EVIDENCE_NOTICE]); null otherwise. Kept until the next
+     * request for more evidence, full-text retry, reset or fact check.
+     */
+    private val _smartSearchNotice = MutableStateFlow<String?>(null)
+    val smartSearchNotice: StateFlow<String?> = _smartSearchNotice.asStateFlow()
+
+    /**
+     * What the full-text step could not do: papers whose full text could not be
+     * retrieved, full texts the run budget left out, or extractions from a full
+     * text that failed, or a full-text retry that failed while the report
+     * stands; null when nothing went wrong. None stops the run, since the
+     * abstract still makes a report. Cleared as citations are next extracted.
+     */
+    private val _fullTextNotice = MutableStateFlow<String?>(null)
+    val fullTextNotice: StateFlow<String?> = _fullTextNotice.asStateFlow()
 
     // ==================== Current Session ====================
 
@@ -340,17 +386,35 @@ class FactCheckWorkflow @Inject constructor(
      * Fetch additional evidence after initial report generation.
      *
      * Allows users to gather more evidence when initial report is incomplete.
+     * Can be called repeatedly: once the original query is exhausted, each call
+     * runs a fresh round of alternative queries, told of the earlier ones. A
+     * round that finds nothing new keeps the report and says so
+     * ([smartSearchNotice]); a session without a report goes on to make one.
+     *
      * A search for more that failures leave with nothing, or that cannot be sent
      * because the saved NCBI credentials cannot be read, keeps the session's
-     * report as it was and shows why (#252). Smart search stays available to try
-     * again when the model could not be asked or its queries failed; it is marked
-     * as tried when every answer held no usable query.
+     * report as it was and shows why (#252). Whether smart search counts as
+     * tried (`session.smartSearchEnabled`) now only governs the run's automatic
+     * round and the "more available" mark: a request for more evidence runs a
+     * fresh round either way.
+     *
+     * @param settings The current settings, whose thresholds and budgets this
+     *   request runs under; the session keeps its own search provider and
+     *   preprint choice, which its paging belongs to. Null keeps the
+     *   configuration the session was started or restored with.
      */
-    suspend fun fetchMoreEvidence() {
+    suspend fun fetchMoreEvidence(settings: WorkflowConfig? = null) {
         val session = currentSession
             ?: throw IllegalStateException("No active session")
+        settings?.let {
+            currentConfig = it.copy(searchProvider = session.searchProvider, includePreprints = session.includePreprints)
+        }
         val config = currentConfig ?: WorkflowConfig.default()
+        // What the last run and other sessions spent: a restored session holds none,
+        // and each round spends more
+        monthlyUsageUsd = usageRepository.getCurrentMonthSpend()
         _searchFailureMessage.value = null
+        _smartSearchNotice.value = null
 
         _state.value = WorkflowState.FetchingMoreEvidence()
         sessionRepository.updateWorkflowStep(session.id, WorkflowStep.FETCHING_MORE_EVIDENCE)
@@ -377,24 +441,12 @@ class FactCheckWorkflow @Inject constructor(
                     updateProgress("Scoring new documents...", WorkflowProgress.PROGRESS_SCORING_MORE_EVIDENCE)
                     scoreDocuments(newDocs, freshSession.claimText, config)
 
-                    // Extract citations from newly scored relevant documents
-                    updateProgress("Extracting citations...", WorkflowProgress.basePercentageFor(WorkflowStep.EXTRACTING_CITATIONS))
-                    // Re-fetch the documents to get updated scores, then filter for relevant ones
-                    val scoredDocIds = newDocs.map { it.id }.toSet()
-                    val relevantDocs = documentRepository.getDocumentsBySessionSync(session.id)
-                        .filter { it.id in scoredDocIds }
-                        .filter { (it.relevanceScore ?: 0) >= config.relevanceThreshold }
-
-                    // Fetch citation counts before filtering (suspend function can't be called in filter lambda)
-                    val citationCounts = relevantDocs.associateWith { doc ->
-                        documentRepository.getCitationCountForDocument(doc.id)
-                    }
-                    val docsNeedingCitations = relevantDocs.filter { citationCounts[it] == 0 }
-
-                    extractCitations(docsNeedingCitations, freshSession.claimText, session.id, config)
+                    // Extract citations from the relevant documents without any
+                    extractRelevantCitations(session.id, freshSession.claimText, config)
                 }
-            } else if (!freshSession.smartSearchEnabled && config.smartSearchEnabled) {
-                // Pagination exhausted but smart search not tried — try alternative queries
+            } else if (config.smartSearchEnabled) {
+                // The original query is exhausted: try alternative queries, a fresh
+                // round told of the earlier ones when smart search has run
                 updateProgress("Trying alternative search strategies...", WorkflowProgress.PROGRESS_SEARCHING_START)
                 val smartSearch = when (val outcome = executeSmartSearch(freshSession, config)) {
                     SmartSearchOutcome.Unavailable -> {
@@ -408,44 +460,37 @@ class FactCheckWorkflow @Inject constructor(
                     is SmartSearchOutcome.Ran -> outcome
                 }
                 if (smartSearch.newDocuments == 0 && smartSearch.unrecordedShortfalls.isNotEmpty()) {
-                    // Nothing new, and something failed: let the user try smart search again
+                    // Nothing new, and something failed: smart search is as tried as
+                    // it was before this round, so the user can try it again; the
+                    // queries that did run stay recorded
+                    val afterRound = sessionRepository.getSession(session.id) ?: freshSession
                     sessionRepository.updateSmartSearchState(
                         sessionId = session.id,
-                        enabled = false,
-                        queriesJson = null,
-                        fetchedPmids = null
+                        enabled = freshSession.smartSearchEnabled,
+                        queriesJson = afterRound.alternativeQueriesJson,
+                        fetchedPmids = afterRound.fetchedPmids
                     )
                     throw SearchFailedException(smartSearch.unrecordedShortfalls)
                 }
                 recordShortfalls(session.id, smartSearch.unrecordedShortfalls)
 
+                if (smartSearch.newDocuments == 0) {
+                    reportRepository.getReportBySession(session.id)?.let { report ->
+                        // Nothing new to cite, so the report stands as it is. A
+                        // session without one goes on to make it
+                        _smartSearchNotice.value = NO_NEW_EVIDENCE_NOTICE
+                        sessionRepository.updateWorkflowStep(session.id, WorkflowStep.COMPLETED)
+                        _state.value = WorkflowState.Completed(reportId = report.id)
+                        updateProgress("Complete", WorkflowProgress.PROGRESS_COMPLETE)
+                        return
+                    }
+                }
+
                 // Extract citations from any new relevant documents found by smart search
-                val allRelevantDocs = documentRepository.getDocumentsBySessionSync(session.id)
-                    .filter { (it.relevanceScore ?: 0) >= config.relevanceThreshold }
-                val citationCounts = allRelevantDocs.associateWith { doc ->
-                    documentRepository.getCitationCountForDocument(doc.id)
-                }
-                val docsNeedingCitations = allRelevantDocs.filter { citationCounts[it] == 0 }
-                if (docsNeedingCitations.isNotEmpty()) {
-                    updateProgress("Extracting citations...", WorkflowProgress.basePercentageFor(WorkflowStep.EXTRACTING_CITATIONS))
-                    extractCitations(docsNeedingCitations, freshSession.claimText, session.id, config)
-                }
+                extractRelevantCitations(session.id, freshSession.claimText, config)
             }
 
-            // Analyse the transparency of documents this batch made relevant
-            sessionRepository.updateWorkflowStep(session.id, WorkflowStep.ANALYZING_TRANSPARENCY)
-            analyzeTransparency(session.id, config)
-
-            // Regenerate report with all evidence
-            sessionRepository.updateWorkflowStep(session.id, WorkflowStep.GENERATING_REPORT)
-            _state.value = WorkflowState.GeneratingReport
-            updateProgress("Regenerating report...", WorkflowProgress.PROGRESS_REPORT_GENERATION)
-            val report = generateReport(session.id, session.claimText, config)
-
-            // Complete
-            sessionRepository.updateWorkflowStep(session.id, WorkflowStep.COMPLETED)
-            _state.value = WorkflowState.Completed(reportId = report.id)
-            updateProgress("Complete", WorkflowProgress.PROGRESS_COMPLETE)
+            regenerateReport(session, config)
 
         } catch (e: BudgetError) {
             handleBudgetError(e, session)
@@ -460,6 +505,89 @@ class FactCheckWorkflow @Inject constructor(
             throw e
         } catch (e: Exception) {
             handleWorkflowError(e, session)
+        }
+    }
+
+    /**
+     * Rate the documents a request made relevant, then regenerate the report
+     * with all the evidence, and complete.
+     *
+     * @param session The session
+     * @param config Workflow configuration
+     */
+    private suspend fun regenerateReport(session: SessionEntity, config: WorkflowConfig) {
+        // Analyse the transparency of documents this batch made relevant
+        sessionRepository.updateWorkflowStep(session.id, WorkflowStep.ANALYZING_TRANSPARENCY)
+        analyzeTransparency(session.id, config)
+
+        // Regenerate report with all evidence
+        sessionRepository.updateWorkflowStep(session.id, WorkflowStep.GENERATING_REPORT)
+        _state.value = WorkflowState.GeneratingReport
+        updateProgress("Regenerating report...", WorkflowProgress.PROGRESS_REPORT_GENERATION)
+        val report = generateReport(session.id, session.claimText, config)
+
+        // Complete
+        sessionRepository.updateWorkflowStep(session.id, WorkflowStep.COMPLETED)
+        _state.value = WorkflowState.Completed(reportId = report.id)
+        updateProgress("Complete", WorkflowProgress.PROGRESS_COMPLETE)
+    }
+
+    /**
+     * Fetch full text again for the papers that have none, and redo the analysis
+     * with any that arrive.
+     *
+     * With the full-text setting on, asks again for papers an earlier attempt
+     * found no source for, and for those a lowered full-text score now covers. A
+     * relevant paper whose full text its citations have not read (fetched now,
+     * uploaded, or now covered by the setting) has its citations extracted again
+     * from the text, and the report is regenerated; with no new text read the
+     * report stands and [fullTextNotice] says so. Mirrors iOS/macOS's
+     * `retryFullTextRetrieval()`.
+     *
+     * @param settings The current settings, as for [fetchMoreEvidence]; null keeps
+     *   the configuration the session was started or restored with
+     */
+    suspend fun retryFullTextRetrieval(settings: WorkflowConfig? = null) {
+        val session = currentSession
+            ?: throw IllegalStateException("No active session")
+        settings?.let {
+            currentConfig = it.copy(searchProvider = session.searchProvider, includePreprints = session.includePreprints)
+        }
+        val config = currentConfig ?: WorkflowConfig.default()
+        // What the last run and other sessions spent, as every other entry point reads it
+        monthlyUsageUsd = usageRepository.getCurrentMonthSpend()
+        _searchFailureMessage.value = null
+        _smartSearchNotice.value = null
+
+        _state.value = WorkflowState.FetchingMoreEvidence()
+        sessionRepository.updateWorkflowStep(session.id, WorkflowStep.FETCHING_MORE_EVIDENCE)
+
+        try {
+            val readFullTexts = extractRelevantCitations(session.id, session.claimText, config, retryingFullText = true)
+            if (readFullTexts == 0) {
+                appendFullTextNotice(NO_NEW_FULL_TEXT_NOTICE)
+                sessionRepository.updateWorkflowStep(session.id, WorkflowStep.COMPLETED)
+                val report = reportRepository.getReportBySession(session.id)
+                _state.value = report?.let { WorkflowState.Completed(reportId = it.id) } ?: WorkflowState.Idle
+                updateProgress("Complete", WorkflowProgress.PROGRESS_COMPLETE)
+                return
+            }
+            regenerateReport(session, config)
+        } catch (e: BudgetError) {
+            handleBudgetError(e, session)
+        } catch (e: CancellationException) {
+            // A cancelled run is not a failed one: cancel() has already set the state
+            throw e
+        } catch (e: Exception) {
+            // The report is replaced only by a new one, so it stands, and the session
+            // stays complete (and in History), as Swift's retry leaves it
+            val report = reportRepository.getReportBySession(session.id)
+                ?: return handleWorkflowError(e, session)
+            Log.e(TAG, "Full-text retry failed for ${session.id}", e)
+            appendFullTextNotice(retryFailedNotice(e.message))
+            sessionRepository.updateWorkflowStep(session.id, WorkflowStep.COMPLETED)
+            _state.value = WorkflowState.Completed(reportId = report.id)
+            updateProgress("Complete", WorkflowProgress.PROGRESS_COMPLETE)
         }
     }
 
@@ -539,12 +667,15 @@ class FactCheckWorkflow @Inject constructor(
         readableShortfalls(session) ?: throw DamagedShortfallRecordException()
 
     /**
-     * Forget what the last session's searches missed and why a search failed.
+     * Forget what the last session's searches missed, why a search failed, and
+     * what its last request for more evidence or full text could not do.
      */
     private fun clearSearchFailureState() {
         _searchShortfalls.value = emptyList()
         _searchFailureMessage.value = null
         _searchRecordDamaged.value = false
+        _smartSearchNotice.value = null
+        _fullTextNotice.value = null
     }
 
     /**
@@ -869,21 +1000,8 @@ class FactCheckWorkflow @Inject constructor(
             currentStep == WorkflowStep.AWAITING_USER_DECISION) {
             sessionRepository.updateWorkflowStep(session.id, WorkflowStep.EXTRACTING_CITATIONS)
 
-            // Get relevant documents without citations yet
-            val allRelevantDocs = documentRepository.getDocumentsBySessionSync(session.id)
-                .filter { (it.relevanceScore ?: 0) >= config.relevanceThreshold }
-
-            // Fetch citation counts before filtering (suspend function can't be called in filter lambda)
-            val citationCounts = allRelevantDocs.associateWith { doc ->
-                documentRepository.getCitationCountForDocument(doc.id)
-            }
-            val relevantDocs = allRelevantDocs.filter { citationCounts[it] == 0 }
-
-            if (relevantDocs.isNotEmpty()) {
-                _state.value = WorkflowState.ExtractingCitations(0, relevantDocs.size)
-                updateProgress("Extracting citations...", WorkflowProgress.PROGRESS_EXTRACTION_START)
-                extractCitations(relevantDocs, session.claimText, session.id, config)
-            }
+            // Relevant documents without citations yet
+            extractRelevantCitations(session.id, session.claimText, config)
 
             currentStep = WorkflowStep.ANALYZING_TRANSPARENCY
             sessionRepository.updateWorkflowStep(session.id, currentStep)
@@ -1246,32 +1364,197 @@ class FactCheckWorkflow @Inject constructor(
     }
 
     /**
+     * Extract citations from the session's relevant documents that need them.
+     *
+     * With the full-text setting on, the top papers' full text is fetched first
+     * ([fetchFullTextsForTopDocuments]). The documents extracted are the relevant
+     * ones without citations and, on a retry, those whose full text their
+     * citations have not read ([FullTextAutoFetch.hasUnreadFullText]), whose
+     * citations are replaced by ones from the text.
+     *
+     * @param sessionId The session
+     * @param claim The claim being fact-checked
+     * @param config Workflow configuration
+     * @param retryingFullText The reader asked to retry full-text retrieval
+     * @return How many papers' citations were extracted, successfully, with a
+     *   full text in the prompt
+     */
+    private suspend fun extractRelevantCitations(
+        sessionId: String,
+        claim: String,
+        config: WorkflowConfig,
+        retryingFullText: Boolean = false
+    ): Int {
+        _fullTextNotice.value = null
+        // Before the selection below, so a retry reads a text fetched for a paper that already has citations
+        if (config.autoFetchFullText) {
+            fetchFullTextsForTopDocuments(sessionId, config, retryingFullText)
+        }
+        val documents = documentRepository.getDocumentsBySessionSync(sessionId)
+        val citationTimes = documentRepository.getCitationsBySessionSync(sessionId).groupBy({ it.documentId }, { it.createdAt })
+        val replacing = if (retryingFullText) {
+            documents.filter { FullTextAutoFetch.hasUnreadFullText(it, citationTimes[it.id].orEmpty(), config) }
+                .map { it.id }.toSet()
+        } else {
+            emptySet()
+        }
+        val relevantDocs = documents.filter {
+            (it.relevanceScore ?: 0) >= config.relevanceThreshold &&
+                (citationTimes[it.id].isNullOrEmpty() || it.id in replacing)
+        }
+        if (relevantDocs.isEmpty()) return 0
+
+        updateProgress("Extracting citations...", WorkflowProgress.PROGRESS_EXTRACTION_START)
+        return extractCitations(relevantDocs, claim, sessionId, config, replacing)
+    }
+
+    /**
+     * Retrieve the full text of the top-scoring documents, one at a time.
+     *
+     * One at a time because the chain talks to Europe PMC, Unpaywall and
+     * publishers, which are rate limited, and a PDF can take minutes. A document
+     * no source had is recorded as such and, but on a retry, not asked again. Any
+     * other failure leaves the document as it was, so the next run retries it,
+     * and is named in [fullTextNotice]: a paper missing its full text is
+     * otherwise indistinguishable from one that never had any. None of this stops
+     * the run, since the abstract still makes a report.
+     *
+     * @param sessionId The session
+     * @param config Workflow configuration
+     * @param retrying The reader asked to retry, so papers no source had are asked again
+     */
+    private suspend fun fetchFullTextsForTopDocuments(sessionId: String, config: WorkflowConfig, retrying: Boolean) {
+        val targets = FullTextAutoFetch.documentsToFetch(
+            documentRepository.getDocumentsBySessionSync(sessionId),
+            config.relevanceThreshold,
+            config.fullTextAutoFetchMinScore,
+            retrying
+        )
+        if (targets.isEmpty()) return
+
+        val email = UnpaywallContact.emailFor(settingsRepository.settings.value)
+        val failed = mutableListOf<String>()
+        targets.forEachIndexed { index, target ->
+            currentCoroutineContext().ensureActive()
+            updateProgress("Retrieving full text ${index + 1}/${targets.size}...", WorkflowProgress.PROGRESS_EXTRACTION_START)
+            try {
+                if (!fetchFullText(target.id, email)) failed += target.title
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "Automatic full text step failed for ${target.id} (${target.title})", e)
+                failed += target.title
+            }
+        }
+        if (failed.isNotEmpty()) appendFullTextNotice(FullTextAutoFetch.failureNotice(failed))
+    }
+
+    /**
+     * Fetch one document's full text through the chain and record it, as the
+     * full-text screen does.
+     *
+     * The reader may upload a copy while the targets are fetched: theirs stands,
+     * and no fetch may overwrite it or record it as missing.
+     *
+     * @param documentId The document
+     * @param email Who Unpaywall is asked as
+     * @return False when the chain did not settle whether the article has full
+     *   text (nothing recorded); true otherwise
+     */
+    private suspend fun fetchFullText(documentId: String, email: String?): Boolean {
+        val document = documentRepository.getDocument(documentId) ?: return true
+        if (document.holdsUploadedFullText) return true
+        val chain = fullTextService.fetchFullText(
+            pmcId = document.pmcId,
+            doi = document.doi,
+            pmid = document.pmid,
+            email = email,
+            title = document.title
+        ).getOrThrow()
+        val (recorded, result) = document.recordingFullTextFetch(
+            chain,
+            downloadPdf = { url -> fullTextService.downloadPdf(url, document.id, document.title) },
+            askOpenAlex = { doi, tried -> fullTextService.openAlexSteps(doi, tried) },
+            askCore = { doi -> fullTextService.askCore(doi) },
+            readPdfText = { path -> fullTextService.readPdfText(path) }
+        )
+        if (result is FullTextResult.NotEstablished || result is FullTextResult.OpenAccessNotEstablished) {
+            Log.w(TAG, "No source settled whether $documentId has full text; nothing recorded")
+            return false
+        }
+        if (documentRepository.getDocument(documentId)?.holdsUploadedFullText == true) return true
+        documentRepository.updateDocument(recorded)
+        return true
+    }
+
+    /** Add a sentence to [fullTextNotice]. */
+    private fun appendFullTextNotice(sentence: String) {
+        _fullTextNotice.value = listOfNotNull(_fullTextNotice.value, sentence).joinToString(" ")
+    }
+
+    /**
      * Extract citation passages from relevant documents using parallel processing.
      *
      * Uses ParallelCitationService for concurrent extraction with configurable
      * concurrency (auto-detected based on provider: 3 for cloud, 1 for local).
+     * A paper the full-text setting covers, or whose text the reader uploaded, is
+     * read from its full text ([FullTextAutoFetch.citationFullText]) while the run
+     * budget allows. A successful extraction records whether it read the full
+     * text, even when it found nothing; a failed one leaves the paper as it was.
+     *
+     * @param documents The documents to extract from
+     * @param claim The claim being fact-checked
+     * @param sessionId The session
+     * @param config Workflow configuration
+     * @param replacing Documents whose existing citations a successful extraction
+     *   with passages replaces; one whose full text the budget leaves out keeps them
+     * @return How many papers' extractions succeeded with a full text in the
+     *   prompt, or found citations in the abstract: what a regenerated report
+     *   would read that the current one did not
      */
     private suspend fun extractCitations(
         documents: List<DocumentEntity>,
         claim: String,
         sessionId: String,
-        config: WorkflowConfig
-    ) {
+        config: WorkflowConfig,
+        replacing: Set<String> = emptySet()
+    ): Int {
         val provider = getLLMProvider()
         val apiKey = settingsRepository.getLlmApiKey()
         val model = settingsRepository.getLlmModel()
-        val session = currentSession ?: return
+        val session = currentSession ?: return 0
 
         // Check budget before starting parallel extraction
         checkBudget(session, config)
 
         // Build CitationInput structs for thread safety
-        val inputs = documents.map { CitationInput.fromDocument(it) }
+        var inputs = documents.map { CitationInput.fromDocument(it, FullTextAutoFetch.citationFullText(it, config)) }
 
-        // Build lookup map for applying results back to entities
-        val documentsById = documents.associateBy { it.id }
+        // The budget check above is made once, before every call; with full texts
+        // each call is long enough that it no longer bounds the batch
+        if (inputs.any { it.fullText != null }) {
+            val spent = (sessionRepository.getSession(sessionId) ?: session).estimatedCostUsd
+            val (fitted, dropped) = FullTextAutoFetch.fittingBudget(
+                inputs,
+                remainingUsd = config.maxRunBudgetUsd - spent,
+                // An unpriced model is costed at nothing, as everywhere else in the app
+                usdPerInputToken = provider.pricedModel(model)?.inputPricePerToken ?: 0.0
+            )
+            inputs = fitted
+            if (dropped > 0) {
+                Log.w(TAG, "Full text dropped for $dropped paper(s) to stay within the run budget")
+                appendFullTextNotice(FullTextAutoFetch.budgetNotice(dropped))
+            }
+        }
 
-        val total = documents.size
+        // Every paper being replaced was given its text above, so one without it
+        // now lost it to the budget: it keeps the citations it has rather than
+        // paying for the same abstract again, and stays unread
+        inputs = inputs.filterNot { it.fullText == null && it.documentId in replacing }
+        if (inputs.isEmpty()) return 0
+        val readingFullText = inputs.filter { it.fullText != null }.map { it.documentId }.toSet()
+
+        val total = inputs.size
         _state.value = WorkflowState.ExtractingCitations(0, total)
 
         // Extract citations in parallel with incremental result handling
@@ -1298,7 +1581,17 @@ class FactCheckWorkflow @Inject constructor(
                             relevanceExplanation = extraction.relevance
                         )
                     }
-                    documentRepository.saveCitations(citations)
+                    // Only once new ones exist: one that found nothing in the text keeps the old
+                    if (result.documentId in replacing && citations.isNotEmpty()) {
+                        documentRepository.replaceCitations(result.documentId, citations)
+                    } else {
+                        documentRepository.saveCitations(citations)
+                    }
+                    // After the save: a save that failed must not mark the text as read
+                    documentRepository.updateCitationsReadFullText(result.documentId, result.documentId in readingFullText)
+                } else {
+                    // The paper keeps what it had, and a retry asks again
+                    Log.e(TAG, "Citation extraction failed for ${result.documentId}")
                 }
 
                 // Record usage for all results (success and failure)
@@ -1309,6 +1602,11 @@ class FactCheckWorkflow @Inject constructor(
                 )
             }
         )
+        val failedReads = results.count { it.isError && it.documentId in readingFullText }
+        if (failedReads > 0) appendFullTextNotice(FullTextAutoFetch.extractionFailureNotice(failedReads))
+        // Citations found in an abstract count too: Android offers no Regenerate
+        // Report (#614), so a report not redone would never cite them
+        return results.count { it.isSuccess && (it.documentId in readingFullText || it.extractionsOrEmpty.isNotEmpty()) }
     }
 
     /**
@@ -1487,18 +1785,22 @@ class FactCheckWorkflow @Inject constructor(
         val relevantCount = documentRepository.getRelevantCount(session.id, config.relevanceThreshold)
         val updatedSession = sessionRepository.getSession(session.id) ?: session
 
-        val alternatives = requestAlternativeQueries(updatedSession, config, relevantCount).getOrElse { error ->
+        val triedQueries = triedAlternativeQueries(updatedSession).map { query ->
+            query.concepts.joinToString(" AND ") { it.name }
+        }
+        val alternatives = requestAlternativeQueries(updatedSession, config, relevantCount, triedQueries).getOrElse { error ->
             // Not marked as tried, so smart search can be tried again
             Log.e(TAG, "Smart search could not ask for alternative queries (${error.javaClass.simpleName})")
             return SmartSearchOutcome.Unavailable
         }
         if (alternatives.isEmpty()) {
-            // Marked as tried, so no later batch asks and pays again
+            // Marked as tried, so the workflow does not ask and pay again on its
+            // own (a request for more evidence still runs a fresh round)
             sessionRepository.updateSmartSearchState(
                 sessionId = session.id,
                 enabled = true,
-                queriesJson = null,
-                fetchedPmids = null
+                queriesJson = updatedSession.alternativeQueriesJson,
+                fetchedPmids = updatedSession.fetchedPmids
             )
             return SmartSearchOutcome.Unusable
         }
@@ -1507,18 +1809,14 @@ class FactCheckWorkflow @Inject constructor(
         val existingDocs = documentRepository.getDocumentsBySessionSync(session.id)
         val fetchedPmids = existingDocs.mapNotNull { it.pmid }.toMutableSet()
 
-        // Store alternatives and mark smart search as enabled
-        val alternativesJson = try {
-            kotlinx.serialization.json.Json.encodeToString(
-                kotlinx.serialization.builtins.ListSerializer(StructuredQuery.serializer()),
-                alternatives
-            )
-        } catch (e: Exception) { null }
+        // Each query is added once it has run, after the earlier rounds', so the next round is told of them all
+        val tried = triedAlternativeQueries(updatedSession).toMutableList()
+        var triedJson = updatedSession.alternativeQueriesJson
 
         sessionRepository.updateSmartSearchState(
             sessionId = session.id,
             enabled = true,
-            queriesJson = alternativesJson,
+            queriesJson = triedJson,
             fetchedPmids = fetchedPmids.joinToString(",")
         )
 
@@ -1550,6 +1848,7 @@ class FactCheckWorkflow @Inject constructor(
                     earlierLosses = unrecordedShortfalls.toList()
                 )
             } catch (e: SearchFailedException) {
+                // A query a source could not answer has not run: a later round may ask it again
                 Log.w(TAG, "Smart search ${index + 1}/${alternatives.size} failed: ${e.message}")
                 if (newDocumentCount > 0) {
                     recordShortfalls(session.id, e.shortfalls)
@@ -1559,18 +1858,20 @@ class FactCheckWorkflow @Inject constructor(
                 continue
             }
 
+            tried += altQuery
+            triedJson = encodeTriedAlternativeQueries(tried) ?: triedJson
+            newDocs.mapNotNull { it.pmid }.forEach { fetchedPmids.add(it) }
+            sessionRepository.updateSmartSearchState(
+                sessionId = session.id,
+                enabled = true,
+                queriesJson = triedJson,
+                fetchedPmids = fetchedPmids.joinToString(",")
+            )
+
             if (newDocs.isNotEmpty()) {
                 // Recorded with these documents
                 unrecordedShortfalls.clear()
                 newDocumentCount += newDocs.size
-                // Update fetched PMIDs
-                newDocs.mapNotNull { it.pmid }.forEach { fetchedPmids.add(it) }
-                sessionRepository.updateSmartSearchState(
-                    sessionId = session.id,
-                    enabled = true,
-                    queriesJson = alternativesJson,
-                    fetchedPmids = fetchedPmids.joinToString(",")
-                )
 
                 // Score new documents
                 updateProgress(
@@ -1600,13 +1901,16 @@ class FactCheckWorkflow @Inject constructor(
      * @param session The current session
      * @param config Workflow configuration
      * @param relevantCount How many relevant documents the session holds
+     * @param triedQueries The alternative queries earlier rounds ran, each as its
+     *   concept names joined by " AND "
      * @return The queries; an empty list when every answer, retries included, held
      *   none; or a failure when the model could not be asked
      */
     private suspend fun requestAlternativeQueries(
         session: SessionEntity,
         config: WorkflowConfig,
-        relevantCount: Int
+        relevantCount: Int,
+        triedQueries: List<String>
     ): Result<List<StructuredQuery>> {
         val attempts = Constants.MAX_QUERY_RETRIES + 1
         repeat(attempts) { attempt ->
@@ -1618,7 +1922,8 @@ class FactCheckWorkflow @Inject constructor(
                 claim = session.claimText,
                 initialQuery = session.pubmedQuery,
                 totalResults = session.pubmedTotalResults + session.epmcTotalResults,
-                relevantCount = relevantCount
+                relevantCount = relevantCount,
+                triedQueries = triedQueries
             )
             val queries = answer.getOrElse { return Result.failure(it) }
             recordUsage(
@@ -1630,6 +1935,39 @@ class FactCheckWorkflow @Inject constructor(
             Log.w(TAG, "Smart search's answer ${attempt + 1} of $attempts held no usable query")
         }
         return Result.success(emptyList())
+    }
+
+    /**
+     * The alternative queries earlier smart search rounds ran.
+     *
+     * @param session The session
+     * @return The queries; empty before the first round, or when the stored record
+     *   cannot be read (logged; the next query run replaces it)
+     */
+    private fun triedAlternativeQueries(session: SessionEntity): List<StructuredQuery> {
+        val json = session.alternativeQueriesJson ?: return emptyList()
+        return try {
+            Json.decodeFromString(ListSerializer(StructuredQuery.serializer()), json)
+        } catch (e: SerializationException) {
+            Log.e(TAG, "Unreadable record of the alternative queries already run: ${e.message}")
+            emptyList()
+        } catch (e: IllegalArgumentException) {
+            Log.e(TAG, "Unreadable record of the alternative queries already run: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /**
+     * Encode the alternative queries run so far, for the next round's prompt.
+     *
+     * @param tried Every query run, earlier rounds' first
+     * @return The JSON to store, or null when it could not be encoded (logged)
+     */
+    private fun encodeTriedAlternativeQueries(tried: List<StructuredQuery>): String? = try {
+        Json.encodeToString(ListSerializer(StructuredQuery.serializer()), tried)
+    } catch (e: SerializationException) {
+        Log.e(TAG, "Could not record the alternative queries already run: ${e.message}")
+        null
     }
 
     /**

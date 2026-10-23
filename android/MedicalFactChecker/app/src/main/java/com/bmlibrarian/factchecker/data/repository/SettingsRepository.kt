@@ -151,7 +151,11 @@ class SettingsRepository @Inject constructor(
             unpaywallEmail = regularPrefs.getString(KEY_UNPAYWALL_EMAIL, "") ?: "",
             embeddingEnabled = regularPrefs.getBoolean(KEY_EMBEDDING_ENABLED, true),
             enableHyde = regularPrefs.getBoolean(KEY_ENABLE_HYDE, true),
-            parallelConcurrency = regularPrefs.getInt(KEY_PARALLEL_CONCURRENCY, AppSettings.DEFAULT_PARALLEL_CONCURRENCY)
+            parallelConcurrency = regularPrefs.getInt(KEY_PARALLEL_CONCURRENCY, AppSettings.DEFAULT_PARALLEL_CONCURRENCY),
+            autoFetchFullTextEnabled = regularPrefs.getBoolean(KEY_AUTO_FETCH_FULL_TEXT, false),
+            // A stored value outside the score range would fetch every paper, or none, unsaid
+            fullTextAutoFetchMinScore = regularPrefs.getInt(KEY_FULL_TEXT_AUTO_FETCH_MIN_SCORE, Constants.FULLTEXT_AUTO_FETCH_MIN_SCORE)
+                .coerceIn(Constants.SCORING_MIN_SCORE, Constants.SCORING_MAX_SCORE)
         )
     }
 
@@ -179,6 +183,8 @@ class SettingsRepository @Inject constructor(
             putBoolean(KEY_EMBEDDING_ENABLED, settings.embeddingEnabled)
             putBoolean(KEY_ENABLE_HYDE, settings.enableHyde)
             putInt(KEY_PARALLEL_CONCURRENCY, settings.parallelConcurrency)
+            putBoolean(KEY_AUTO_FETCH_FULL_TEXT, settings.autoFetchFullTextEnabled)
+            putInt(KEY_FULL_TEXT_AUTO_FETCH_MIN_SCORE, settings.fullTextAutoFetchMinScore)
             apply()
         }
         _settings.value = settings
@@ -622,6 +628,24 @@ class SettingsRepository @Inject constructor(
         updateSettings { it.copy(enableHyde = enabled) }
     }
 
+    /**
+     * Enable or disable fetching the full text of a fact check's top papers.
+     *
+     * @param enabled Whether to fetch it
+     */
+    fun setAutoFetchFullTextEnabled(enabled: Boolean) {
+        updateSettings { it.copy(autoFetchFullTextEnabled = enabled) }
+    }
+
+    /**
+     * Set the lowest relevance score whose papers are fetched in full.
+     *
+     * @param score The score (1-5); one outside the range is brought into it
+     */
+    fun setFullTextAutoFetchMinScore(score: Int) {
+        updateSettings { it.copy(fullTextAutoFetchMinScore = score.coerceIn(Constants.SCORING_MIN_SCORE, Constants.SCORING_MAX_SCORE)) }
+    }
+
     // ==================== Parallel Processing Settings ====================
 
     /**
@@ -702,6 +726,8 @@ class SettingsRepository @Inject constructor(
         private const val KEY_UNPAYWALL_EMAIL = "unpaywall_email"
         private const val KEY_EMBEDDING_ENABLED = "embedding_enabled"
         private const val KEY_ENABLE_HYDE = "enable_hyde"
+        private const val KEY_AUTO_FETCH_FULL_TEXT = "auto_fetch_full_text_enabled"
+        private const val KEY_FULL_TEXT_AUTO_FETCH_MIN_SCORE = "full_text_auto_fetch_min_score"
         private const val KEY_PARALLEL_CONCURRENCY = "parallel_concurrency"
     }
 }

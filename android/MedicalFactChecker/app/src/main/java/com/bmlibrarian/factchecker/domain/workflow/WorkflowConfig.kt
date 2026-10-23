@@ -37,6 +37,9 @@ import com.bmlibrarian.factchecker.util.Constants
  * @property monthlyBudgetUsd Monthly budget limit (USD)
  * @property smartSearchEnabled Whether to try alternative queries if initial results are poor
  * @property smartSearchThreshold Minimum relevant documents before triggering smart search
+ * @property autoFetchFullText Whether to fetch the full text of the top papers before extracting citations
+ * @property fullTextAutoFetchMinScore Lowest relevance score (1-5) whose papers are fetched in full;
+ *   the floor used is never below [relevanceThreshold]
  */
 data class WorkflowConfig(
     val searchProvider: SearchProvider = SearchProvider.PUBMED,
@@ -48,7 +51,9 @@ data class WorkflowConfig(
     val maxRunBudgetUsd: Double = Constants.DEFAULT_MAX_RUN_BUDGET_USD.toDouble(),
     val monthlyBudgetUsd: Double = Constants.DEFAULT_MONTHLY_BUDGET_USD.toDouble(),
     val smartSearchEnabled: Boolean = true,
-    val smartSearchThreshold: Int = DEFAULT_SMART_SEARCH_THRESHOLD
+    val smartSearchThreshold: Int = DEFAULT_SMART_SEARCH_THRESHOLD,
+    val autoFetchFullText: Boolean = false,
+    val fullTextAutoFetchMinScore: Int = Constants.FULLTEXT_AUTO_FETCH_MIN_SCORE
 ) {
 
     /**

@@ -652,6 +652,24 @@ class SettingsViewModel @Inject constructor(
         settingsRepository.setHydeEnabled(enabled)
     }
 
+    /**
+     * Enable or disable fetching the full text of a fact check's top papers.
+     *
+     * @param enabled Whether to fetch it
+     */
+    fun setAutoFetchFullTextEnabled(enabled: Boolean) {
+        settingsRepository.setAutoFetchFullTextEnabled(enabled)
+    }
+
+    /**
+     * Set the lowest relevance score whose papers are fetched in full.
+     *
+     * @param score The score (1-5)
+     */
+    fun setFullTextAutoFetchMinScore(score: Int) {
+        settingsRepository.setFullTextAutoFetchMinScore(score)
+    }
+
     // ==================== Parallel Processing Settings ====================
 
     /**

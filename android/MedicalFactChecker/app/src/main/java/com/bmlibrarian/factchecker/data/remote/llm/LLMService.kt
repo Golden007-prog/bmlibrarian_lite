@@ -159,7 +159,8 @@ class LLMService @Inject constructor(
     }
 
     /**
-     * Generate alternative search queries when initial search yields insufficient results.
+     * Generate alternative search queries when initial search yields insufficient
+     * results, and for each further round the reader asks for.
      *
      * Asks the LLM to generate 2-3 alternative structured queries using different
      * search strategies (synonyms, broader/narrower terms, split compound questions).
@@ -173,6 +174,8 @@ class LLMService @Inject constructor(
      * @param initialQuery The initial query that was tried
      * @param totalResults Total results from the initial search
      * @param relevantCount Number of relevant documents found
+     * @param triedQueries Alternative queries earlier rounds already ran, one each:
+     *   its concept names joined by " AND ", not the provider query it ran as
      * @return The alternative queries; an empty list when the model answered
      *   with no query that can be used, or with nothing, which asking again may
      *   mend; or a failure when the request itself failed
@@ -184,44 +187,10 @@ class LLMService @Inject constructor(
         claim: String,
         initialQuery: String?,
         totalResults: Int,
-        relevantCount: Int
+        relevantCount: Int,
+        triedQueries: List<String> = emptyList()
     ): Result<List<StructuredQuery>> {
-        val userPrompt = """
-            The following medical question did not return enough relevant results with the initial search.
-
-            Question: $claim
-            Initial query: ${initialQuery ?: "N/A"}
-            Results found: $totalResults
-            Relevant documents: $relevantCount
-
-            Generate 2-3 alternative search strategies as structured queries. Consider:
-            1. If comparing two treatments/medications, search for each one separately
-            2. Use different synonyms or related terms
-            3. Break compound questions into simpler components
-            4. Try broader or narrower search terms
-            5. Focus on key outcomes or mechanisms
-
-            Return a JSON array of structured query objects. Each object should have:
-            - "concepts": an array of concepts, each with "name", "mesh_terms", and "keywords"
-
-            Example response:
-            [
-              {
-                "concepts": [
-                  {"name": "treatment A", "mesh_terms": ["MeSH Term A"], "keywords": ["keyword A"]},
-                  {"name": "condition", "mesh_terms": ["Condition MeSH"], "keywords": ["condition"]}
-                ]
-              },
-              {
-                "concepts": [
-                  {"name": "treatment B", "mesh_terms": ["MeSH Term B"], "keywords": ["keyword B"]},
-                  {"name": "condition", "mesh_terms": ["Condition MeSH"], "keywords": ["condition"]}
-                ]
-              }
-            ]
-
-            Generate alternative structured queries for the medical question:
-        """.trimIndent()
+        val userPrompt = alternativeQueriesPrompt(claim, initialQuery, totalResults, relevantCount, triedQueries)
 
         val answer = chat(
             provider = provider,
@@ -523,6 +492,74 @@ class LLMService @Inject constructor(
     companion object {
         /** Log tag for this service. */
         private const val TAG = "LLMService"
+
+        /**
+         * The prompt asking for alternative structured queries.
+         *
+         * Mirrors the iOS `PromptTemplates.alternativeQueries()`: a later round is
+         * told which alternative queries already ran, so it asks for different
+         * ones; the first round's prompt names none.
+         *
+         * @param claim The original medical claim/question
+         * @param initialQuery The initial query that was tried
+         * @param totalResults Total results from the initial search
+         * @param relevantCount Number of relevant documents found
+         * @param triedQueries Alternative queries earlier rounds already ran, one line each
+         * @return The prompt
+         */
+        internal fun alternativeQueriesPrompt(
+            claim: String,
+            initialQuery: String?,
+            totalResults: Int,
+            relevantCount: Int,
+            triedQueries: List<String>
+        ): String {
+            val context = """
+                The following medical question did not return enough relevant results with the initial search.
+
+                Question: $claim
+                Initial query: ${initialQuery ?: "N/A"}
+                Results found: $totalResults
+                Relevant documents: $relevantCount
+            """.trimIndent()
+            val tried = if (triedQueries.isEmpty()) {
+                ""
+            } else {
+                "\nThese alternative queries were already run. Do not repeat them; take different approaches " +
+                    "(broader terms, related conditions, mechanisms or outcomes):\n" +
+                    triedQueries.joinToString("\n") { "- $it" } + "\n"
+            }
+            val request = """
+                Generate 2-3 alternative search strategies as structured queries. Consider:
+                1. If comparing two treatments/medications, search for each one separately
+                2. Use different synonyms or related terms
+                3. Break compound questions into simpler components
+                4. Try broader or narrower search terms
+                5. Focus on key outcomes or mechanisms
+
+                Return a JSON array of structured query objects. Each object should have:
+                - "concepts": an array of concepts, each with "name", "mesh_terms", and "keywords"
+
+                Example response:
+                [
+                  {
+                    "concepts": [
+                      {"name": "treatment A", "mesh_terms": ["MeSH Term A"], "keywords": ["keyword A"]},
+                      {"name": "condition", "mesh_terms": ["Condition MeSH"], "keywords": ["condition"]}
+                    ]
+                  },
+                  {
+                    "concepts": [
+                      {"name": "treatment B", "mesh_terms": ["MeSH Term B"], "keywords": ["keyword B"]},
+                      {"name": "condition", "mesh_terms": ["Condition MeSH"], "keywords": ["condition"]}
+                    ]
+                  }
+                ]
+
+                Generate alternative structured queries for the medical question:
+            """.trimIndent()
+            return "$context\n$tried\n$request"
+        }
 
         /**
          * Chain-of-thought setting to send for a provider, if it has one.

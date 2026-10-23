@@ -86,7 +86,8 @@ class FactCheckWorkflowTransparencyTest {
             errorPersistenceManager = mockk(relaxed = true),
             embeddingService = mockk(relaxed = true),
             hydeGenerator = mockk(relaxed = true),
-            transparencyRunner = runner
+            transparencyRunner = runner,
+            fullTextService = mockk(relaxed = true)
         )
         Log.clear()
 

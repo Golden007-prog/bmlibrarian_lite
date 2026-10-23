@@ -23,6 +23,7 @@ import androidx.room.Delete
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.bmlibrarian.factchecker.data.local.entity.CitationEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -70,6 +71,19 @@ interface CitationDao {
      */
     @Query("DELETE FROM citations WHERE document_id = :documentId")
     suspend fun deleteByDocumentId(documentId: String)
+
+    /**
+     * Replace a document's citations, in one transaction: a failure between the
+     * two never leaves the document with neither its old citations nor its new.
+     *
+     * @param documentId Document ID
+     * @param citations Its new citations
+     */
+    @Transaction
+    suspend fun replaceForDocument(documentId: String, citations: List<CitationEntity>) {
+        deleteByDocumentId(documentId)
+        insertAll(citations)
+    }
 
     // ==================== Query Operations ====================
 

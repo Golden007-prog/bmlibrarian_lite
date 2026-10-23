@@ -134,11 +134,21 @@ class FullTextService @Inject constructor(
          * @param xml Raw XML content.
          * @param markdown Parsed markdown content.
          * @param html Parsed HTML content.
+         * @param abstractOnly Whether the deposit's `<body>` rendered no paragraph:
+         *   held back by the chain, and returned only when nothing better arrived
+         *   ("Abstract Holdback"); never read as the article.
+         * @param openAccessShortfall What the chain left unsettled after holding
+         *   the abstract back, as [DoiUrl.openAccessShortfall]; null otherwise.
+         * @param pdfNotSavedFrom A PDF served after the abstract was held that
+         *   could not be saved here (#480); null otherwise.
          */
         data class EuropePmcXml(
             val xml: String,
             val markdown: String,
-            val html: String
+            val html: String,
+            val abstractOnly: Boolean = false,
+            val openAccessShortfall: OpenAccessShortfall? = null,
+            val pdfNotSavedFrom: String? = null
         ) : FullTextResult(hasContent = true)
 
         /**
@@ -149,11 +159,17 @@ class FullTextService @Inject constructor(
          * @param xml Raw XML content.
          * @param markdown Parsed markdown content.
          * @param html Parsed HTML content.
+         * @param abstractOnly As [EuropePmcXml.abstractOnly].
+         * @param openAccessShortfall As [EuropePmcXml.openAccessShortfall].
+         * @param pdfNotSavedFrom As [EuropePmcXml.pdfNotSavedFrom].
          */
         data class PmcOpenDataXml(
             val xml: String,
             val markdown: String,
-            val html: String
+            val html: String,
+            val abstractOnly: Boolean = false,
+            val openAccessShortfall: OpenAccessShortfall? = null,
+            val pdfNotSavedFrom: String? = null
         ) : FullTextResult(hasContent = true)
 
         /**
@@ -161,10 +177,18 @@ class FullTextService @Inject constructor(
          * not yet downloaded: where it is saved is recorded on the document.
          *
          * @param pdfUrl URL to the Europe PMC PDF.
+         * @param heldAbstract The abstract-only deposit the chain held back, to be
+         *   recorded instead when this PDF yields no text, cannot be downloaded or
+         *   saved, or is another article's; null when none was held.
          */
         data class EuropePmcPdf(
-            val pdfUrl: String
-        ) : FullTextResult(hasContent = true)
+            val pdfUrl: String,
+            val heldAbstract: FullTextResult? = null
+        ) : FullTextResult(hasContent = true) {
+            init {
+                requireJatsDeposit(heldAbstract)
+            }
+        }
 
         /**
          * The open-access PDFs to try, in chain order, with any lookup that went
@@ -180,14 +204,18 @@ class FullTextService @Inject constructor(
          * @property doi The DOI they were found for, for the link a refused PDF
          *   falls back to
          * @property openAlexAsked Whether OpenAlex's steps are already among them
+         * @property heldAbstract As [EuropePmcPdf.heldAbstract]: recorded when no
+         *   copy with text is obtained and CORE serves none
          */
         data class OpenAccessPdfs(
             val steps: List<OpenAccessStep>,
             val doi: String,
-            val openAlexAsked: Boolean = false
+            val openAlexAsked: Boolean = false,
+            val heldAbstract: FullTextResult? = null
         ) : FullTextResult(hasContent = true) {
             init {
                 require(steps.any { it is OpenAccessStep.Candidate }) { "nothing to try is not a PDF result" }
+                requireJatsDeposit(heldAbstract)
             }
         }
 
@@ -223,8 +251,14 @@ class FullTextService @Inject constructor(
          * downloaded again without its headers.
          *
          * @property pdfPath Where the PDF is cached
+         * @property heldAbstract As [EuropePmcPdf.heldAbstract]
          */
-        data class ElsevierPdf(val pdfPath: String) : FullTextResult(hasContent = true)
+        data class ElsevierPdf(val pdfPath: String, val heldAbstract: FullTextResult? = null) :
+            FullTextResult(hasContent = true) {
+            init {
+                requireJatsDeposit(heldAbstract)
+            }
+        }
 
         /**
          * Fall back to DOI/publisher URL.
@@ -391,6 +425,14 @@ class FullTextService @Inject constructor(
         refusedAsAnotherArticle(path, title, cacheName = File(path))
 
     /**
+     * The text of a saved PDF, for the analysis ([extractedPdfText]).
+     *
+     * @param path The PDF on disk
+     * @return Its text; null when it has none or cannot be read
+     */
+    suspend fun readPdfText(path: String): String? = extractedPdfText(path)
+
+    /**
      * Fetch full text for a document using the fallback chain.
      *
      * @param pmcId PubMed Central ID (if available).
@@ -405,7 +447,8 @@ class FullTextService @Inject constructor(
      *   another article's, set aside and recorded as a wrong-article skip with its
      *   address before Unpaywall is asked (the PDFs the recording downloads are
      *   checked by [downloadPdf], #561). Null checks nothing.
-     * @return The full text or a link to it; [FullTextResult.Unavailable] when every
+     * @return The full text or a link to it; the held abstract-only deposit when
+     *   nothing better arrived; [FullTextResult.Unavailable] when every
      *   source answered without it (callers record this); or
      *   [FullTextResult.NotEstablished] when Europe PMC, or failing that PMC's
      *   open-data bucket, did not settle it (never recorded). No path here returns a failed [Result].
@@ -449,6 +492,10 @@ class FullTextService @Inject constructor(
             }
         }
 
+        // An abstract-only deposit (#384): held back so that a PDF of the article
+        // can still win, and returned at the end only if nothing better arrived
+        var heldAbstract: FullTextResult? = null
+
         // Try Europe PMC XML first. A preprint has no PMC ID and is asked for by
         // its PPR record ID
         val accession = resolvedPmcId?.takeIf { it.isNotBlank() } ?: preprintAccession
@@ -459,9 +506,13 @@ class FullTextService @Inject constructor(
                     // Europe PMC answered, so a lost identifier search did not cost this source
                     europePmcShortfall = null
                     parseJats(fetch.xml, accession)?.let { parsed ->
-                        return@withContext Result.success(
-                            FullTextResult.EuropePmcXml(xml = fetch.xml, markdown = parsed.markdown, html = parsed.html)
+                        val served = FullTextResult.EuropePmcXml(
+                            xml = fetch.xml, markdown = parsed.markdown, html = parsed.html,
+                            abstractOnly = !parsed.producedBody
                         )
+                        if (parsed.producedBody) return@withContext Result.success(served)
+                        Log.i(TAG, "Europe PMC served an abstract-only deposit for $accession; holding it back")
+                        heldAbstract = served
                     }
                 }
                 FullTextXmlFetch.Absent -> {
@@ -483,8 +534,10 @@ class FullTextService @Inject constructor(
         // client (#453). `resolvedPmcId` is the caller's PMC ID or the one the
         // search resolved; a PPR preprint accession is never asked, because the
         // bucket files by PMC ID only
+        // Not asked after an abstract-only Europe PMC deposit, as Swift does not
+        // (Python reads that deposit as served)
         val bucketPmcId = resolvedPmcId?.let(FullTextAccession::normalized)
-            ?.takeIf { it.startsWith(FullTextAccession.PMC_PREFIX) }
+            ?.takeIf { it.startsWith(FullTextAccession.PMC_PREFIX) && heldAbstract == null }
         if (bucketPmcId != null) {
             Log.d(TAG, "Attempting PMC's open-access collection for $bucketPmcId")
             when (val fetch = pmcOpenData.fetchXml(bucketPmcId)) {
@@ -492,9 +545,12 @@ class FullTextService @Inject constructor(
                     val parsed = parseJats(fetch.xml, bucketPmcId)
                     if (parsed != null) {
                         Log.d(TAG, "Retrieved full text for $bucketPmcId from PMC's open-access collection")
-                        return@withContext Result.success(
-                            FullTextResult.PmcOpenDataXml(xml = fetch.xml, markdown = parsed.markdown, html = parsed.html)
+                        val served = FullTextResult.PmcOpenDataXml(
+                            xml = fetch.xml, markdown = parsed.markdown, html = parsed.html,
+                            abstractOnly = !parsed.producedBody
                         )
+                        if (parsed.producedBody) return@withContext Result.success(served)
+                        heldAbstract = served
                     }
                     // Python and Swift record an unconvertible bucket XML as a
                     // malformed answer, so the chain does not call the full text
@@ -518,7 +574,7 @@ class FullTextService @Inject constructor(
         if (!pdfRenderUrl.isNullOrEmpty()) {
             Log.d(TAG, "Using Europe PMC PDF render: $pdfRenderUrl")
             return@withContext Result.success(
-                FullTextResult.EuropePmcPdf(pdfUrl = pdfRenderUrl)
+                FullTextResult.EuropePmcPdf(pdfUrl = pdfRenderUrl, heldAbstract = heldAbstract)
             )
         }
 
@@ -537,7 +593,8 @@ class FullTextService @Inject constructor(
             val elsevierDoi = Core.bareDoi(usableDoi)
             when (val fetched = elsevier.fetchPdf(elsevierDoi, title)) {
                 // Checked against the title by the fetch (#546, #560)
-                is ElsevierFetch.Served -> return@withContext Result.success(FullTextResult.ElsevierPdf(fetched.localPath))
+                is ElsevierFetch.Served ->
+                    return@withContext Result.success(FullTextResult.ElsevierPdf(fetched.localPath, heldAbstract))
                 // Another article's, set aside: recorded under the article URL it
                 // was asked by (no key in it), as Python's is, and Unpaywall is asked
                 ElsevierFetch.WrongArticle -> listOf(
@@ -566,13 +623,15 @@ class FullTextService @Inject constructor(
             val unpaywall = elsevierSteps + unpaywallSteps(usableDoi, email, pmid)
             if (unpaywall.any { it is OpenAccessStep.Candidate }) {
                 // OpenAlex waits: recording asks it only if none of these is served
-                return@withContext Result.success(FullTextResult.OpenAccessPdfs(unpaywall, usableDoi))
+                return@withContext Result.success(FullTextResult.OpenAccessPdfs(unpaywall, usableDoi, heldAbstract = heldAbstract))
             }
             Log.d(TAG, "Unpaywall named no PDF to try for $usableDoi; asking OpenAlex")
             // Unpaywall may still have named addresses that cannot be requested
             val steps = unpaywall + openAlexSteps(usableDoi, unpaywall.flatMap { it.addresses })
             if (steps.any { it is OpenAccessStep.Candidate }) {
-                return@withContext Result.success(FullTextResult.OpenAccessPdfs(steps, usableDoi, openAlexAsked = true))
+                return@withContext Result.success(
+                    FullTextResult.OpenAccessPdfs(steps, usableDoi, openAlexAsked = true, heldAbstract = heldAbstract)
+                )
             }
             openAccessShortfall = steps.filterIsInstance<OpenAccessStep.Unsettled>()
                 .fold(null as OpenAccessShortfall?) { held, step -> OpenAccessShortfall.adding(step.shortfall, held) }
@@ -591,6 +650,13 @@ class FullTextService @Inject constructor(
                     OpenAccessShortfall.adding(OpenAccessShortfall.CORE_KEY_REFUSED, openAccessShortfall)
                 CoreFetch.Absent, null -> Unit
             }
+        }
+
+        // The reader gets the abstract rather than a bare link, or than nothing,
+        // with what the open-access walk left unsettled
+        heldAbstract?.let { held ->
+            Log.i(TAG, "No source beat the abstract-only deposit; returning it")
+            return@withContext Result.success(held.notingHeldAbstract(openAccessShortfall, pdfNotSavedFrom = null))
         }
 
         // Fall back to DOI URL if DOI is available
@@ -662,8 +728,10 @@ class FullTextService @Inject constructor(
      *
      * @property markdown The article as markdown
      * @property html The article as HTML (body content only)
+     * @property producedBody Whether the article's body rendered a paragraph
+     *   ([JATSXMLParser.producedBody]); false for an abstract-only deposit
      */
-    private data class ParsedJats(val markdown: String, val html: String)
+    private data class ParsedJats(val markdown: String, val html: String, val producedBody: Boolean)
 
     /**
      * Convert served JATS XML to markdown and HTML.
@@ -695,7 +763,7 @@ class FullTextService @Inject constructor(
             )
             val html = htmlParser.parseToHTML()
 
-            ParsedJats(markdown = markdown, html = html)
+            ParsedJats(markdown = markdown, html = html, producedBody = parser.producedBody)
         } catch (e: JATSParseError) {
             Log.e(TAG, "JATS XML for $accession was retrieved but could not be parsed: ${e.message}")
             null

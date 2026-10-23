@@ -31,29 +31,59 @@ import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
  * @property documentId Unique identifier for matching back to the DocumentEntity.
  * @property pmid PubMed ID for display and tracking.
  * @property title Document title for the extraction prompt.
- * @property content Document content (abstract or full text) for citation extraction.
+ * @property abstract The document's abstract, if it has one.
+ * @property markdownFallback What is read when there is neither an abstract nor
+ *   a full text for the prompt: the stored markdown, as before full text was read.
+ * @property fullText The article's full text, and whether it was cut to bound the
+ *   cost of the call, when citation extraction is to read it.
  */
 data class CitationInput(
     val documentId: String,
     val pmid: String?,
     val title: String,
-    val content: String
+    val abstract: String?,
+    val markdownFallback: String? = null,
+    val fullText: CitationFullText? = null
 ) {
+    /**
+     * What the prompt reads the paper from: the full text when there is one.
+     *
+     * The abstract stays alongside the full text, which may be cut and so may
+     * lack the conclusions an abstract states. A cut is announced, so the model
+     * does not mistake the end of the excerpt for the end of the paper. Swift's
+     * `sourceSection(for:)` lays it out the same way.
+     */
+    val content: String
+        get() = if (fullText == null) {
+            abstract ?: markdownFallback ?: ""
+        } else {
+            buildString {
+                abstract?.let { append("Abstract:\n").append(it).append("\n\n") }
+                append("Full text:\n").append(fullText.text)
+                if (fullText.truncated) append("\n[The full text is cut here for length; the rest of the article is not shown.]")
+            }
+        }
+
+    /** This input read from the abstract instead, as when the run budget leaves the full text out. */
+    fun withoutFullText(): CitationInput = copy(fullText = null)
+
     companion object {
         /**
          * Create citation input from a DocumentEntity.
          *
-         * Uses full text markdown if available, otherwise falls back to abstract.
-         *
          * @param document The document entity to convert.
+         * @param fullText The full text to read, or null to read the abstract
+         *   (or, with none, the stored markdown).
          * @return CitationInput with extracted fields.
          */
-        fun fromDocument(document: DocumentEntity): CitationInput {
+        fun fromDocument(document: DocumentEntity, fullText: CitationFullText? = null): CitationInput {
             return CitationInput(
                 documentId = document.id,
                 pmid = document.pmid,
                 title = document.title,
-                content = document.abstractText ?: document.fullTextMarkdown ?: ""
+                abstract = document.abstractText,
+                markdownFallback = document.fullTextMarkdown,
+                fullText = fullText
             )
         }
     }

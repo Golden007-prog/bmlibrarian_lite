@@ -18,6 +18,8 @@
 
 package com.bmlibrarian.factchecker.ui.factcheck
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.fadeIn
@@ -44,6 +46,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -68,6 +71,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUpload
 import com.bmlibrarian.factchecker.util.Constants
 import com.bmlibrarian.factchecker.domain.workflow.WorkflowState
 import com.bmlibrarian.factchecker.ui.factcheck.components.ClaimInput
@@ -101,6 +106,14 @@ fun FactCheckScreen(
     val uiState by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
     val context = LocalContext.current
+
+    // The paper a file is being chosen for, and the picker that chooses it
+    var uploadTarget by remember { mutableStateOf<DocumentEntity?>(null) }
+    val uploadPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val target = uploadTarget
+        uploadTarget = null
+        if (uri != null && target != null) viewModel.uploadFullText(target, uri)
+    }
 
     // Restore session if ID provided (from History navigation)
     LaunchedEffect(sessionIdToRestore) {
@@ -162,8 +175,11 @@ fun FactCheckScreen(
                 ClaimInput(
                     claimText = uiState.claimText,
                     onClaimTextChange = viewModel::updateClaimText,
-                    onSubmit = viewModel::startFactCheck,
+                    onSubmit = viewModel::submit,
                     isEnabled = !uiState.isRunning && !uiState.showConfigWarning,
+                    submitLabel = uiState.submitLabel,
+                    canSubmit = uiState.canSubmit,
+                    onNewQuestion = if (uiState.searchedClaim != null) viewModel::startNewQuestion else null,
                     modifier = Modifier.fillMaxWidth()
                 )
             }
@@ -181,6 +197,34 @@ fun FactCheckScreen(
             uiState.incompleteSearchWarning?.let { warning ->
                 item(key = "incomplete_search") {
                     IncompleteSearchCard(text = warning)
+                }
+            }
+
+            // Why a request for more evidence added nothing new, while the report stands
+            uiState.smartSearchNotice?.let { notice ->
+                item(key = "smart_search_notice") {
+                    IncompleteSearchCard(text = notice)
+                }
+            }
+
+            // What the full-text step could not do
+            uiState.fullTextNotice?.let { notice ->
+                item(key = "full_text_notice") {
+                    IncompleteSearchCard(text = notice)
+                }
+            }
+
+            // Papers the full-text setting covers with no full text, or a full text the analysis has not read
+            uiState.fullTextRetryNotice?.let { notice ->
+                item(key = "full_text_retry") {
+                    FullTextRetryCard(text = notice, onRetry = viewModel::retryFullText)
+                }
+            }
+
+            // What an upload, a retry or a request for more evidence could not do, or came to
+            uiState.actionMessage?.let { message ->
+                item(key = "action_message") {
+                    ActionMessageCard(message = message, onDismiss = viewModel::dismissActionMessage)
                 }
             }
 
@@ -268,6 +312,11 @@ fun FactCheckScreen(
                         document = document,
                         citations = uiState.getCitationsForDocument(document.id),
                         isLoadingFullText = uiState.loadingFullTextDocumentId == document.id,
+                        isUploadingFullText = uiState.uploadingFullTextDocumentId == document.id,
+                        onUploadFullText = { doc ->
+                            uploadTarget = doc
+                            uploadPicker.launch(FullTextUpload.PICKER_TYPES)
+                        },
                         onGetFullText = { doc ->
                             viewModel.fetchFullText(doc) { success ->
                                 // Always navigate to full-text viewer - it handles
@@ -565,6 +614,60 @@ private fun SearchFailureMessage(
             Spacer(modifier = Modifier.height(Constants.UI_ICON_TEXT_SPACING.dp))
             TextButton(onClick = onDismiss) {
                 Text("Dismiss")
+            }
+        }
+    }
+}
+
+/**
+ * What an action the reader took could not do, or what it came to, until dismissed.
+ *
+ * @param message What to tell the reader
+ * @param onDismiss Called when the reader dismisses it
+ */
+@Composable
+private fun ActionMessageCard(
+    message: String,
+    onDismiss: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(Constants.UI_CARD_PADDING.dp)
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(Constants.UI_ICON_TEXT_SPACING.dp))
+            TextButton(onClick = onDismiss) {
+                Text("Dismiss")
+            }
+        }
+    }
+}
+
+/**
+ * What a retry of full-text retrieval would do, with the button that runs it.
+ *
+ * @param text Which papers have no full text, or a full text the analysis has not read
+ * @param onRetry Fetches their full text again and redoes the analysis with any that arrive
+ */
+@Composable
+private fun FullTextRetryCard(
+    text: String,
+    onRetry: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(Constants.UI_CARD_PADDING.dp)
+        ) {
+            Text(
+                text = text,
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(modifier = Modifier.height(Constants.UI_ELEMENT_SPACING.dp))
+            Button(onClick = onRetry) {
+                Text("Retry Full Text Fetching")
             }
         }
     }

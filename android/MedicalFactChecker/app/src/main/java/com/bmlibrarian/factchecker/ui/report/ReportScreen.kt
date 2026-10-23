@@ -249,8 +249,8 @@ fun ReportScreen(
                 }
             }
 
-            // Get More Evidence section
-            if (onRequestMoreEvidence != null && uiState.canGetMoreEvidence) {
+            // Get More Evidence section: smart search can always run a fresh round
+            if (onRequestMoreEvidence != null) {
                 Spacer(modifier = Modifier.height(Constants.UI_SECTION_SPACING.dp))
 
                 GetMoreEvidenceSection(
@@ -368,8 +368,9 @@ private suspend fun handleEvent(
 /**
  * Section prompting the user to fetch additional evidence for the current report.
  *
- * Displayed when more search results are available. Navigates to the Check
- * screen and triggers fetchMoreEvidence on the active workflow.
+ * Always offered: once the search's pages are exhausted, smart search can run a
+ * fresh round of alternative queries. Navigates to the Check screen and
+ * triggers fetchMoreEvidence on the active workflow.
  *
  * @param onRequestMoreEvidence Callback to navigate to Check tab and trigger fetch
  */

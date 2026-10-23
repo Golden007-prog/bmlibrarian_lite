@@ -356,7 +356,7 @@ class FullTextServiceElsevierTest {
         europePmc = searchFinding(EuropePMCArticle(id = "1", source = "MED", pmid = "1", pmcid = "PMC7", title = "t"))
         coEvery { europePmc.fetchFullTextXml("PMC7") } returns FullTextXmlFetch.Served(
             "<article><front><article-meta><title-group><article-title>T</article-title></title-group>" +
-                "</article-meta></front><body><p>Text.</p></body></article>"
+                "</article-meta></front><body><sec><p>Text.</p></sec></body></article>"
         )
         elsevier = elsevierAnswering(ElsevierFetch.Served(localPdf))
 
