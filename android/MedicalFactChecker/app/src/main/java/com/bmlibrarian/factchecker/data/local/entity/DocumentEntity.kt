@@ -205,8 +205,10 @@ data class DocumentEntity(
 
     /**
      * The text extracted from the PDF at [pdfPath], downloaded or uploaded; null
-     * when there is no PDF, its pages hold no text (a scan), or it was saved
-     * before this was kept. Written and cleared with [pdfPath].
+     * when there is no PDF, its pages hold no text (a scan), it could not be
+     * read, its text is too long to keep on the row
+     * ([com.bmlibrarian.factchecker.util.Constants.MAX_STORED_TEXT_BYTES]), or it
+     * was saved before this was kept. Written and cleared with [pdfPath].
      */
     @ColumnInfo(name = "full_text_pdf_text")
     val pdfExtractedText: String? = null,

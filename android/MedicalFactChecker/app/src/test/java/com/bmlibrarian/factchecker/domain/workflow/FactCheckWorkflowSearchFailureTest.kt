@@ -217,6 +217,23 @@ class FactCheckWorkflowSearchFailureTest {
     }
 
     @Test
+    fun `more evidence under new settings pages the session's own provider`() = runTest {
+        holdSession(SearchProvider.PUBMED, pubmedOffset = 20, pubmedTotalResults = 57)
+        stored = stored.copy(workflowStep = WorkflowStep.COMPLETED)
+        coEvery { documentRepository.getDocumentCount(SESSION_ID) } returns 20
+        coEvery { reportRepository.getReportBySession(SESSION_ID) } returns mockk(relaxed = true) {
+            coEvery { id } returns "report-252"
+        }
+        pubMedFailsWith(400)
+        workflow.restoreForViewing(stored)
+
+        // The settings now say Europe PMC: the session's PubMed cursor is what pages on
+        workflow.fetchMoreEvidence(config(SearchProvider.EUROPE_PMC))
+
+        coVerify { pubMedApi.search(any(), any(), any(), retMax = 20, retStart = 20, any(), any(), any()) }
+    }
+
+    @Test
     fun `an alternative search that failed is recorded as its own, and the report says so`() = runTest {
         holdSession(SearchProvider.PUBMED)
         coEvery { documentRepository.getDocumentCount(SESSION_ID) } returns 0
@@ -668,6 +685,36 @@ class FactCheckWorkflowSearchFailureTest {
         coVerify(exactly = 0) {
             sessionRepository.updateSmartSearchState(any(), any(), match { it?.contains("acetylsalicylic") == true }, any())
         }
+    }
+
+    @Test
+    fun `a second round whose queries all fail keeps smart search and the queries already run`() = runTest {
+        holdSmartSearchedSession(tried = listOf(ALTERNATIVE_QUERY))
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(listOf(SECOND_ALTERNATIVE_QUERY))
+        pubMedFailsWith(429)
+        workflow.restoreForViewing(stored)
+
+        workflow.fetchMoreEvidence()
+
+        assertEquals(WorkflowState.Completed(reportId = "report-252"), workflow.state.value)
+        coVerify { sessionRepository.updateSmartSearchState(SESSION_ID, true, triedJson(ALTERNATIVE_QUERY), any()) }
+        coVerify(exactly = 0) { sessionRepository.updateSmartSearchState(any(), any(), null, any()) }
+        coVerify(exactly = 0) { sessionRepository.updateSmartSearchState(any(), false, any(), any()) }
+    }
+
+    @Test
+    fun `a second round with no usable query keeps the queries already run`() = runTest {
+        holdSmartSearchedSession(tried = listOf(ALTERNATIVE_QUERY))
+        coEvery { llmService.generateAlternativeQueries(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(emptyList())
+        workflow.restoreForViewing(stored)
+
+        workflow.fetchMoreEvidence()
+
+        assertEquals(UNUSABLE_ANSWERS_MESSAGE, workflow.searchFailureMessage.value)
+        coVerify { sessionRepository.updateSmartSearchState(SESSION_ID, true, triedJson(ALTERNATIVE_QUERY), any()) }
+        coVerify(exactly = 0) { sessionRepository.updateSmartSearchState(any(), any(), null, any()) }
     }
 
     /**

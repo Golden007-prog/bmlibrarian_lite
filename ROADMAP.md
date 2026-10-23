@@ -7,14 +7,13 @@ Planned work, decided unless an item says otherwise, and not started. Where to s
 
 ## Parity: taking a fact check further (Python desktop)
 
-iOS and macOS (PR #611) and Android (branch
-`feat/android-fact-check-more-evidence-and-fulltext`) have five ways to take a
+iOS and macOS (PR #611) and Android (PR #616) have five ways to take a
 finished fact check further. The Python desktop needs the same, with the same
 rules. Swift is the reference: `FactCheckWorkflow.swift`, `FullTextAutoFetch.swift`,
 `FullTextUpload.swift`, `PromptTemplates.alternativeQueries`; Kotlin's port is
 `FactCheckWorkflow.kt` and `domain/workflow/FullTextAutoFetch.kt`.
 
-| Feature | Rule (as on iOS/macOS and Android) | Python desktop |
+| Feature | Rule (as on iOS/macOS; Android's divergences below) | Python desktop |
 |---|---|---|
 | **Find More Evidence / New Question** | After a search, the submit button fetches more for the same claim; an edited claim is a new question. New Question clears claim and session. | No one-click "fetch more and regenerate"; Research Questions has *Re-run Search* |
 | **Repeated smart search** | With the original query and a smart-search round used up, another round runs; the prompt lists every query already run, as its concept names joined by AND; the session keeps each query once it has run, not one a source could not answer. A round that finds nothing new leaves the report and says so; a session without a report goes on to make one. *Get More Evidence* always offered. | No alternative-query search at all |
@@ -28,9 +27,11 @@ so the full-text rows are new behaviour there, not a port. Decide what the
 desktop's equivalent is before building.
 
 **Android's known divergences** are #615 (undownloaded PDF links re-fetched
-only on a retry; a textless Elsevier PDF gives way to a held abstract; no
-transparency redo, as Android's transparency reads no full text, #384) and
-#614 (no Regenerate Report offer).
+only on a retry; a textless Elsevier PDF or Europe PMC render gives way to a
+held abstract; no transparency redo, as Android's transparency reads no full
+text, #384; an unsectioned JATS body is held back as abstract-only, #384) and
+#614 (no Regenerate Report offer, so a retry that found citations in an
+abstract regenerates the report itself).
 
 **Also owed on iOS/macOS:** HTML uploads are passed on as raw markup; an
 upload is not checked against the paper's title (`PDFTitleCheck`).

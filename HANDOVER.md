@@ -29,19 +29,33 @@ Apple follow-ups: #612 (test seams), #613 (upload edge cases).
   no paragraph (`JATSXMLParser.producedBody`, counted on what Android renders,
   so unsectioned `<p>` does not count) is held, the PMC bucket is not asked,
   and it is returned only when nothing better arrives, carrying the walk's
-  shortfall. A PDF without text gives way to it; one with text wins. Stored as
-  `full_text_abstract_only`.
+  shortfall (a render that could not be downloaded is one). A PDF without text
+  gives way to it; one with text wins. Stored as `full_text_abstract_only`.
 - **PDF text** is read with iText (`PdfText.kt`) at every recording and stored
-  as `full_text_pdf_text`, written and cleared with `pdf_path`.
-  **`DocumentEntity.analysisFullText` is the one accessor** (markdown unless
-  abstract-only, else PDF text). Transparency still reads none (#384).
+  as `full_text_pdf_text`, written and cleared with `pdf_path`; a text over
+  `MAX_STORED_TEXT_BYTES` (1 MB, the row must fit Android's 2 MB cursor
+  window) is not kept, and a text upload over it is refused.
+  **`DocumentEntity.analysisFullText` is the one accessor citation extraction
+  reads** (markdown unless abstract-only, else PDF text); transparency's
+  `analyzableFullText` stays null until #384's back-matter half lands.
 - `citations_read_full_text` is written only by
-  `DocumentDao.updateCitationsReadFullText`; `DocumentDao.update` keeps it, as
-  it keeps transparency. Citations are replaced in one transaction
-  (`CitationDao.replaceForDocument`), only when the text yields passages.
+  `DocumentDao.updateCitationsReadFullText`, after the citations are saved;
+  `DocumentDao.update` keeps it while the text the analysis reads is unchanged
+  and clears it when an upload or fetch changes it. Citations are replaced in
+  one transaction (`CitationDao.replaceForDocument`), only when the text
+  yields passages. A retry also regenerates the report when it found
+  citations in an abstract (no Regenerate offer, #614); a retry that fails
+  keeps the report and the session completed.
+- An uploaded PDF opens in the viewer as itself, ahead of any cached PDF, and
+  no viewer fetch writes over an upload made meanwhile. Upload refusals and a
+  PDF stored without text are told on the fact-check screen
+  (`FactCheckUiState.actionMessage`).
 - Divergences from Swift, lodged: #615 (link-only PDFs re-fetched only on a
-  retry; textless Elsevier PDF; no transparency redo), #614 (no Regenerate
-  Report offer).
+  retry; textless Elsevier PDF or Europe PMC render; no transparency redo;
+  unsectioned body held as abstract-only), #614 (no Regenerate Report offer).
+  Follow-ups: #617 (unreadable stored text counts as full text; lazy PDF
+  text), #618 (the 40,000-character cut is not told to the reader; markdown
+  fallback), #619 (Get More Evidence from History; cancel).
 
 **Owed by the maintainer** (stages C1 and C2 and the desktop browser rescue
 have landed):

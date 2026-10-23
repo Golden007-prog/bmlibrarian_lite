@@ -61,7 +61,8 @@ sealed interface FullTextUploadContent {
 }
 
 /**
- * A full text the reader supplies by hand, for a paper no source had.
+ * A full text the reader supplies by hand, for a paper without text the analysis
+ * can read: none found, a scanned PDF, or an abstract-only deposit.
  *
  * An uploaded PDF is kept in its own folder in the app's files
  * ([Constants.UPLOADED_FULLTEXT_DIR]), apart from the PDFs the retrieval chain
@@ -79,16 +80,20 @@ class FullTextUpload @Inject constructor(
      *
      * @param uri The file the reader chose
      * @param documentId The document, which names a stored PDF
-     * @param maxBytes The largest file read; a larger one is refused, never cut
+     * @param maxBytes The largest PDF read; a larger one is refused, never cut
+     * @param maxTextBytes The largest text or HTML file read, kept whole on the
+     *   document's row; a larger one is refused, never cut
      * @return What the file holds
      * @throws FullTextUploadException for a file of a kind not supported, one
-     *   too large, or one that could not be read or stored; a PDF uploaded
-     *   before for the paper is kept unless the new one is stored whole
+     *   too large, one holding no text or text that is not UTF-8, or one that
+     *   could not be read or stored; a PDF uploaded before for the paper is kept
+     *   unless the new one is stored whole
      */
     suspend fun read(
         uri: Uri,
         documentId: String,
-        maxBytes: Long = Constants.MAX_UPLOAD_BYTES
+        maxBytes: Long = Constants.MAX_UPLOAD_BYTES,
+        maxTextBytes: Long = Constants.MAX_STORED_TEXT_BYTES
     ): FullTextUploadContent = withContext(Dispatchers.IO) {
         val resolver = context.contentResolver
         val kind = kindOf(resolver.getType(uri), displayName(uri))
@@ -101,8 +106,8 @@ class FullTextUpload @Inject constructor(
                         val stored = store(input, documentId, maxBytes)
                         FullTextUploadContent.Pdf(stored.path, extractedPdfText(stored.path))
                     }
-                    Kind.HTML -> textContent(htmlToText(readText(input, maxBytes)))
-                    Kind.TEXT -> textContent(readText(input, maxBytes))
+                    Kind.HTML -> textContent(htmlToText(readText(input, maxTextBytes)))
+                    Kind.TEXT -> textContent(readText(input, maxTextBytes))
                 }
             }
         } catch (e: IOException) {
@@ -146,10 +151,10 @@ class FullTextUpload @Inject constructor(
         return destination
     }
 
-    /** Read a text file, refusing one too large to read whole. */
+    /** Read a text file, refusing one too large to read whole or not UTF-8. */
     private fun readText(input: InputStream, maxBytes: Long): String {
         val bytes = java.io.ByteArrayOutputStream().also { copyBounded(input, it, maxBytes) }.toByteArray()
-        return bytes.toString(Charsets.UTF_8)
+        return decodedUtf8(bytes)
     }
 
     /** Copy a stream, refusing past [maxBytes] rather than keeping part of it. */
@@ -160,7 +165,7 @@ class FullTextUpload @Inject constructor(
             val read = input.read(buffer)
             if (read < 0) return
             total += read
-            if (total > maxBytes) throw FullTextUploadException(TOO_LARGE_MESSAGE)
+            if (total > maxBytes) throw FullTextUploadException(tooLargeMessage(maxBytes))
             output.write(buffer, 0, read)
         }
     }
@@ -178,15 +183,56 @@ class FullTextUpload @Inject constructor(
         /** Told when the chosen file is of a kind not supported. */
         const val UNSUPPORTED_MESSAGE = "Unsupported file format. Please use PDF, HTML, Markdown, or plain text"
 
+        /** Told when a PDF was stored but none of its text could be kept (a scan, a damaged file, a book). */
+        const val PDF_WITHOUT_TEXT_MESSAGE = "The PDF was stored, but its text could not be read or is too long " +
+            "to keep, so the analysis still reads the paper's abstract."
+
         /** Told when the chosen text file holds no text. */
         const val NO_TEXT_MESSAGE = "The file holds no text, so it was not used."
 
-        /** Told when the chosen file is larger than an upload may be. */
-        val TOO_LARGE_MESSAGE = "The file is larger than ${Constants.MAX_UPLOAD_BYTES / (1024 * 1024)} MB, " +
-            "so it was not used."
+        /** Told when the chosen file is not UTF-8 text (UTF-16, a legacy code page). */
+        const val NOT_UTF8_MESSAGE = "The file is not UTF-8 text, so it was not used. Save it as UTF-8 and try again."
 
         /**
-         * What kind of file this is: by its type, else by its name's extension.
+         * Told when the chosen file is larger than an upload of its kind may be.
+         *
+         * @param maxBytes The limit applied
+         * @return The sentence
+         */
+        fun tooLargeMessage(maxBytes: Long): String {
+            val megabytes = maxBytes.toDouble() / BYTES_PER_MEGABYTE
+            val shown = if (megabytes >= 1) "%.0f MB".format(Locale.ROOT, megabytes) else "$maxBytes bytes"
+            return "The file is larger than $shown, so it was not used."
+        }
+
+        private const val BYTES_PER_MEGABYTE = 1024 * 1024
+
+        /**
+         * A text file's bytes as UTF-8, a byte-order mark dropped; refused when
+         * they are not UTF-8, rather than stored with replacement characters.
+         *
+         * @param bytes The file
+         * @return Its text
+         * @throws FullTextUploadException when the bytes are not UTF-8
+         */
+        internal fun decodedUtf8(bytes: ByteArray): String {
+            val decoder = Charsets.UTF_8.newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+            val text = try {
+                decoder.decode(java.nio.ByteBuffer.wrap(bytes)).toString()
+            } catch (e: java.nio.charset.CharacterCodingException) {
+                throw FullTextUploadException(NOT_UTF8_MESSAGE)
+            }
+            // A NUL is never in prose: UTF-16 that happened to decode as UTF-8
+            if ('\u0000' in text) throw FullTextUploadException(NOT_UTF8_MESSAGE)
+            return text.removePrefix("\uFEFF")
+        }
+
+        /**
+         * What kind of file this is. A PDF or HTML type decides it; otherwise the
+         * name's extension does, so a `text/plain` file named `.html` is read as
+         * HTML; any other `text/` type is read as text.
          *
          * @param mimeType The type the provider gives, if any
          * @param name The file's name, if any

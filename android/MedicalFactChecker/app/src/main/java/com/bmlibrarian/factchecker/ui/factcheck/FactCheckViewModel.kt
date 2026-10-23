@@ -26,6 +26,7 @@ import com.bmlibrarian.factchecker.data.local.entity.CitationEntity
 import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextService
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUpload
+import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUploadContent
 import com.bmlibrarian.factchecker.data.remote.fulltext.FullTextUploadException
 import com.bmlibrarian.factchecker.data.remote.fulltext.recordingUpload
 import com.bmlibrarian.factchecker.data.remote.fulltext.recordingFullTextFetch
@@ -133,7 +134,14 @@ data class FactCheckUiState(
     val sessionComplete: Boolean = false,
 
     /** What a retry of full-text retrieval would do, offered beside its button; null when nothing. */
-    val fullTextRetryNotice: String? = null
+    val fullTextRetryNotice: String? = null,
+
+    /**
+     * What an action the reader took (an upload, a retry, a request for more
+     * evidence) could not do, or what they should know of its outcome; kept,
+     * unlike [errorMessage], until dismissed or the next such action.
+     */
+    val actionMessage: String? = null
 ) {
     /**
      * Whether the claim on screen is the one the current session searched, so
@@ -356,6 +364,10 @@ class FactCheckViewModel @Inject constructor(
                     it.copy(showConfigWarning = !isConfigured)
                 }
             }
+        }
+        // The retry's offer depends on the full-text setting and score
+        viewModelScope.launch {
+            settingsRepository.settings.collect { _ -> _uiState.update(::withRetryNotice) }
         }
     }
 
@@ -608,17 +620,17 @@ class FactCheckViewModel @Inject constructor(
      * report with all evidence, under the current settings.
      */
     fun addMoreResults() {
+        if (!startingAction()) return
         viewModelScope.launch {
             try {
-                _uiState.update { it.copy(isRunning = true) }
                 workflow.fetchMoreEvidence(buildWorkflowConfig())
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _uiState.update {
-                    it.copy(
-                        errorMessage = e.message ?: "Failed to fetch more documents",
-                        isRunning = false
-                    )
-                }
+                Log.e(TAG, "Fetching more evidence failed", e)
+                _uiState.update { it.copy(actionMessage = e.message ?: "Failed to fetch more documents") }
+            } finally {
+                endingAction()
             }
         }
     }
@@ -628,13 +640,48 @@ class FactCheckViewModel @Inject constructor(
      * with any that arrive, under the current settings.
      */
     fun retryFullText() {
+        if (!startingAction()) return
         viewModelScope.launch {
             try {
                 workflow.retryFullTextRetrieval(buildWorkflowConfig())
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
-                _uiState.update { it.copy(errorMessage = e.message ?: "Failed to retry full text") }
+                Log.e(TAG, "Retrying full text failed", e)
+                _uiState.update { it.copy(actionMessage = e.message ?: "Failed to retry full text") }
+            } finally {
+                endingAction()
             }
         }
+    }
+
+    /**
+     * Mark a run started from the screen as running, at once: a second tap
+     * before the workflow says it is busy would start a second run, paying twice
+     * and saving its citations twice.
+     *
+     * @return False when something already runs, so nothing is started
+     */
+    private fun startingAction(): Boolean {
+        var started = false
+        _uiState.update {
+            started = !it.isRunning
+            if (started) it.copy(isRunning = true, fullTextRetryNotice = null, actionMessage = null) else it
+        }
+        return started
+    }
+
+    /**
+     * End a run started from the screen: running only while the workflow is,
+     * since a run that found nothing to do may never have changed its state.
+     */
+    private fun endingAction() {
+        _uiState.update { withRetryNotice(it.copy(isRunning = workflow.state.value.isProcessing())) }
+    }
+
+    /** Stop showing [FactCheckUiState.actionMessage]. */
+    fun dismissActionMessage() {
+        _uiState.update { it.copy(actionMessage = null) }
     }
 
     /**
@@ -650,7 +697,7 @@ class FactCheckViewModel @Inject constructor(
     )
 
     /**
-     * Clear restored session state and start a new question.
+     * Clear the session on screen, run or restored, and start a new question.
      *
      * Resets the workflow and UI to allow entering a fresh claim.
      */
@@ -681,20 +728,24 @@ class FactCheckViewModel @Inject constructor(
      */
     fun uploadFullText(document: DocumentEntity, uri: Uri) {
         viewModelScope.launch {
-            _uiState.update { it.copy(uploadingFullTextDocumentId = document.id) }
+            _uiState.update { it.copy(uploadingFullTextDocumentId = document.id, actionMessage = null) }
             try {
                 val content = fullTextUpload.read(uri, document.id)
                 // Read again, so a score or fetch stored meanwhile is kept
                 val current = documentRepository.getDocument(document.id) ?: document
                 documentRepository.updateDocument(current.recordingUpload(content))
+                if (content is FullTextUploadContent.Pdf && content.text == null) {
+                    _uiState.update { it.copy(actionMessage = FullTextUpload.PDF_WITHOUT_TEXT_MESSAGE) }
+                }
             } catch (e: FullTextUploadException) {
-                _uiState.update { it.copy(errorMessage = e.message) }
+                Log.w(TAG, "Upload for ${document.id} refused: ${e.message}")
+                _uiState.update { it.copy(actionMessage = e.message) }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 // A provider's own failure (a revoked grant, a bad URI): told, never a crash
                 Log.e(TAG, "Upload for ${document.id} failed", e)
-                _uiState.update { it.copy(errorMessage = "The file could not be used as this paper's full text.") }
+                _uiState.update { it.copy(actionMessage = "The file could not be used as this paper's full text.") }
             } finally {
                 _uiState.update { it.copy(uploadingFullTextDocumentId = null) }
             }

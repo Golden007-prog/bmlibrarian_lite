@@ -76,7 +76,10 @@ interface DocumentDao {
      * the copy whole would erase a result the workflow stored after the read,
      * so the stored result is carried over inside the same transaction.
      * Transparency is written only by [updateTransparency], and whether the
-     * citations read the full text only by [updateCitationsReadFullText].
+     * citations read the full text only by [updateCitationsReadFullText] while
+     * that text stands: a write that changes the text the analysis reads (an
+     * upload, a fetch) clears it, so the citations, read from the old text, are
+     * judged by their dates against the new one.
      *
      * @param document The document entity with updated values
      */
@@ -88,6 +91,7 @@ interface DocumentDao {
                 transparencyResultJson = stored?.transparencyResultJson,
                 transparencyAnalyzedAt = stored?.transparencyAnalyzedAt,
                 citationsReadFullText = stored?.citationsReadFullText
+                    ?.takeIf { stored.analysisFullText == document.analysisFullText }
             )
         )
     }

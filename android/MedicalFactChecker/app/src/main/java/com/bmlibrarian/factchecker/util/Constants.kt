@@ -630,14 +630,23 @@ object Constants {
     const val MAX_CITATION_FULL_TEXT_CHARACTERS = 40_000
 
     /**
-     * Folder, in the app's files beside its PDF cache, holding the PDFs the
-     * reader uploaded: apart from the cache, so clearing it never deletes a copy
-     * no source could supply.
+     * Folder in the app's files directory, not the cache directory that holds
+     * retrieved PDFs, holding the PDFs the reader uploaded: neither the system
+     * emptying its cache nor clearing the PDF cache deletes a copy no source
+     * could supply.
      */
     const val UPLOADED_FULLTEXT_DIR = "uploaded_fulltexts"
 
-    /** The largest file a full-text upload reads, as the desktop's MAX_PDF_SIZE. */
+    /** The largest PDF a full-text upload reads, as the desktop's MAX_PDF_SIZE. */
     const val MAX_UPLOAD_BYTES = 100L * 1024 * 1024
+
+    /**
+     * The longest text kept on a document's row, in UTF-8 bytes: an uploaded text
+     * file, or the text read from a PDF. Android reads a row through a 2 MB
+     * window and cannot read back one larger, which would leave the session's
+     * documents unreadable; a longer text is refused or not kept, never cut.
+     */
+    const val MAX_STORED_TEXT_BYTES = 1L * 1024 * 1024
 
     /** How many failed papers a full-text notice names before it only counts them. */
     const val MAX_FAILED_TITLES_TO_NAME = 3

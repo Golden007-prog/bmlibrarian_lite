@@ -61,9 +61,11 @@ data class RecordedFetch(val document: DocumentEntity, val result: FullTextResul
  * Every PDF saved is read for its text ([readPdfText]), stored beside it for the
  * analysis. When the chain held back an abstract-only deposit
  * ([FullTextResult.EuropePmcPdf.heldAbstract]), a PDF without text does not beat
- * it: the walk goes on for a copy with text, and the abstract is recorded when
- * none arrives, as a render that could not be downloaded, refused or not saved
- * gives way to it too.
+ * it. Among Unpaywall's and OpenAlex's copies the walk goes on for one with
+ * text, and the abstract is recorded when none arrives. Europe PMC's render and
+ * Elsevier's PDF end the chain (#493, #615), so a textless one gives way to the
+ * abstract directly, as does a render that was another article's, could not be
+ * downloaded (noted as a shortfall) or was not saved.
  *
  * Every PDF downloaded here is checked against the document's title by the
  * download itself, before it is cached (#546, #561): one whose first page with
@@ -102,12 +104,16 @@ suspend fun DocumentEntity.recordingFullTextFetch(
             ?: RecordedFetch(recording(result, pdfPath = null).copy(fullTextPdfNotSavedFrom = result.pdfUrl), result)
         is PdfDownload.Saved -> recordingPdf(result, download.path, result.heldAbstract, readPdfText)
         PdfDownload.WrongArticle -> renderOfAnotherArticle(result)
-        is PdfDownload.Failed -> result.heldAbstract?.let(::recordingHeld)
-            ?: RecordedFetch(recording(result, pdfPath = null), result)
+        // An unreachable render is no answer: the held abstract carries it, so the
+        // question stays open rather than settling on the abstract
+        is PdfDownload.Failed -> result.heldAbstract?.let {
+            val unreachable = OpenAccessShortfall(OpenAccessSource.EUROPE_PMC_PDF, download.failure, result.pdfUrl)
+            recordingHeld(it.notingHeldAbstract(unreachable, pdfNotSavedFrom = null))
+        } ?: RecordedFetch(recording(result, pdfPath = null), result)
     }
     // Already saved by the chain: a local file, never a URL to download (#480, stage C2).
     // shortcut: one without text gives way to a held abstract here, where Swift walks on to Unpaywall
-    // for a copy with text; walk on too if textless Elsevier PDFs turn up in practice
+    // for a copy with text (#615); walk on too if textless Elsevier PDFs turn up in practice
     is FullTextResult.ElsevierPdf -> recordingPdf(result, result.pdfPath, result.heldAbstract, readPdfText)
     else -> RecordedFetch(recording(result, pdfPath = null), result)
 }
@@ -138,11 +144,26 @@ private fun DocumentEntity.recordingHeld(heldAbstract: FullTextResult): Recorded
     RecordedFetch(recording(heldAbstract, pdfPath = null), heldAbstract)
 
 /**
+ * Refuse a held abstract that is not a JATS deposit: only Europe PMC's or the
+ * bucket's can carry what the chain met ([notingHeldAbstract]), and any other
+ * would lose it silently.
+ *
+ * @param heldAbstract The deposit held back, or null
+ * @throws IllegalArgumentException for any other result
+ */
+internal fun requireJatsDeposit(heldAbstract: FullTextResult?) {
+    require(heldAbstract == null || heldAbstract is FullTextResult.EuropePmcXml || heldAbstract is FullTextResult.PmcOpenDataXml) {
+        "only a JATS deposit is held back as an abstract, not $heldAbstract"
+    }
+}
+
+/**
  * A held abstract-only deposit carrying what the chain met after holding it back.
  *
  * @param shortfall What the open-access walk left unsettled, or null
  * @param pdfNotSavedFrom A PDF served that could not be saved here, or null
- * @return The deposit with both noted; any other result unchanged
+ * @return The deposit with both noted; any other result unchanged, which
+ *   [requireJatsDeposit] keeps from being held
  */
 internal fun FullTextResult.notingHeldAbstract(shortfall: OpenAccessShortfall?, pdfNotSavedFrom: String?): FullTextResult =
     when (this) {

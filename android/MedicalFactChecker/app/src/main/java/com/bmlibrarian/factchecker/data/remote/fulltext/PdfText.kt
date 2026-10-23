@@ -19,6 +19,7 @@
 package com.bmlibrarian.factchecker.data.remote.fulltext
 
 import android.util.Log
+import com.bmlibrarian.factchecker.util.Constants
 import com.itextpdf.commons.exceptions.ITextException
 import com.itextpdf.kernel.pdf.PdfDocument
 import com.itextpdf.kernel.pdf.PdfReader
@@ -38,11 +39,20 @@ private const val TAG = "PdfText"
  * ([com.bmlibrarian.factchecker.data.local.entity.DocumentEntity.pdfExtractedText]).
  * Read off the main thread: iText parses every page.
  *
+ * shortcut: a text longer than [Constants.MAX_STORED_TEXT_BYTES] is not kept,
+ * since the row holding it could not be read back, and never cut; keep long
+ * texts in a file beside the PDF if long PDFs (books, theses) turn up.
+ *
  * @param path The PDF on disk
- * @return Its text, trimmed; null when it has none (a scan) or cannot be read as
- *   a PDF (damaged, a password, no pages, gone), which is logged
+ * @param maxBytes The longest text kept, in UTF-8 bytes
+ * @return Its text, trimmed; null when it has none (a scan), cannot be read as
+ *   a PDF (damaged, a password, no pages, gone), or is too long to keep, each
+ *   logged
  */
-suspend fun extractedPdfText(path: String): String? = withContext(Dispatchers.IO) {
+suspend fun extractedPdfText(
+    path: String,
+    maxBytes: Long = Constants.MAX_STORED_TEXT_BYTES
+): String? = withContext(Dispatchers.IO) {
     val file = File(path)
     val text = try {
         // The reader closed too when the document cannot be built from it
@@ -71,8 +81,13 @@ suspend fun extractedPdfText(path: String): String? = withContext(Dispatchers.IO
         Log.e(TAG, "Reading ${file.name} for its text failed in the code, not the file", e)
         return@withContext null
     }
-    text.trim().ifEmpty {
+    val trimmed = text.trim().ifEmpty {
         Log.w(TAG, "${file.name} has no text on its pages")
-        null
+        return@withContext null
     }
+    if (trimmed.toByteArray(Charsets.UTF_8).size > maxBytes) {
+        Log.w(TAG, "${file.name}'s text is longer than $maxBytes bytes, so it is not kept for the analysis")
+        return@withContext null
+    }
+    trimmed
 }

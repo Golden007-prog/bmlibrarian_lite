@@ -238,6 +238,20 @@ class FullTextViewModel @Inject constructor(
                     return@launch
                 }
 
+                // The reader's own PDF, kept apart from the cache (FullTextUpload):
+                // shown as itself before any cached PDF, which may be the scan it
+                // replaced, and never title-checked or fetched over
+                val uploadedPdf = doc.pdfPath?.takeIf { doc.holdsUploadedFullText && File(it).isFile }
+                if (uploadedPdf != null) {
+                    Log.d(TAG, "Using the uploaded PDF for ${doc.id}")
+                    _state.value = FullTextState.PdfContent(
+                        pdfPath = uploadedPdf,
+                        title = doc.title,
+                        source = doc.fullTextSourceDisplay ?: Constants.FULLTEXT_SOURCE_UPLOADED
+                    )
+                    return@launch
+                }
+
                 // Check for cached PDF. One that is another article's is set
                 // aside, and the chain asked again (#546): a PDF cached before
                 // the title check was never checked
@@ -363,6 +377,17 @@ class FullTextViewModel @Inject constructor(
             askCore = { doi -> fullTextService.askCore(doi) },
             readPdfText = { path -> fullTextService.readPdfText(path) }
         )
+        // A copy the reader uploaded while this fetch ran stands, as in the workflow,
+        // and is shown instead. An upload is stamped when made, so one older than
+        // the fetch (its PDF since gone) is fetched over as any other record is
+        val uploadedSince = documentDao.getById(doc.id)
+            ?.takeIf { it.holdsUploadedFullText && it.fullTextFetchedAt != doc.fullTextFetchedAt }
+        if (uploadedSince != null) {
+            Log.d(TAG, "${doc.id} was given an uploaded full text during the fetch; it stands")
+            currentDocumentId = null
+            loadDocument(doc.id)
+            return
+        }
         if (result !is FullTextResult.NotEstablished && result !is FullTextResult.OpenAccessNotEstablished) {
             documentDao.update(recorded)
             _document.value = recorded

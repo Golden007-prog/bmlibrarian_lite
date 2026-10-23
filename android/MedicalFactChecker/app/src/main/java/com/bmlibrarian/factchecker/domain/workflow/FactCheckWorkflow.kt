@@ -145,6 +145,15 @@ class FactCheckWorkflow @Inject constructor(
          * extraction failed.
          */
         const val NO_NEW_FULL_TEXT_NOTICE = "No further full text was read, so the report is unchanged."
+
+        /**
+         * Told when a full-text retry failed while the session had a report.
+         *
+         * @param cause What failed, if known
+         * @return The sentence
+         */
+        fun retryFailedNotice(cause: String?): String =
+            "The full-text retry failed" + (cause?.let { " ($it)" } ?: "") + ", so the report stands as it was."
     }
 
     // ==================== Observable State ====================
@@ -186,7 +195,7 @@ class FactCheckWorkflow @Inject constructor(
     /**
      * Why a request for more evidence added nothing, while the report it had
      * stands ([NO_NEW_EVIDENCE_NOTICE]); null otherwise. Kept until the next
-     * request for more evidence.
+     * request for more evidence, full-text retry, reset or fact check.
      */
     private val _smartSearchNotice = MutableStateFlow<String?>(null)
     val smartSearchNotice: StateFlow<String?> = _smartSearchNotice.asStateFlow()
@@ -194,9 +203,9 @@ class FactCheckWorkflow @Inject constructor(
     /**
      * What the full-text step could not do: papers whose full text could not be
      * retrieved, full texts the run budget left out, or extractions from a full
-     * text that failed; null when nothing went wrong. Neither stops the run,
-     * since the abstract still makes a report. Cleared as citations are next
-     * extracted.
+     * text that failed, or a full-text retry that failed while the report
+     * stands; null when nothing went wrong. None stops the run, since the
+     * abstract still makes a report. Cleared as citations are next extracted.
      */
     private val _fullTextNotice = MutableStateFlow<String?>(null)
     val fullTextNotice: StateFlow<String?> = _fullTextNotice.asStateFlow()
@@ -384,9 +393,10 @@ class FactCheckWorkflow @Inject constructor(
      *
      * A search for more that failures leave with nothing, or that cannot be sent
      * because the saved NCBI credentials cannot be read, keeps the session's
-     * report as it was and shows why (#252). Smart search stays available to try
-     * again when the model could not be asked or its queries failed; it is marked
-     * as tried when every answer held no usable query.
+     * report as it was and shows why (#252). Whether smart search counts as
+     * tried (`session.smartSearchEnabled`) now only governs the run's automatic
+     * round and the "more available" mark: a request for more evidence runs a
+     * fresh round either way.
      *
      * @param settings The current settings, whose thresholds and budgets this
      *   request runs under; the session keeps its own search provider and
@@ -400,6 +410,9 @@ class FactCheckWorkflow @Inject constructor(
             currentConfig = it.copy(searchProvider = session.searchProvider, includePreprints = session.includePreprints)
         }
         val config = currentConfig ?: WorkflowConfig.default()
+        // What the last run and other sessions spent: a restored session holds none,
+        // and each round spends more
+        monthlyUsageUsd = usageRepository.getCurrentMonthSpend()
         _searchFailureMessage.value = null
         _smartSearchNotice.value = null
 
@@ -566,7 +579,15 @@ class FactCheckWorkflow @Inject constructor(
             // A cancelled run is not a failed one: cancel() has already set the state
             throw e
         } catch (e: Exception) {
-            handleWorkflowError(e, session)
+            // The report is replaced only by a new one, so it stands, and the session
+            // stays complete (and in History), as Swift's retry leaves it
+            val report = reportRepository.getReportBySession(session.id)
+                ?: return handleWorkflowError(e, session)
+            Log.e(TAG, "Full-text retry failed for ${session.id}", e)
+            appendFullTextNotice(retryFailedNotice(e.message))
+            sessionRepository.updateWorkflowStep(session.id, WorkflowStep.COMPLETED)
+            _state.value = WorkflowState.Completed(reportId = report.id)
+            updateProgress("Complete", WorkflowProgress.PROGRESS_COMPLETE)
         }
     }
 
@@ -1395,8 +1416,8 @@ class FactCheckWorkflow @Inject constructor(
      * no source had is recorded as such and, but on a retry, not asked again. Any
      * other failure leaves the document as it was, so the next run retries it,
      * and is named in [fullTextNotice]: a paper missing its full text is
-     * otherwise indistinguishable from one that never had any. Neither stops the
-     * run, since the abstract still makes a report.
+     * otherwise indistinguishable from one that never had any. None of this stops
+     * the run, since the abstract still makes a report.
      *
      * @param sessionId The session
      * @param config Workflow configuration
@@ -1487,8 +1508,9 @@ class FactCheckWorkflow @Inject constructor(
      * @param config Workflow configuration
      * @param replacing Documents whose existing citations a successful extraction
      *   with passages replaces; one whose full text the budget leaves out keeps them
-     * @return How many papers' citations were extracted, successfully, with a full
-     *   text in the prompt
+     * @return How many papers' extractions succeeded with a full text in the
+     *   prompt, or found citations in the abstract: what a regenerated report
+     *   would read that the current one did not
      */
     private suspend fun extractCitations(
         documents: List<DocumentEntity>,
@@ -1515,6 +1537,7 @@ class FactCheckWorkflow @Inject constructor(
             val (fitted, dropped) = FullTextAutoFetch.fittingBudget(
                 inputs,
                 remainingUsd = config.maxRunBudgetUsd - spent,
+                // An unpriced model is costed at nothing, as everywhere else in the app
                 usdPerInputToken = provider.pricedModel(model)?.inputPricePerToken ?: 0.0
             )
             inputs = fitted
@@ -1558,13 +1581,14 @@ class FactCheckWorkflow @Inject constructor(
                             relevanceExplanation = extraction.relevance
                         )
                     }
-                    documentRepository.updateCitationsReadFullText(result.documentId, result.documentId in readingFullText)
                     // Only once new ones exist: one that found nothing in the text keeps the old
                     if (result.documentId in replacing && citations.isNotEmpty()) {
                         documentRepository.replaceCitations(result.documentId, citations)
                     } else {
                         documentRepository.saveCitations(citations)
                     }
+                    // After the save: a save that failed must not mark the text as read
+                    documentRepository.updateCitationsReadFullText(result.documentId, result.documentId in readingFullText)
                 } else {
                     // The paper keeps what it had, and a retry asks again
                     Log.e(TAG, "Citation extraction failed for ${result.documentId}")
@@ -1580,7 +1604,9 @@ class FactCheckWorkflow @Inject constructor(
         )
         val failedReads = results.count { it.isError && it.documentId in readingFullText }
         if (failedReads > 0) appendFullTextNotice(FullTextAutoFetch.extractionFailureNotice(failedReads))
-        return results.count { it.isSuccess && it.documentId in readingFullText }
+        // Citations found in an abstract count too: Android offers no Regenerate
+        // Report (#614), so a report not redone would never cite them
+        return results.count { it.isSuccess && (it.documentId in readingFullText || it.extractionsOrEmpty.isNotEmpty()) }
     }
 
     /**

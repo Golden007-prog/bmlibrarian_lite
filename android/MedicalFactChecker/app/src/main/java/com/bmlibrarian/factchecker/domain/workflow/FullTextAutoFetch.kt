@@ -60,7 +60,8 @@ object FullTextAutoFetch {
      * since asking again for a paper no source had repeats the same failing round
      * trips. A retry the reader asks for asks again for those too: a source may
      * have gained a copy since. A link-only record (a PDF found and not
-     * downloaded) is asked again only on a retry, as the full-text screen would.
+     * downloaded) is asked again only on a retry, as the full-text screen would
+     * (differs from Swift, which re-fetches a link-only record on every run: #615).
      *
      * @param documents Candidate documents, in the order to fetch them
      * @param relevanceThreshold The user's relevance threshold (1-5)
@@ -204,8 +205,9 @@ object FullTextAutoFetch {
      *
      * The run budget is checked once before the citation calls are made, and each
      * of them is now up to a full text long, so the check alone no longer bounds
-     * what the batch can spend. Texts are kept in order until the next would cross
-     * the line; the rest fall back to their abstracts.
+     * what the batch can spend. Each text is kept while its estimated cost fits
+     * what is left; one that does not fit falls back to its abstract, and a later,
+     * shorter text may still be kept.
      *
      * @param inputs The citation inputs, in the order they are paid for
      * @param remainingUsd What the run may still spend
@@ -220,7 +222,7 @@ object FullTextAutoFetch {
         var remaining = remainingUsd
         var dropped = 0
         val fitted = inputs.map { input ->
-            val text = input.fullText ?: return@map input
+            val text = input.fullText?.text ?: return@map input
             val cost = text.length.toDouble() / Constants.TOKEN_ESTIMATE_CHARS_PER_TOKEN * usdPerInputToken
             if (cost <= remaining) {
                 remaining -= cost

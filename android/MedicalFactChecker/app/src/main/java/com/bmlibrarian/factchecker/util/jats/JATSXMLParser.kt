@@ -205,15 +205,18 @@ class JATSXMLParser(
 
     /**
      * Whether the parse rendered any of the article's body: a paragraph with
-     * text inside its `<body>`.
+     * text inside a `<sec>` of its `<body>`.
      *
      * Not the same question as whether it produced content: a body-less deposit
      * has a title and an abstract, renders, and reads like an article. Europe
      * PMC serves those for records deposited abstract-only, and the chain holds
      * one back so that a PDF of the article can still win (the contract's
      * "Abstract Holdback"). Counted by paragraph, as Swift's `producedBody` is,
-     * so back matter or a body of exhibits alone does not count. Read after
-     * [parseToMarkdown] or [parseToHTML].
+     * so back matter alone does not count. Unlike Swift's, a body of bare `<p>`
+     * with no `<sec>` counts as none, because this parser does not render those
+     * paragraphs yet (#384): such an article is held back as abstract-only,
+     * which is what its rendering holds. Read after [parseToMarkdown] or
+     * [parseToHTML].
      */
     val producedBody: Boolean
         get() = bodyParagraphCount > 0

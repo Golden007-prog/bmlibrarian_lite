@@ -27,10 +27,12 @@ import io.mockk.slot
 import java.util.Date
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 /**
- * A whole-row document update keeps the stored transparency result.
+ * A whole-row document update keeps the stored transparency result, and what
+ * the citations read while the text they read stands.
  *
  * Screens read a row, `copy()` it and write it back to change its full text;
  * the workflow may store a transparency result in between.
@@ -60,5 +62,29 @@ class DocumentDaoUpdateTest {
         assertEquals("body", written.captured.fullTextMarkdown)
         assertEquals("{stored}", written.captured.transparencyResultJson)
         assertEquals(analysedAt, written.captured.transparencyAnalyzedAt)
+    }
+
+    @Test
+    fun `a copy written back with the same text keeps what the citations read`() = runTest {
+        val read = DocumentEntity(id = "d", sessionId = "s", title = "t", fullTextMarkdown = "body")
+        coEvery { delegate.getById("d") } returns read.copy(citationsReadFullText = true)
+        val written = slot<DocumentEntity>()
+        coEvery { delegate.updateAllColumns(capture(written)) } just Runs
+
+        dao.update(read.copy(relevanceScore = 4))
+
+        assertEquals(true, written.captured.citationsReadFullText)
+    }
+
+    @Test
+    fun `a new text clears what the citations read, so they are judged against it`() = runTest {
+        val read = DocumentEntity(id = "d", sessionId = "s", title = "t", fullTextMarkdown = "fetched")
+        coEvery { delegate.getById("d") } returns read.copy(citationsReadFullText = true)
+        val written = slot<DocumentEntity>()
+        coEvery { delegate.updateAllColumns(capture(written)) } just Runs
+
+        dao.update(read.copy(fullTextMarkdown = "uploaded"))
+
+        assertNull(written.captured.citationsReadFullText)
     }
 }

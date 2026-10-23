@@ -29,6 +29,7 @@ import com.bmlibrarian.factchecker.data.repository.DocumentRepository
 import com.bmlibrarian.factchecker.data.repository.ReportRepository
 import com.bmlibrarian.factchecker.data.repository.SessionRepository
 import com.bmlibrarian.factchecker.data.repository.SettingsRepository
+import com.bmlibrarian.factchecker.data.repository.UsageRepository
 import com.bmlibrarian.factchecker.domain.model.AppSettings
 import com.bmlibrarian.factchecker.domain.model.LLMProvider
 import com.bmlibrarian.factchecker.domain.model.SearchProvider
@@ -41,6 +42,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -62,6 +64,8 @@ class FactCheckWorkflowFullTextTest {
     private lateinit var settingsRepository: SettingsRepository
     private lateinit var citationService: ParallelCitationService
     private lateinit var fullTextService: FullTextService
+    private lateinit var sessionRepository: SessionRepository
+    private lateinit var usageRepository: UsageRepository
     private lateinit var workflow: FactCheckWorkflow
 
     private val documents = linkedMapOf<String, DocumentEntity>()
@@ -89,7 +93,8 @@ class FactCheckWorkflowFullTextTest {
         // Relaxed for detectConcurrency, which the call's default argument asks
         citationService = mockk(relaxed = true)
         fullTextService = mockk(relaxed = true)
-        val sessionRepository = mockk<SessionRepository>(relaxed = true)
+        sessionRepository = mockk(relaxed = true)
+        usageRepository = mockk(relaxed = true)
         coEvery { sessionRepository.getSession(SESSION_ID) } returns session
         every { settingsRepository.getLlmProvider() } returns LLMProvider.OPENAI.id
         every { settingsRepository.getLlmModel() } returns LLMProvider.OPENAI.defaultModel
@@ -134,7 +139,7 @@ class FactCheckWorkflowFullTextTest {
             sessionRepository = sessionRepository,
             documentRepository = documentRepository,
             reportRepository = reportRepository,
-            usageRepository = mockk(relaxed = true),
+            usageRepository = usageRepository,
             settingsRepository = settingsRepository,
             parallelScoringService = mockk(relaxed = true),
             parallelCitationService = citationService,
@@ -210,6 +215,20 @@ class FactCheckWorkflowFullTextTest {
         )
     }
 
+    @Test
+    fun `the budget a full text must fit is what the run has left, not the whole run budget`() = runTest {
+        holdPaper(paper().copy(fullTextMarkdown = "x".repeat(40_000), fullTextSource = Constants.FULLTEXT_SOURCE_UPLOADED, citationsReadFullText = false))
+        val price = LLMProvider.OPENAI.pricedModel(LLMProvider.OPENAI.defaultModel)!!.inputPricePerToken
+        val textCost = 40_000.0 / Constants.TOKEN_ESTIMATE_CHARS_PER_TOKEN * price
+        // Already spent as much as the text costs: half of it is left
+        coEvery { sessionRepository.getSession(SESSION_ID) } returns session.copy(estimatedCostUsd = textCost)
+
+        workflow.retryFullTextRetrieval(WorkflowConfig(autoFetchFullText = false, maxRunBudgetUsd = textCost * 1.5))
+
+        assertTrue("no abstract is paid for again", asked.isEmpty())
+        assertTrue("got ${workflow.fullTextNotice.value}", workflow.fullTextNotice.value!!.startsWith(FullTextAutoFetch.budgetNotice(1)))
+    }
+
     // ==================== The automatic step ====================
 
     @Test
@@ -223,6 +242,8 @@ class FactCheckWorkflowFullTextTest {
         coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), "1", any(), any()) }
         assertTrue(asked.single().single().content.contains("Full text:\nCORE's body."))
         assertEquals(listOf("A new passage."), citations.map { it.passage })
+        // The control for the failure notice: a fetch that arrived names no failure
+        assertNull(workflow.fullTextNotice.value)
     }
 
     @Test
@@ -254,7 +275,7 @@ class FactCheckWorkflowFullTextTest {
     }
 
     @Test
-    fun `a copy the reader uploaded while the targets were fetched stands`() = runTest {
+    fun `a paper the reader uploaded a copy for is not fetched`() = runTest {
         holdPaper(paper().copy(fullTextUnavailable = true))
         val uploaded = documents.getValue("d1").copy(fullTextMarkdown = "Theirs.", fullTextSource = Constants.FULLTEXT_SOURCE_UPLOADED)
         coEvery { documentRepository.getDocument("d1") } returns uploaded
@@ -263,6 +284,90 @@ class FactCheckWorkflowFullTextTest {
 
         coVerify(exactly = 0) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
         coVerify(exactly = 0) { documentRepository.updateDocument(any()) }
+    }
+
+    @Test
+    fun `a copy the reader uploaded while the targets were fetched stands`() = runTest {
+        holdPaper(paper().copy(fullTextUnavailable = true))
+        val notUploaded = documents.getValue("d1")
+        val uploaded = notUploaded.copy(fullTextMarkdown = "Theirs.", fullTextSource = Constants.FULLTEXT_SOURCE_UPLOADED)
+        // Read before the fetch, then again after it, once the reader's upload landed
+        coEvery { documentRepository.getDocument("d1") } returnsMany listOf(notUploaded, uploaded)
+        coEvery { fullTextService.fetchFullText(any(), any(), any(), any(), any()) } returns
+            Result.success(FullTextResult.CoreText("CORE's body."))
+
+        workflow.retryFullTextRetrieval(WorkflowConfig(autoFetchFullText = true))
+
+        coVerify(exactly = 1) { fullTextService.fetchFullText(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { documentRepository.updateDocument(any()) }
+    }
+
+    // ==================== What a retry costs and how it fails ====================
+
+    @Test
+    fun `a relevant paper without citations read from its abstract regenerates the report`() = runTest {
+        documents["d1"] = paper()
+
+        workflow.retryFullTextRetrieval(WorkflowConfig(autoFetchFullText = false))
+
+        assertTrue(asked.single().single().content == "The abstract.")
+        assertEquals(listOf("A new passage."), citations.map { it.passage })
+        assertEquals(WorkflowState.Completed(reportId = "report-new"), workflow.state.value)
+    }
+
+    /** The control: an abstract that yields nothing leaves the report as it was. */
+    @Test
+    fun `a relevant paper whose abstract yields nothing leaves the report`() = runTest {
+        documents["d1"] = paper()
+        passages = emptyList()
+
+        workflow.retryFullTextRetrieval(WorkflowConfig(autoFetchFullText = false))
+
+        assertEquals(FactCheckWorkflow.NO_NEW_FULL_TEXT_NOTICE, workflow.fullTextNotice.value)
+        assertEquals(WorkflowState.Completed(reportId = REPORT_ID), workflow.state.value)
+    }
+
+    @Test
+    fun `a retry that fails keeps the report, and the session stays complete`() = runTest {
+        holdPaper(paper().copy(fullTextMarkdown = "The uploaded body.", fullTextSource = Constants.FULLTEXT_SOURCE_UPLOADED, citationsReadFullText = false))
+        coEvery { citationService.extractCitations(any(), any(), any(), any(), any(), any(), any(), any()) } throws
+            IllegalStateException("model down")
+
+        workflow.retryFullTextRetrieval(WorkflowConfig(autoFetchFullText = false))
+
+        assertEquals(WorkflowState.Completed(reportId = REPORT_ID), workflow.state.value)
+        assertEquals(FactCheckWorkflow.retryFailedNotice("model down"), workflow.fullTextNotice.value)
+        coVerify(exactly = 0) { sessionRepository.updateWorkflowStep(SESSION_ID, WorkflowStep.FAILED) }
+        coVerify { sessionRepository.updateWorkflowStep(SESSION_ID, WorkflowStep.COMPLETED) }
+    }
+
+    @Test
+    fun `citations that could not be saved leave the full text unread`() = runTest {
+        holdPaper(paper().copy(fullTextMarkdown = "The uploaded body.", fullTextSource = Constants.FULLTEXT_SOURCE_UPLOADED, citationsReadFullText = false))
+        coEvery { documentRepository.replaceCitations(any(), any()) } throws IllegalStateException("disk full")
+
+        workflow.retryFullTextRetrieval(WorkflowConfig(autoFetchFullText = false))
+
+        assertEquals(false, documents.getValue("d1").citationsReadFullText)
+        assertEquals(listOf("From the abstract."), citations.map { it.passage })
+    }
+
+    @Test
+    fun `a retry checks what this month has spent elsewhere, not what the restored session thought`() = runTest {
+        holdPaper(paper().copy(fullTextMarkdown = "The uploaded body.", fullTextSource = Constants.FULLTEXT_SOURCE_UPLOADED, citationsReadFullText = false))
+        coEvery { usageRepository.getCurrentMonthSpend() } returns 50.0
+
+        workflow.retryFullTextRetrieval(WorkflowConfig(autoFetchFullText = false, monthlyBudgetUsd = 10.0))
+
+        assertTrue("got ${workflow.state.value}", workflow.state.value is WorkflowState.BudgetExceeded)
+        assertTrue(asked.isEmpty())
+    }
+
+    @Test
+    fun `a request for more evidence reads what this month has spent`() = runTest {
+        workflow.fetchMoreEvidence(WorkflowConfig())
+
+        coVerify(exactly = 1) { usageRepository.getCurrentMonthSpend() }
     }
 
     private companion object {

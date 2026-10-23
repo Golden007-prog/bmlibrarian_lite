@@ -89,7 +89,10 @@ non-empty section collection — and reading that as "has a body" would report
 rule is stated on the `implicit_body_section` slot's comment and applied
 where `ParsedArticle` is built, both in `bmlib/fulltext/jats_parser.py`, as
 `has_body = body_paragraph_count > 0`; the Swift port mirrors it verbatim as
-`JATSXMLParser.producedBody`. Cited by symbol rather than line, because
+`JATSXMLParser.producedBody`. Kotlin's `JATSXMLParser.producedBody` counts only
+paragraphs inside a `<sec>`, since it does not yet render unsectioned body
+paragraphs (#384): it reports such an article as abstract-only, which is what
+its stored rendering holds. Cited by symbol rather than line, because
 cross-repository line numbers rot silently.
 
 Both implementations accept the same consequence of counting paragraphs
@@ -286,7 +289,7 @@ function fetch_pmc_open_data(pmcid) -> PmcOpenDataFetch:
 The bucket serves its objects as `binary/octet-stream` with no charset, so
 every body is decoded as UTF-8; a body that is not valid UTF-8 is
 `malformed_response`. The served XML goes through the platform's JATS
-converter, under the same rules as Europe PMC's (Swift's abstract holdback
+converter, under the same rules as Europe PMC's (the apps' abstract holdback
 included); XML whose conversion yields no text, or that the converter fails
 on, is recorded as `malformed_response`, not an absence. Unlike Europe PMC's
 own parse failure, which does not yet count (#436), the bucket's counts
@@ -2017,6 +2020,12 @@ returning a bare-link PDF result that would discard the abstract already in
 hand. If extraction yields no text and *no* abstract is held, still return
 the PDF result — `content_kind = NONE`, but the URL is real and worth
 offering.
+
+On Android the Europe PMC render ends the chain (#493) and Elsevier's PDF is
+returned before Unpaywall is asked, so a textless, failed or unsaved render, or
+a textless Elsevier PDF, gives way to the held abstract directly: there is no
+next tier to move on to (#615). A render that could not be downloaded is noted
+on the held abstract as an open-access shortfall, so the question stays open.
 
 ### Cancellation
 

@@ -34,8 +34,8 @@ import com.bmlibrarian.factchecker.data.local.entity.DocumentEntity
  * @property abstract The document's abstract, if it has one.
  * @property markdownFallback What is read when there is neither an abstract nor
  *   a full text for the prompt: the stored markdown, as before full text was read.
- * @property fullText The article's full text, when citation extraction is to read it.
- * @property fullTextTruncated Whether [fullText] was cut to bound the cost of the call.
+ * @property fullText The article's full text, and whether it was cut to bound the
+ *   cost of the call, when citation extraction is to read it.
  */
 data class CitationInput(
     val documentId: String,
@@ -43,8 +43,7 @@ data class CitationInput(
     val title: String,
     val abstract: String?,
     val markdownFallback: String? = null,
-    val fullText: String? = null,
-    val fullTextTruncated: Boolean = false
+    val fullText: CitationFullText? = null
 ) {
     /**
      * What the prompt reads the paper from: the full text when there is one.
@@ -60,13 +59,13 @@ data class CitationInput(
         } else {
             buildString {
                 abstract?.let { append("Abstract:\n").append(it).append("\n\n") }
-                append("Full text:\n").append(fullText)
-                if (fullTextTruncated) append("\n[The full text is cut here for length; the rest of the article is not shown.]")
+                append("Full text:\n").append(fullText.text)
+                if (fullText.truncated) append("\n[The full text is cut here for length; the rest of the article is not shown.]")
             }
         }
 
     /** This input read from the abstract instead, as when the run budget leaves the full text out. */
-    fun withoutFullText(): CitationInput = copy(fullText = null, fullTextTruncated = false)
+    fun withoutFullText(): CitationInput = copy(fullText = null)
 
     companion object {
         /**
@@ -84,8 +83,7 @@ data class CitationInput(
                 title = document.title,
                 abstract = document.abstractText,
                 markdownFallback = document.fullTextMarkdown,
-                fullText = fullText?.text,
-                fullTextTruncated = fullText?.truncated ?: false
+                fullText = fullText
             )
         }
     }

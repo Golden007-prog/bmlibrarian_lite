@@ -221,6 +221,13 @@ fun FactCheckScreen(
                 }
             }
 
+            // What an upload, a retry or a request for more evidence could not do, or came to
+            uiState.actionMessage?.let { message ->
+                item(key = "action_message") {
+                    ActionMessageCard(message = message, onDismiss = viewModel::dismissActionMessage)
+                }
+            }
+
             // Why a search or smart search could not do what was asked, while the session carries on
             uiState.searchFailureMessage?.let { message ->
                 item(key = "search_failure") {
@@ -603,6 +610,33 @@ private fun SearchFailureMessage(
                 text = message,
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onErrorContainer
+            )
+            Spacer(modifier = Modifier.height(Constants.UI_ICON_TEXT_SPACING.dp))
+            TextButton(onClick = onDismiss) {
+                Text("Dismiss")
+            }
+        }
+    }
+}
+
+/**
+ * What an action the reader took could not do, or what it came to, until dismissed.
+ *
+ * @param message What to tell the reader
+ * @param onDismiss Called when the reader dismisses it
+ */
+@Composable
+private fun ActionMessageCard(
+    message: String,
+    onDismiss: () -> Unit
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(Constants.UI_CARD_PADDING.dp)
+        ) {
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyMedium
             )
             Spacer(modifier = Modifier.height(Constants.UI_ICON_TEXT_SPACING.dp))
             TextButton(onClick = onDismiss) {

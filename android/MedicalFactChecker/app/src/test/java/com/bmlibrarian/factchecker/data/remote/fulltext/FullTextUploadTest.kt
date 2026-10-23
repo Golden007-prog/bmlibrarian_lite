@@ -136,7 +136,7 @@ class FullTextUploadTest {
 
         val refused = runCatching { second.read(uri2, "d", maxBytes = 1_024) }.exceptionOrNull()
 
-        assertEquals(FullTextUpload.TOO_LARGE_MESSAGE, (refused as FullTextUploadException).message)
+        assertEquals(FullTextUpload.tooLargeMessage(1_024), (refused as FullTextUploadException).message)
         assertEquals("%PDF earlier", File(stored).readText())
         assertEquals("no part file is left", listOf("uploaded-d.pdf"), File(folder.root, Constants.UPLOADED_FULLTEXT_DIR).list()?.toList())
     }
@@ -152,5 +152,45 @@ class FullTextUploadTest {
         val (image, imageUri) = upload("image/png", ByteArray(4))
         assertEquals(FullTextUpload.UNSUPPORTED_MESSAGE, runCatching { image.read(imageUri, "d") }.exceptionOrNull()?.message)
         assertThrows(FullTextUploadException::class.java) { kotlinx.coroutines.runBlocking { image.read(imageUri, "d") } }
+    }
+
+    @Test
+    fun `a text file longer than a row can hold is refused, never cut`() = runTest {
+        val (text, uri) = upload("text/plain", "a".repeat(2_048).toByteArray())
+
+        val refused = runCatching { text.read(uri, "d", maxTextBytes = 1_024) }.exceptionOrNull()
+
+        assertEquals(FullTextUpload.tooLargeMessage(1_024), refused?.message)
+        assertEquals("The file is larger than 100 MB, so it was not used.", FullTextUpload.tooLargeMessage(Constants.MAX_UPLOAD_BYTES))
+    }
+
+    @Test
+    fun `a text file that is not UTF-8 is refused, and a byte-order mark is dropped`() = runTest {
+        val (utf16, uri) = upload("text/plain", "We randomised.".toByteArray(Charsets.UTF_16LE))
+        assertEquals(FullTextUpload.NOT_UTF8_MESSAGE, runCatching { utf16.read(uri, "d") }.exceptionOrNull()?.message)
+
+        val (latin1, latinUri) = upload("text/plain", "Caf\u00e9".toByteArray(Charsets.ISO_8859_1))
+        assertEquals(FullTextUpload.NOT_UTF8_MESSAGE, runCatching { latin1.read(latinUri, "d") }.exceptionOrNull()?.message)
+
+        val (marked, markedUri) = upload("text/plain", "\uFEFFCaf\u00e9".toByteArray(Charsets.UTF_8))
+        assertEquals(FullTextUploadContent.Text("Caf\u00e9"), marked.read(markedUri, "d"))
+    }
+
+    // ==================== A PDF's text ====================
+
+    @Test
+    fun `a PDF's text is read page by page, in order`() = runTest {
+        val pdf = writeTitledPdf(folder.newFile("two.pdf"), "Methods first", "Results second")
+
+        assertEquals("Methods first\n\nResults second", extractedPdfText(pdf.path)?.replace(Regex("[ \t]+\n"), "\n"))
+    }
+
+    @Test
+    fun `a PDF with blank pages, or text longer than a row can hold, gives no text`() = runTest {
+        assertNull(extractedPdfText(writeTitledPdf(folder.newFile("scan.pdf"), "", "").path))
+
+        val long = writeTitledPdf(folder.newFile("long.pdf"), "Methods first")
+        assertNull(extractedPdfText(long.path, maxBytes = 4))
+        assertEquals("Methods first", extractedPdfText(long.path, maxBytes = 1_024))
     }
 }

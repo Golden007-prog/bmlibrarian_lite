@@ -178,12 +178,17 @@ class FullTextService @Inject constructor(
          *
          * @param pdfUrl URL to the Europe PMC PDF.
          * @param heldAbstract The abstract-only deposit the chain held back, to be
-         *   recorded instead when this PDF yields no text; null when none was held.
+         *   recorded instead when this PDF yields no text, cannot be downloaded or
+         *   saved, or is another article's; null when none was held.
          */
         data class EuropePmcPdf(
             val pdfUrl: String,
             val heldAbstract: FullTextResult? = null
-        ) : FullTextResult(hasContent = true)
+        ) : FullTextResult(hasContent = true) {
+            init {
+                requireJatsDeposit(heldAbstract)
+            }
+        }
 
         /**
          * The open-access PDFs to try, in chain order, with any lookup that went
@@ -210,6 +215,7 @@ class FullTextService @Inject constructor(
         ) : FullTextResult(hasContent = true) {
             init {
                 require(steps.any { it is OpenAccessStep.Candidate }) { "nothing to try is not a PDF result" }
+                requireJatsDeposit(heldAbstract)
             }
         }
 
@@ -248,7 +254,11 @@ class FullTextService @Inject constructor(
          * @property heldAbstract As [EuropePmcPdf.heldAbstract]
          */
         data class ElsevierPdf(val pdfPath: String, val heldAbstract: FullTextResult? = null) :
-            FullTextResult(hasContent = true)
+            FullTextResult(hasContent = true) {
+            init {
+                requireJatsDeposit(heldAbstract)
+            }
+        }
 
         /**
          * Fall back to DOI/publisher URL.
@@ -437,7 +447,8 @@ class FullTextService @Inject constructor(
      *   another article's, set aside and recorded as a wrong-article skip with its
      *   address before Unpaywall is asked (the PDFs the recording downloads are
      *   checked by [downloadPdf], #561). Null checks nothing.
-     * @return The full text or a link to it; [FullTextResult.Unavailable] when every
+     * @return The full text or a link to it; the held abstract-only deposit when
+     *   nothing better arrived; [FullTextResult.Unavailable] when every
      *   source answered without it (callers record this); or
      *   [FullTextResult.NotEstablished] when Europe PMC, or failing that PMC's
      *   open-data bucket, did not settle it (never recorded). No path here returns a failed [Result].

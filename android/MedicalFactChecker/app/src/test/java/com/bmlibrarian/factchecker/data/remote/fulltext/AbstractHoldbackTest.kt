@@ -33,6 +33,9 @@ import com.bmlibrarian.factchecker.util.jats.JATSXMLParser
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import com.bmlibrarian.factchecker.util.Constants
+import okhttp3.ResponseBody.Companion.toResponseBody
+import retrofit2.Response
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -104,6 +107,34 @@ class AbstractHoldbackTest {
     }
 
     @Test
+    fun `an abstract-only deposit held while Unpaywall is unreachable carries that shortfall`() = runTest {
+        val unpaywall = mockk<UnpaywallApi> {
+            coEvery { getWorkByDoi(doi, any()) } returns Response.error(503, "".toResponseBody(null))
+        }
+
+        val result = service(europePmcServing(abstractOnly), absentBucket(), unpaywall)
+            .fetchFullText(pmcId = "PMC7", doi = doi, pmid = null, email = "researcher@example.org").getOrThrow()
+
+        assertTrue("got $result", result is FullTextResult.EuropePmcXml && result.abstractOnly)
+        val sources = (result as FullTextResult.EuropePmcXml).openAccessShortfall?.entries?.map { it.source }
+        assertEquals(listOf(OpenAccessSource.UNPAYWALL), sources)
+    }
+
+    /** The control: Unpaywall answering that it holds no record leaves nothing unsettled. */
+    @Test
+    fun `an abstract-only deposit held while Unpaywall knows nothing carries no shortfall`() = runTest {
+        val unpaywall = mockk<UnpaywallApi> {
+            coEvery { getWorkByDoi(doi, any()) } returns Response.error(Constants.HTTP_NOT_FOUND, "".toResponseBody(null))
+        }
+
+        val result = service(europePmcServing(abstractOnly), absentBucket(), unpaywall)
+            .fetchFullText(pmcId = "PMC7", doi = doi, pmid = null, email = "researcher@example.org").getOrThrow()
+
+        assertTrue("got $result", result is FullTextResult.EuropePmcXml && result.abstractOnly)
+        assertNull((result as FullTextResult.EuropePmcXml).openAccessShortfall)
+    }
+
+    @Test
     fun `an article with a body is returned at once`() = runTest {
         val europePmc = europePmcServing(withBody, renderUrl = render)
 
@@ -141,6 +172,24 @@ class AbstractHoldbackTest {
         assertTrue(recorded.fullTextAbstractOnly)
         assertEquals("# A trial", recorded.fullTextMarkdown)
         assertNull(recorded.analysisFullText)
+        // The render was served: nothing is left unsettled
+        assertNull(recorded.fullTextOpenAccessShortfallJson)
+    }
+
+    @Test
+    fun `a render that could not be downloaded gives way to the held abstract, which carries the failure`() = runTest {
+        val (recorded, result) = document().recordingFullTextFetch(
+            FullTextResult.EuropePmcPdf(render, heldAbstract = held),
+            downloadPdf = { PdfDownload.Failed(RequestFailure.forHttpStatus(503)) }, askOpenAlex = noOpenAlex, askCore = noCore,
+            readPdfText = { null }
+        )
+
+        assertTrue("got $result", result is FullTextResult.EuropePmcXml)
+        assertTrue(recorded.fullTextAbstractOnly)
+        assertEquals(
+            OpenAccessShortfall(OpenAccessSource.EUROPE_PMC_PDF, RequestFailure.forHttpStatus(503), render).toJson(),
+            recorded.fullTextOpenAccessShortfallJson
+        )
     }
 
     @Test
@@ -210,10 +259,14 @@ class AbstractHoldbackTest {
     private fun document() = DocumentEntity(id = "d", sessionId = "s", title = "A trial", doi = doi)
 
     /** The chain over this Europe PMC and bucket, every other source absent. */
-    private fun service(europePmc: EuropePMCService, bucket: PmcOpenDataService) = FullTextService(
+    private fun service(
+        europePmc: EuropePMCService,
+        bucket: PmcOpenDataService,
+        unpaywall: UnpaywallApi = mockk()
+    ) = FullTextService(
         context = mockk(relaxed = true),
         europePmcService = europePmc,
-        unpaywallApi = mockk<UnpaywallApi>(),
+        unpaywallApi = unpaywall,
         httpClient = mockk(relaxed = true),
         pmcOpenData = bucket,
         openAlex = absentOpenAlex(),

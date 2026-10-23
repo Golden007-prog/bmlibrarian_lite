@@ -109,7 +109,7 @@ class FullTextAutoFetchTest {
     fun `full texts are kept in order while they fit the budget, the rest read the abstract`() {
         // 4 characters a token: 100 characters is 25 tokens, $0.25 at a cent a token
         val inputs = listOf("a", "b", "c").map {
-            CitationInput(documentId = it, pmid = null, title = it, abstract = "abstract", fullText = "y".repeat(100))
+            CitationInput(documentId = it, pmid = null, title = it, abstract = "abstract", fullText = CitationFullText("y".repeat(100), truncated = false))
         }
 
         val (fitted, dropped) = FullTextAutoFetch.fittingBudget(inputs, remainingUsd = 0.6, usdPerInputToken = 0.01)
@@ -117,6 +117,18 @@ class FullTextAutoFetchTest {
         assertEquals(1, dropped)
         assertEquals(listOf(true, true, false), fitted.map { it.fullText != null })
         assertEquals("abstract", fitted.last().content)
+    }
+
+    @Test
+    fun `a text that does not fit falls back, and a later shorter one that does is kept`() {
+        val inputs = listOf(400, 100).map { length ->
+            CitationInput(documentId = "$length", pmid = null, title = "t", abstract = "abstract", fullText = CitationFullText("y".repeat(length), truncated = false))
+        }
+
+        val (fitted, dropped) = FullTextAutoFetch.fittingBudget(inputs, remainingUsd = 0.3, usdPerInputToken = 0.01)
+
+        assertEquals(1, dropped)
+        assertEquals(listOf(false, true), fitted.map { it.fullText != null })
     }
 
     // ==================== What the citations read ====================
